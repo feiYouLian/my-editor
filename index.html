@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>轻量级定制文本编辑器</title>
+    <link rel="stylesheet" href="/src/styles/main.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- 自定义标题栏：菜单栏左上 / 导航+搜索居中 / 侧栏开关与窗口控制右上 -->
+      <!-- deep：整个标题栏可拖动，但按钮等可交互元素自动豁免（Tauri drag.js 规则） -->
+      <header class="titlebar" data-tauri-drag-region="deep">
+        <span class="logo">my-editor</span>
+        <nav class="menubar" id="menubar">
+          <button type="button" class="menu-title" data-menu="file">文件(F)</button>
+          <button type="button" class="menu-title" data-menu="edit">编辑(E)</button>
+          <button type="button" class="menu-title" data-menu="select">选择(S)</button>
+          <button type="button" class="menu-title" data-menu="view">查看(V)</button>
+          <button type="button" class="menu-title" data-menu="go">转到(G)</button>
+        </nav>
+        <div class="titlebar-spacer"></div>
+        <div class="titlebar-center">
+          <button type="button" class="icon-btn" id="nav-prev" title="上一个标签 (Ctrl+PageUp)">&#8592;</button>
+          <button type="button" class="icon-btn" id="nav-next" title="下一个标签 (Ctrl+PageDown)">&#8594;</button>
+          <button type="button" class="search-box" id="search-box" title="命令面板 (Ctrl+Shift+P)">
+            <span class="search-box-icon">&#128269;</span>
+            <span class="search-box-text">搜索命令…</span>
+          </button>
+        </div>
+        <div class="titlebar-spacer"></div>
+        <button type="button" class="icon-btn" id="btn-sidebar-toggle" title="切换侧栏 (Ctrl+B)">&#9776;</button>
+        <button type="button" class="icon-btn" id="btn-devtools" title="开发者工具">&#128027;</button>
+        <div class="window-controls">
+          <button id="win-min" type="button" class="win-btn" title="最小化">&#8211;</button>
+          <button id="win-max" type="button" class="win-btn" title="最大化 / 还原">&#9634;</button>
+          <button id="win-close" type="button" class="win-btn win-btn-close" title="关闭">&#10005;</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <!-- 侧栏通顶：从标题栏下方一直到状态栏，tabs 不再横跨侧栏 -->
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <span class="sidebar-title" id="ws-name">工作区</span>
+            <button id="btn-open-dir" type="button" class="icon-btn" title="打开目录">📁</button>
+          </div>
+          <div id="file-tree" class="file-tree"></div>
+        </aside>
+
+        <section class="editor-column">
+          <div class="tabsbar">
+            <div id="tabs" class="tabs-tabs"></div>
+            <div id="preview-modes" class="preview-modes hidden">
+              <button type="button" data-mode="edit" title="仅编辑">编辑</button>
+              <button type="button" data-mode="preview" title="仅预览">预览</button>
+              <button type="button" data-mode="split" title="双栏（编辑 + 预览）">双栏</button>
+            </div>
+          </div>
+          <div class="editor-area mode-edit">
+            <div id="editor"></div>
+            <div id="split-resizer" class="split-resizer" title="拖动调整分栏比例（双击复位）"></div>
+            <div id="preview-pane"></div>
+          </div>
+          <div id="search-results" class="hidden"></div>
+        </section>
+      </main>
+
+      <footer class="statusbar">
+        <span id="status-path" class="status-path">未打开文件</span>
+        <span class="status-sep"></span>
+        <span id="status-size">—</span>
+        <span class="status-sep"></span>
+        <span id="status-encoding">UTF-8</span>
+        <span class="status-sep"></span>
+        <span id="status-newline">—</span>
+        <span class="status-sep"></span>
+        <span id="status-language">纯文本</span>
+        <span class="status-sep"></span>
+        <span id="status-whitespace" class="status-toggle" title="点击切换空白字符显示">空白: 隐</span>
+        <span class="status-spacer"></span>
+        <span id="status-cursor">行 1，列 1</span>
+        <span class="status-sep"></span>
+        <span id="status-lines">共 0 行</span>
+        <span class="status-sep"></span>
+        <span id="status-dirty" class="dirty hidden">● 未保存</span>
+        <span class="status-sep"></span>
+        <span id="status-message" class="status-message hidden"></span>
+      </footer>
+    </div>
+
+    <!-- 无边框窗口的缩放热区（调用 Tauri startResizeDragging） -->
+    <div class="resize-zone rz-n" data-resize="North"></div>
+    <div class="resize-zone rz-s" data-resize="South"></div>
+    <div class="resize-zone rz-e" data-resize="East"></div>
+    <div class="resize-zone rz-w" data-resize="West"></div>
+    <div class="resize-zone rz-ne" data-resize="NorthEast"></div>
+    <div class="resize-zone rz-nw" data-resize="NorthWest"></div>
+    <div class="resize-zone rz-se" data-resize="SouthEast"></div>
+    <div class="resize-zone rz-sw" data-resize="SouthWest"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
