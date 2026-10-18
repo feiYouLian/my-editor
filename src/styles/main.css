@@ -42,7 +42,7 @@ body {
   grid-template-rows: 40px 1fr 24px;
 }
 
-/* ---------- 自定义标题栏（Sublime 风格：按钮左上，窗口控制右上） ---------- */
+/* ---------- 自定义标题栏（按钮左上，窗口控制右上） ---------- */
 .titlebar {
   display: flex;
   align-items: center;
@@ -238,7 +238,7 @@ body {
   min-width: 0;
 }
 
-/* ---------- 预览面板（3.2 / 阶段 3） ---------- */
+/* ---------- 预览面板 ---------- */
 #editor {
   flex: 0 1 var(--split-ratio, 50%);
   min-width: 0;
@@ -567,7 +567,7 @@ button:disabled:hover {
   flex-direction: column;
 }
 
-/* ---------- Sublime 风格滚动条（细、圆角、悬停加亮） ---------- */
+/* ---------- 滚动条（细、圆角、悬停加亮） ---------- */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -785,7 +785,7 @@ button:disabled:hover {
   color: #fff;
 }
 
-/* ---------- 命令面板（3.9） ---------- */
+/* ---------- 命令面板 ---------- */
 .palette-overlay {
   position: fixed;
   inset: 0;
@@ -849,7 +849,7 @@ button:disabled:hover {
   flex-direction: row;
 }
 
-/* ---------- 搜索结果面板（3.4） ---------- */
+/* ---------- 搜索结果面板 ---------- */
 #search-results {
   height: 30%;
   min-height: 120px;
@@ -942,7 +942,7 @@ button:disabled:hover {
   font-size: 12px;
 }
 
-/* ---------- 列编辑器对话框（3.1） ---------- */
+/* ---------- 列编辑器对话框 ---------- */
 .dialog-backdrop {
   position: fixed;
   inset: 0;

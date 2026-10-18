@@ -1,5 +1,5 @@
 /**
- * CLI 格式化工具配置（设计文档 3.5，对应 config.json 的 formatters 块）。
+ * CLI 格式化工具配置（对应 config.json 的 formatters 块）。
  * 前端配置后端接入前使用此默认值；args 中的 __PLACEHOLDER__
  * 在调用时替换为真实文件路径。
  */

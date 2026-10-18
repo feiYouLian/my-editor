@@ -1,12 +1,12 @@
 mod commands;
 
-/// 应用入口：注册插件与命令（设计文档 2.1 / 6）
+/// 应用入口：注册插件与命令
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            commands::file::read_file,
+            commands::file::open_text_file,
             commands::file::read_image_file,
             commands::file::save_file,
             commands::fs::list_dir,
@@ -17,6 +17,9 @@ pub fn run() {
             commands::workspace::load_workspace,
             commands::workspace::save_workspace,
             commands::workspace::app_config_dir,
+            commands::config::load_config,
+            commands::config::save_config,
+            commands::config::config_path,
             commands::format::run_cli_formatter,
         ])
         .run(tauri::generate_context!())

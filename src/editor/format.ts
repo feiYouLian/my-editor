@@ -3,7 +3,7 @@ import type { EditorView } from "@codemirror/view";
 import { cliFormatters, installHints, syntheticName } from "../config/formatters";
 
 /**
- * 代码格式化（设计文档 3.5，双通道）：
+ * 代码格式化（双通道）：
  * - 前端 Prettier 通道：懒加载 prettier/standalone + 分语言插件
  * - 后端 CLI 通道：Rust spawn 外部工具（black/gofmt/rustfmt/
  *   google-java-format/clang-format），stdin/stdout，5s 超时
@@ -66,7 +66,7 @@ export interface FormatResult {
 
 /**
  * 内置 JS 格式化器（不依赖外部 CLI，全部懒加载）：
- * - SQL → sql-formatter（设计文档 3.5 表格指定的 NPM 方案）
+ * - SQL → sql-formatter（NPM 方案）
  * - XML → xml-formatter
  * JSON / YAML 已由 Prettier 覆盖（见 parserByLanguage）。
  * 这四个即用户要求的「全内置」集合：json / sql / xml / yaml。
@@ -89,7 +89,7 @@ const jsFormatters: Record<string, (text: string) => Promise<string>> = {
       mod as { default: (xml: string, opts?: Record<string, unknown>) => string }
     ).default;
     const out = formatXml(text, { indentation: "  ", collapseContent: true });
-    // xml-formatter 默认输出 CRLF：按原文换行符风格还原（设计文档 3.6 保留基线）
+    // xml-formatter 默认输出 CRLF：按原文换行符风格还原
     return /\r\n/.test(text) ? out : out.replace(/\r\n/g, "\n");
   },
 };
@@ -224,7 +224,7 @@ function indentText(text: string, prefix: string): string {
 }
 
 /**
- * 选中内容格式化（设计文档 3.5 场景②）：
+ * 选中内容格式化：
  * 去掉公共缩进 → 按目标语言格式化 → 按原缩进还原 → 替换并重置选区。
  * 片段独立解析失败时（如半个代码块），提示改用文档级格式化。
  */

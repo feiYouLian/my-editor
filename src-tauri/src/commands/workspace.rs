@@ -1,7 +1,7 @@
-//! 工作区持久化（设计文档 3.10 / 3.11）
+//! 工作区持久化
 //! 轻量版：workspace.json 存于 Tauri 应用配置目录，
 //! 记录根目录、展开状态、打开的文件列表与当前文件。
-//! 草稿 drafts/ 与 session.json 在阶段 9 落地，此处先建目录结构。
+//! 草稿与会话数据不存于此文件。
 
 use serde::{Deserialize, Serialize};
 use std::fs;

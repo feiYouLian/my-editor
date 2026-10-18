@@ -1,4 +1,4 @@
-//! CLI 格式化通道（设计文档 3.5，阶段 2b）
+//! CLI 格式化通道
 //! Rust 侧 spawn 外部 CLI 工具：stdin 喂内容、stdout 收结果、5s 超时中断。
 //! 覆盖 Prettier 生态之外的语言：Black / gofmt / rustfmt /
 //! google-java-format / clang-format。
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// 格式化超时（设计文档 3.5：5s 超时中断）
+/// 格式化超时（超时即中断子进程）
 const FORMAT_TIMEOUT_SECS: u64 = 5;
 
 /// 运行 CLI 格式化工具：content 经 stdin 传入，返回 stdout 内容

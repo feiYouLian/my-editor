@@ -1,7 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 
 /**
- * 预览宿主（设计文档 3.2 / 阶段 3）：
+ * 预览宿主：
  * - Markdown：markdown-it(html:false) + DOMPurify + highlight.js（均懒加载），
  *   块级元素打 data-line 标记，双栏滚动联动
  * - HTML：沙箱 iframe（sandbox="" 禁用脚本，CSS/图片正常渲染）
@@ -31,7 +31,7 @@ export function pathKindOf(path: string | null): PreviewKind {
   return null;
 }
 
-/** 预览大小上限（超过禁用预览，设计文档 3.2 的 ≥20MB 规则） */
+/** 预览大小上限（超过则禁用预览） */
 const PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
 
 /** 导出用的独立文档样式（与预览面板排版一致，浅色） */
@@ -129,9 +129,15 @@ export class PreviewHost {
     this.contentEl.addEventListener("scroll", () => this.onPreviewScroll());
   }
 
+  /** 移除预览区残留的图片工具条，避免连续打开图片时叠加 */
+  private clearImageToolbar(): void {
+    this.pane.querySelectorAll(".image-toolbar").forEach((el) => el.remove());
+  }
+
   /** 标签/模式变化时调用：应用布局并按需渲染 */
   apply(tab: PreviewTab | null, mode: PreviewMode): void {
     this.activeId = tab?.id ?? null;
+    this.clearImageToolbar();
     if (tab?.kind === "image") {
       this.kind = null;
       this.setAreaMode("image");
@@ -183,7 +189,7 @@ export class PreviewHost {
     if (kind === "md") {
       await this.ensureMarkdown();
       const html = this.md!.render(tab.content);
-      // 设计文档 3.2：markdown-it html:false + DOMPurify 兜底消毒
+      // markdown-it html:false + DOMPurify 兜底消毒
       this.contentEl.innerHTML = this.dompurify!.sanitize(html);
     } else {
       // 沙箱 iframe：sandbox="" 禁用脚本执行（防 XSS 触达 IPC），CSS/图片正常
@@ -211,7 +217,7 @@ export class PreviewHost {
         }).default;
         const hljs = hljsMod.default;
         const md = new MarkdownIt({
-          html: false, // 安全策略（3.2）：不解析 raw HTML
+          html: false, // 不解析 raw HTML（安全）
           linkify: true,
           highlight(code, lang) {
             try {

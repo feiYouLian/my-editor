@@ -5,9 +5,9 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
 import { getSearchQuery } from "@codemirror/search";
 
 /**
- * 书签（设计文档 3.4 查找替换细节）：
+ * 书签：
  * 命中行加书签、Next Bookmark 顺序跳转。
- * @codemirror/search 不含书签能力，按 spike 结论自研 gutter + state field。
+ * @codemirror/search 不含书签能力，故自研 gutter + state field。
  * 快捷键：Ctrl+F2 切换、F2 下一个、Shift+F2 上一个。
  */
 

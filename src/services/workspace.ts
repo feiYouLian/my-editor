@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 /**
- * 工作区服务（设计文档 3.10 轻量版）：
+ * 工作区服务：
  * 打开目录 + 持久化根目录/展开状态/打开文件列表。
  * 状态存 Rust 侧 workspace.json（Tauri 配置目录），启动时恢复。
  */

@@ -3,9 +3,9 @@ import { getSearchQuery } from "@codemirror/search";
 import { bookmarkAllMatches } from "./bookmarks";
 
 /**
- * 搜索结果面板（设计文档 3.4）：列出所有命中行，双击跳转。
+ * 搜索结果面板：列出所有命中行，双击跳转。
  * @codemirror/search 提供高亮/替换/面板，但不含"命中行列表"，
- * 按 spike 结论用 SearchCursor 枚举 + 自绘 DOM 面板实现，
+ * 用 SearchCursor 枚举 + 自绘 DOM 面板实现，
  * 附带多文件结果二次过滤能力（当前作用于单文档结果列表）。
  */
 

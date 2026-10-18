@@ -2,11 +2,11 @@ import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 
 /**
- * 列编辑器（Alt+C，设计文档 3.1）：
+ * 列编辑器（Alt+C）：
  * 对选区覆盖的每一行，在选区锚点列插入内容。
  * - 固定文本 / 递增数字（起始值·步长·位数补零）/ 日期
  * 典型场景：百行批量加 INSERT INTO 前缀、去行尾逗号、生成序号。
- * 列选择本身由 @codemirror/view 的 rectangularSelection 提供（spike 结论）。
+ * 列选择本身由 @codemirror/view 的 rectangularSelection 提供。
  */
 
 type ColumnMode = "text" | "number" | "date";

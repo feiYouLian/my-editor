@@ -33,17 +33,25 @@ import {
 } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
 import { confirmCloseDirty } from "./ui/dialogs";
+import { showConfigReloaded, showSettingsHelp } from "./ui/settingsHelp";
 import {
   loadWorkspace,
   saveWorkspaceDebounced,
   pickDirectory,
   type WorkspaceState,
 } from "./services/workspace";
+import {
+  settings,
+  getConfig,
+  loadSettings,
+  updateSettings,
+  subscribeSettings,
+  type AppConfig,
+} from "./config/settings";
 import type { FileContent, SaveResult } from "./types/app";
 
 // ---------------------------------------------------------------------------
-// 阶段 2：多标签页 + 文件树/工作区 + 命令面板 + Prettier 格式化
-// 设计文档 3.9 / 3.10 / 3.5
+// 多标签页 + 文件树/工作区 + 命令面板 + Prettier 格式化
 // ---------------------------------------------------------------------------
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -74,10 +82,29 @@ function refreshWhitespace(): void {
   statusWhitespace.classList.toggle("on", on);
 }
 
-statusWhitespace.addEventListener("click", () => {
+/** 防抖写回 config.json（界面开关与配置文件保持联动） */
+let configSaveTimer: ReturnType<typeof setTimeout> | null = null;
+function persistConfig(patch: Partial<AppConfig>): void {
+  if (configSaveTimer) clearTimeout(configSaveTimer);
+  configSaveTimer = setTimeout(() => {
+    configSaveTimer = null;
+    void updateSettings(patch).catch((e) => console.warn("[config] 写回失败", e));
+  }, 300);
+}
+
+/** 切换空白字符显示并写回配置 */
+function toggleWhitespacePersisted(): void {
   editorHandle.toggleWhitespace();
   refreshWhitespace();
-});
+  persistConfig({
+    editorEnhancements: {
+      ...getConfig().editorEnhancements,
+      showWhitespace: editorHandle.isWhitespaceOn(),
+    },
+  });
+}
+
+statusWhitespace.addEventListener("click", () => toggleWhitespacePersisted());
 
 /** 状态栏瞬时消息（格式化结果等，3 秒后淡出） */
 let messageTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,7 +182,7 @@ async function closeTab(id: string): Promise<void> {
   const tab = tabStore.findById(id);
   if (!tab) return;
   if (tab.dirty) {
-    // 三选确认：保存 / 不保存 / 取消（VS Code 风格）
+    // 三选确认：保存 / 不保存 / 取消
     const choice = await confirmCloseDirty(tab.name);
     if (choice === "cancel") return;
     if (choice === "save") {
@@ -194,8 +221,10 @@ async function loadActiveTab(): Promise<void> {
   const tab = activeTab();
   currentLoadedTabId = tab?.id ?? null;
   if (!tab) {
-    // 无标签：清空编辑器
+    // 无标签：清空编辑器、预览与结果面板，回到默认空态
     editorHandle.loadDocument("", "");
+    refreshPreview();
+    resultsPanel?.refresh();
     return;
   }
   await editorHandle.loadDocument(tab.path ?? "", tab.content);
@@ -308,7 +337,7 @@ function persistWorkspaceWithExpanded(expanded: string[]): void {
   });
 }
 
-// ---- 编辑器初始化（设计文档 3.1：CM6 仅承载 <20MB 文档）----
+// ---- 编辑器初始化（CM6 仅承载 <20MB 文档）----
 editorHandle = createEditor($("editor"), {
   onDocChange: (dirty) => {
     const tab = activeTab();
@@ -330,7 +359,14 @@ editorHandle = createEditor($("editor"), {
   },
 });
 
-// ---- 预览宿主（md/html/image，设计文档 3.2 / 阶段 3）----
+// 配置变更 → 热更新编辑器（缩进/括号/缩进线/同名高亮/列选择/键位等 Compartment 重配）
+subscribeSettings(() => {
+  editorHandle.applySettings();
+  refreshStatus();
+  refreshWhitespace();
+});
+
+// ---- 预览宿主（md/html/image）----
 const previewModes = new Map<string, PreviewMode>();
 const editorArea = document.querySelector<HTMLElement>(".editor-area")!;
 
@@ -470,7 +506,7 @@ async function exportPreview(
     const title = previewPaneTitle(tab);
 
     if (format === "pdf") {
-      // 经系统打印对话框另存为 PDF（设计文档 3.2 的 PDF 方案）
+      // 经系统打印对话框另存为 PDF
       openPrintDialog(buildStandaloneHtml(title, body));
       return;
     }
@@ -522,6 +558,19 @@ function isImagePath(path: string): boolean {
   return IMAGE_EXTS.has(ext);
 }
 
+/** open_text_file 返回：正常文本 / 大文件只读提示 */
+type OpenTextResult =
+  | { kind: "text"; data: FileContent }
+  | { kind: "large"; data: { path: string; name: string; size: number; reason: string } };
+
+/** 大文件确认：提示体积风险，询问是否仍以编辑器打开 */
+function confirmOpenLarge(info: { name: string; size: number; reason: string }): boolean {
+  showMessage(`${info.name}：${info.reason}`);
+  return window.confirm(
+    `${info.name}（${formatSize(info.size)}）：${info.reason}。\n仍要在编辑器中打开吗？文件过大可能导致卡顿甚至失败。`,
+  );
+}
+
 /** 从路径打开（文件树点击 / 工作区恢复 / 对话框共用） */
 async function openFilePath(
   path: string,
@@ -534,7 +583,7 @@ async function openFilePath(
   }
   try {
     if (isImagePath(path)) {
-      // 图片：base64 读取 → 只读查看器（设计文档 4.1）
+      // 图片：base64 读取 → 只读查看器
       const img = await invoke<{
         path: string;
         name: string;
@@ -543,8 +592,24 @@ async function openFilePath(
       }>("read_image_file", { path });
       tabStore.openImage(img.path, img.name, img.size, img.data_url);
     } else {
-      const content = await invoke<FileContent>("read_file", { path });
-      tabStore.open(content);
+      // 文本：经大文件守卫（阈值来自 config.json）
+      const res = await invoke<OpenTextResult>("open_text_file", {
+        path,
+        largeFileThreshold: settings.largeFileThreshold,
+        force: false,
+      });
+      if (res.kind === "text") {
+        tabStore.open(res.data);
+        return;
+      }
+      // 大文件：恢复会话时不打断；用户主动打开时确认后可强制加载
+      if (opts.silent || !confirmOpenLarge(res.data)) return;
+      const forced = await invoke<OpenTextResult>("open_text_file", {
+        path,
+        largeFileThreshold: settings.largeFileThreshold,
+        force: true,
+      });
+      if (forced.kind === "text") tabStore.open(forced.data);
     }
   } catch (e) {
     if (!opts.silent) window.alert(`打开失败: ${e}`);
@@ -580,7 +645,7 @@ async function saveFileAs(): Promise<void> {
   await writeTo(tab, target);
 }
 
-/** 调 Rust 保存命令：保留换行符与 BOM（设计文档 4.2，原子替换在 Rust 侧） */
+/** 调 Rust 保存命令：保留换行符与 BOM（原子替换在 Rust 侧） */
 async function writeTo(tab: Tab, path: string): Promise<void> {
   // 用 tab.content 而非编辑器内容：非激活标签的编辑只存在于缓存中，
   // 且激活标签的每次输入都会实时同步进 tab.content（onDocChange → setContent）
@@ -615,7 +680,55 @@ function newUntitled(): void {
   tabStore.open(content);
 }
 
-// ---- 格式化（设计文档 3.5：双通道 + 大文件确认 + 选中级）----
+/** 打开 config.json（便于查看/编辑配置） */
+async function openConfigFile(): Promise<void> {
+  try {
+    const path = await invoke<string>("config_path");
+    await openFilePath(path);
+  } catch (e) {
+    showMessage(`打开配置失败: ${String(e).split("\n")[0]}`);
+  }
+}
+
+/** 配置关键值摘要（重新加载后的反馈内容） */
+function configSummary(cfg: AppConfig): string[] {
+  const e = cfg.editorEnhancements;
+  return [
+    `theme = ${cfg.theme}`,
+    `tabSize = ${cfg.tabSize}　insertSpaces = ${cfg.insertSpaces}　formatOnSave = ${cfg.formatOnSave}`,
+    `highlighterDisabledOver = ${cfg.highlighterDisabledOver} 行　longLineSkipChars = ${cfg.longLineSkipChars}`,
+    `largeFileThreshold = ${cfg.largeFileThreshold} 字节`,
+    `languageExtensions = ${Object.keys(cfg.languageExtensions).length} 条映射`,
+    `showWhitespace = ${e.showWhitespace}　bracketMatching = ${e.bracketMatching}　indentGuides = ${e.indentGuides}`,
+    `occurrenceHighlight = ${e.occurrenceHighlight}　columnSelection = ${e.columnSelection}`,
+    `columnEditorKey = ${e.columnEditorKey}　columnSelectionModifier = ${e.columnSelectionModifier}`,
+    `layout.sidebarVisible = ${cfg.layout.sidebarVisible}`,
+  ];
+}
+
+/** 重新加载 config.json（改完配置免重启生效） */
+async function reloadConfig(): Promise<void> {
+  try {
+    let cfgPath: string | null = null;
+    try {
+      cfgPath = await invoke<string>("config_path");
+    } catch {
+      cfgPath = null;
+    }
+    // 配置若在编辑器标签中改过但未保存，先落盘——否则重新读到的仍是旧值
+    if (cfgPath) {
+      const tab = tabStore.findByPath(cfgPath);
+      if (tab?.dirty) await writeTo(tab, cfgPath);
+    }
+    const cfg = await loadSettings();
+    showMessage("配置已重新加载");
+    showConfigReloaded(cfgPath ?? "（未能获取配置路径）", configSummary(cfg));
+  } catch (e) {
+    window.alert(`重新加载配置失败: ${String(e).split("\n")[0]}`);
+  }
+}
+
+// ---- 格式化（双通道 + 大文件确认 + 选中级）----
 
 /** 超过此行数，格式化前弹确认 */
 const FORMAT_CONFIRM_LINES = 10000;
@@ -670,6 +783,7 @@ let sidebarVisible = true;
 function toggleSidebar(): void {
   sidebarVisible = !sidebarVisible;
   document.querySelector(".main")?.classList.toggle("no-sidebar", !sidebarVisible);
+  persistConfig({ layout: { ...getConfig().layout, sidebarVisible } });
 }
 
 // ---- 标签页导航（上一个/下一个）----
@@ -756,10 +870,7 @@ new MenuBar($("menubar"), [
     items: [
       {
         label: "切换空白字符显示",
-        run: () => {
-          editorHandle.toggleWhitespace();
-          refreshWhitespace();
-        },
+        run: () => toggleWhitespacePersisted(),
       },
       { label: "查找结果面板", run: () => toggleResultsPanel() },
       { separator: true },
@@ -777,9 +888,18 @@ new MenuBar($("menubar"), [
       { label: "上一个书签", shortcut: "Shift+F2", run: () => gotoBookmark(editorHandle.view, -1) },
     ],
   },
+  {
+    id: "settings",
+    label: "设置",
+    items: [
+      { label: "配置说明", run: () => showSettingsHelp() },
+      { label: "打开配置文件（config.json）", run: () => void openConfigFile() },
+      { label: "重新加载配置", run: () => void reloadConfig() },
+    ],
+  },
 ]);
 
-// ---- 命令面板（3.9）----
+// ---- 命令面板 ----
 
 palette.registerAll([
   { id: "file.open", title: "打开文件…", section: "文件", run: () => void openFileDialog() },
@@ -791,10 +911,13 @@ palette.registerAll([
       if (tab) void closeTab(tab.id);
     } },
   { id: "workspace.openDir", title: "打开目录（工作区）", section: "工作区", run: () => void openWorkspaceDir() },
+  { id: "config.openFile", title: "打开配置文件（config.json）", section: "设置", run: () => void openConfigFile() },
+  { id: "config.reload", title: "重新加载配置（config.json）", section: "设置", run: () => void reloadConfig() },
+  { id: "help.settings", title: "配置说明（字段含义与生效方式）", section: "设置", run: () => showSettingsHelp() },
   { id: "edit.format", title: "格式化文档（Shift+Alt+F）", section: "编辑", run: () => void formatCurrent() },
   { id: "edit.formatSelection", title: "格式化选中内容", section: "编辑", run: () => void formatSelectionCurrent() },
   { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", run: () => openColumnEditor(editorHandle.view) },
-  { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", run: () => editorHandle.toggleWhitespace() },
+  { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", run: () => toggleWhitespacePersisted() },
   { id: "search.results", title: "查找结果面板", section: "查找", run: () => toggleResultsPanel() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", run: () => gotoBookmark(editorHandle.view, 1) },
@@ -828,7 +951,7 @@ window.addEventListener(
       e.stopPropagation();
       palette.toggle();
     } else if (
-      // 主绑定 Shift+Alt+F（设计文档 3.5）；备用 Ctrl+Shift+L——
+      // 主绑定 Shift+Alt+F；备用 Ctrl+Shift+L——
       // 中文 Windows 下 Alt+Shift 常被输入法/系统热键吞掉，故提供无 Alt 备用
       (e.altKey && e.shiftKey && !mod && (code === "KeyF" || key === "f")) ||
       (mod && e.shiftKey && !e.altKey && (code === "KeyL" || key === "l"))
@@ -877,6 +1000,12 @@ window.addEventListener(
 // ---- 启动：恢复工作区 ----
 
 async function bootstrap(): Promise<void> {
+  // 1) 载入配置：编辑器扩展与语言映射依赖它（订阅回调会热更新编辑器）
+  await loadSettings();
+  // 2) 布局项：侧栏显隐按 config.layout 恢复
+  sidebarVisible = getConfig().layout.sidebarVisible;
+  document.querySelector(".main")?.classList.toggle("no-sidebar", !sidebarVisible);
+
   let state: WorkspaceState;
   try {
     state = await loadWorkspace();
@@ -889,7 +1018,7 @@ async function bootstrap(): Promise<void> {
     wsName.textContent = state.root.split(/[\\/]/).pop() || state.root;
     wsName.title = state.root;
   }
-  // 恢复打开的文件（设计文档 3.10：当前文件）
+  // 恢复打开的文件（含当前文件）
   for (const path of state.open_files) {
     await openFilePath(path, { silent: true });
   }

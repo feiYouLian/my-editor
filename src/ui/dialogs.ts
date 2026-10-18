@@ -61,7 +61,7 @@ export function promptText(message: string, initial = ""): Promise<string | null
 }
 
 /**
- * 关闭未保存文件的三选确认（VS Code 风格）：
+ * 关闭未保存文件的三选确认：
  * 保存 / 不保存 / 取消。
  */
 export function confirmCloseDirty(name: string): Promise<"save" | "discard" | "cancel"> {

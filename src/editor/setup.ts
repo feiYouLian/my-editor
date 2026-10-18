@@ -27,9 +27,12 @@ import { openColumnEditor } from "./columnEditor";
 import { searchExtensions } from "./search";
 
 /**
- * 编辑器装配（设计文档 3.1）。
- * 适用范围：仅 <20MB 文档；≥20MB 或 .log 走只读虚拟视图（3.3，阶段 5）。
+ * 编辑器装配。
+ * 适用范围：仅 <20MB 文档；≥20MB 或 .log 不进入编辑器。
  * 性能保护：>50000 行或存在 >2000 字符超长行时整篇降级纯文本。
+ *
+ * 配置驱动：所有受配置影响的扩展均置于 Compartment，
+ * 配置载入/变更后调用 handle.applySettings() 热更新，无需重建编辑器。
  */
 
 export interface EditorCallbacks {
@@ -52,6 +55,8 @@ export interface EditorHandle {
   /** 空白字符当前是否显示（状态栏体现用） */
   isWhitespaceOn: () => boolean;
   currentLanguage: () => string | null;
+  /** 应用当前 settings 到编辑器（配置载入/热更新后调用） */
+  applySettings: () => void;
 }
 
 function modifierActive(e: MouseEvent, key: ColumnModifier): boolean {
@@ -75,9 +80,50 @@ function hasLongLine(state: EditorState): boolean {
   return false;
 }
 
+/** 键位表（列编辑器快捷键来自配置，需随 Compartment 热更新） */
+function buildKeymap() {
+  return keymap.of([
+    indentWithTab,
+    ...defaultKeymap,
+    ...historyKeymap,
+    ...bookmarkKeymap,
+    {
+      key: settings.columnEditorKey,
+      preventDefault: true,
+      run: (v) => {
+        openColumnEditor(v);
+        return true;
+      },
+    },
+  ]);
+}
+
+function indentationExtensions() {
+  return [
+    indentUnit.of(" ".repeat(settings.tabSize)),
+    EditorState.tabSize.of(settings.tabSize),
+  ];
+}
+
+function columnSelectionExtensions() {
+  if (!settings.columnSelection) return [];
+  return [
+    rectangularSelection({
+      eventFilter: (e) => modifierActive(e, settings.columnSelectionModifier),
+    }),
+    crosshairCursor({ key: settings.columnSelectionModifier }),
+  ];
+}
+
 export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): EditorHandle {
   const languageCompartment = new Compartment();
   const whitespaceCompartment = new Compartment();
+  const indentCompartment = new Compartment();
+  const keymapCompartment = new Compartment();
+  const bracketCompartment = new Compartment();
+  const indentGuidesCompartment = new Compartment();
+  const occurrenceCompartment = new Compartment();
+  const columnSelectionCompartment = new Compartment();
 
   /** loadDocument 期间抑制 dirty 回调 */
   let loading = false;
@@ -94,29 +140,14 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         highlightActiveLineGutter(),
         drawSelection(),
         history(),
-        indentUnit.of(" ".repeat(settings.tabSize)),
-        EditorState.tabSize.of(settings.tabSize),
-        // 列选择前提：允许多选区（spike：rectangularSelection 已入 @codemirror/view 核心）
+        // 列选择前提：允许多选区（rectangularSelection 来自 @codemirror/view 核心）
         EditorState.allowMultipleSelections.of(true),
-        keymap.of([
-          indentWithTab,
-          ...defaultKeymap,
-          ...historyKeymap,
-          ...bookmarkKeymap,
-          {
-            key: settings.columnEditorKey,
-            preventDefault: true,
-            run: (v) => {
-              openColumnEditor(v);
-              return true;
-            },
-          },
-        ]),
-        settings.bracketMatching ? bracketMatching() : [],
-        settings.indentGuides ? indentationMarkers() : [],
-        rectangularSelection({ eventFilter: (e) => modifierActive(e, settings.columnSelectionModifier) }),
-        crosshairCursor({ key: settings.columnSelectionModifier }),
-        settings.occurrenceHighlight ? occurrences() : [],
+        indentCompartment.of(indentationExtensions()),
+        keymapCompartment.of(buildKeymap()),
+        bracketCompartment.of(settings.bracketMatching ? bracketMatching() : []),
+        indentGuidesCompartment.of(settings.indentGuides ? indentationMarkers() : []),
+        columnSelectionCompartment.of(columnSelectionExtensions()),
+        occurrenceCompartment.of(settings.occurrenceHighlight ? occurrences() : []),
         whitespaceCompartment.of(whitespaceOn ? highlightWhitespace() : []),
         languageCompartment.of([]),
         ...bookmarkGutter,
@@ -154,7 +185,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       languageKey = languageKeyFromPath(path);
       const support = languageKey ? await loadLanguage(languageKey) : null;
 
-      // 性能保护（3.1）：行数超限或存在超长行 → 降级纯文本
+      // 性能保护：行数超限或存在超长行 → 降级纯文本
       const tooManyLines = view.state.doc.lines > settings.highlighterDisabledOver;
       const longLine = hasLongLine(view.state);
       if (tooManyLines || longLine) {
@@ -168,6 +199,26 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     } finally {
       loading = false;
     }
+  }
+
+  /** 配置热更新：将当前 settings 应用到编辑器各 Compartment */
+  function applySettings(): void {
+    whitespaceOn = settings.showWhitespace;
+    view.dispatch({
+      effects: [
+        indentCompartment.reconfigure(indentationExtensions()),
+        keymapCompartment.reconfigure(buildKeymap()),
+        bracketCompartment.reconfigure(settings.bracketMatching ? bracketMatching() : []),
+        indentGuidesCompartment.reconfigure(
+          settings.indentGuides ? indentationMarkers() : [],
+        ),
+        columnSelectionCompartment.reconfigure(columnSelectionExtensions()),
+        occurrenceCompartment.reconfigure(
+          settings.occurrenceHighlight ? occurrences() : [],
+        ),
+        whitespaceCompartment.reconfigure(whitespaceOn ? highlightWhitespace() : []),
+      ],
+    });
   }
 
   return {
@@ -185,5 +236,6 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     },
     isWhitespaceOn: () => whitespaceOn,
     currentLanguage: () => languageKey,
+    applySettings,
   };
 }

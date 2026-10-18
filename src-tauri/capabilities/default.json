@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "主窗口默认权限集（阶段 0：文件对话框）",
+  "description": "主窗口默认权限集（文件对话框）",
   "windows": ["main"],
   "permissions": [
     "core:default",

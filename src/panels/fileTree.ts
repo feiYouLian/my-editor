@@ -3,7 +3,7 @@ import { promptText } from "../ui/dialogs";
 import type { WorkspaceState } from "../services/workspace";
 
 /**
- * 文件树（设计文档 3.10）：
+ * 文件树：
  * 目录懒加载展开、单击打开文件、右键菜单（新建/重命名/删除/定位/刷新）。
  * 展开状态经 workspace 服务防抖持久化。
  */

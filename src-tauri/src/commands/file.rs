@@ -1,7 +1,6 @@
-//! 文件读写命令（阶段 0）
-//! - read_file：BOM / 换行符探测 + UTF-8 宽松解码
-//!   （完整编码检测链 chardetng + 三段式见设计文档 3.6，阶段 7 实现）
-//! - save_file：临时文件 → fsync → 原子 rename（设计文档 4.2），保留换行符与 BOM
+//! 文件读写命令
+//! - read_file：BOM / 换行符探测 + UTF-8 宽松解码（暂不含完整编码检测链）
+//! - save_file：临时文件 → fsync → 原子 rename，保留换行符与 BOM
 
 use serde::Serialize;
 use std::fs;
@@ -27,7 +26,7 @@ pub struct SaveResult {
     pub size: u64,
 }
 
-/// BOM 探测（阶段 0 简化版：UTF-8 / UTF-16 LE / UTF-16 BE）
+/// BOM 探测（UTF-8 / UTF-16 LE / UTF-16 BE）
 fn detect_bom(bytes: &[u8]) -> (&'static str, bool) {
     if bytes.starts_with(&UTF8_BOM) {
         ("UTF-8", true)
@@ -85,12 +84,11 @@ fn detect_newline(text: &str) -> &'static str {
 
 /// 读取文件：探测 BOM 与换行符，按 UTF-8 宽松解码
 /// 二进制文件（前 8KB 出现 NUL 字节且非 UTF-16）拒绝读取，提示不支持
-#[tauri::command]
-pub fn read_file(path: String) -> Result<FileContent, String> {
-    let p = PathBuf::from(&path);
+fn read_file_inner(path: &str) -> Result<FileContent, String> {
+    let p = PathBuf::from(path);
     let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
     let (encoding, has_bom) = detect_bom(&bytes);
-    // 二进制检测（设计文档 4.1）：NUL 字节启发式；UTF-16 的 NUL 属正常，豁免
+    // 二进制检测：NUL 字节启发式；UTF-16 的 NUL 属正常，豁免
     if !has_bom && bytes[..bytes.len().min(8192)].contains(&0) {
         return Err("二进制文件暂不支持查看".to_string());
     }
@@ -102,7 +100,7 @@ pub fn read_file(path: String) -> Result<FileContent, String> {
         .unwrap_or_default();
 
     Ok(FileContent {
-        path,
+        path: path.to_string(),
         name,
         size: bytes.len() as u64,
         content,
@@ -110,6 +108,52 @@ pub fn read_file(path: String) -> Result<FileContent, String> {
         newline: newline.to_string(),
         has_bom,
     })
+}
+
+/// 大文件分流提示：体积 ≥ 阈值且未强制打开时不进编辑器，
+/// 仅返回提示，前端可确认后强制打开
+#[derive(Serialize)]
+pub struct LargeFileNotice {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub reason: String,
+}
+
+/// 打开文本文件的结果：正常进入编辑器 / 大文件只读提示
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "data", rename_all = "lowercase")]
+pub enum OpenTextResult {
+    Text(Box<FileContent>),
+    Large(Box<LargeFileNotice>),
+}
+
+/// 打开文本文件（带大文件分流守卫）
+/// force 为 true 时跳过体积检查（用户在确认风险后选择强制打开）。
+#[tauri::command]
+pub fn open_text_file(
+    path: String,
+    large_file_threshold: u64,
+    force: bool,
+) -> Result<OpenTextResult, String> {
+    let p = PathBuf::from(&path);
+    let size = fs::metadata(&p).map_err(|e| format!("读取失败: {e}"))?.len();
+    let name = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if !force && size >= large_file_threshold {
+        let reason = format!("体积超过 {} MB 阈值", large_file_threshold / 1024 / 1024);
+        return Ok(OpenTextResult::Large(Box::new(LargeFileNotice {
+            path,
+            name,
+            size,
+            reason,
+        })));
+    }
+
+    Ok(OpenTextResult::Text(Box::new(read_file_inner(&path)?)))
 }
 
 /// 图片文件读取：返回 data URL（前端 <img> 直接展示）
@@ -163,7 +207,7 @@ pub fn read_image_file(path: String) -> Result<ImageFile, String> {
 }
 
 /// 原子写入：同目录临时文件 → fsync → rename
-/// rename 失败重试 1 次（应对杀毒软件等短暂占用，设计文档 4.2）
+/// rename 失败重试 1 次（应对杀毒软件等短暂占用）
 fn atomic_write(target: &PathBuf, bytes: &[u8]) -> Result<u64, String> {
     let dir = target
         .parent()
