@@ -18,6 +18,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+encoding_rs = "0.8"
+chardetng = "0.1"
 
 # 设计文档 8 风险表：strip + LTO + 体积优化，目标安装包 <15MB
 [profile.release]

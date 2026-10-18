@@ -1,11 +1,13 @@
 //! 文件读写命令
-//! - read_file：BOM / 换行符探测 + UTF-8 宽松解码（暂不含完整编码检测链）
+//! - read_file：三段式编码检测（BOM → UTF-8 → chardetng）+ 换行符探测
 //! - save_file：临时文件 → fsync → 原子 rename，保留换行符与 BOM
 
 use serde::Serialize;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::commands::encoding;
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -18,6 +20,10 @@ pub struct FileContent {
     pub encoding: String,
     pub newline: String,
     pub has_bom: bool,
+    /// 编码置信度："bom" | "high" | "low" | "user"
+    pub encoding_confidence: String,
+    /// 候选编码（状态栏「重新打开为」菜单）
+    pub encoding_candidates: Vec<String>,
     /// 是否只读：命中大文件阈值或日志扩展名时为 true
     pub readonly: bool,
     /// 只读原因（供前端提示；非只读时为空串）
@@ -30,47 +36,11 @@ pub struct SaveResult {
     pub size: u64,
 }
 
-/// BOM 探测（UTF-8 / UTF-16 LE / UTF-16 BE）
-fn detect_bom(bytes: &[u8]) -> (&'static str, bool) {
-    if bytes.starts_with(&UTF8_BOM) {
-        ("UTF-8", true)
-    } else if bytes.starts_with(&[0xFF, 0xFE]) {
-        ("UTF-16 LE", true)
-    } else if bytes.starts_with(&[0xFE, 0xFF]) {
-        ("UTF-16 BE", true)
-    } else {
-        ("UTF-8", false)
-    }
-}
-
-/// 解码为 String：UTF-16 按端序解码，其余按 UTF-8 宽松解码
-fn decode_text(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        return decode_utf16(&bytes[2..], true);
-    }
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        return decode_utf16(&bytes[2..], false);
-    }
-    let body = if bytes.starts_with(&UTF8_BOM) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(body).to_string()
-}
-
-fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
-    let mut units: Vec<u16> = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
-        let unit = if little_endian {
-            u16::from_le_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_be_bytes([pair[0], pair[1]])
-        };
-        units.push(unit);
-    }
-    // 奇数长度文件的尾字节忽略
-    String::from_utf16_lossy(&units)
+/// 是否存在 BOM（UTF-8 / UTF-16 LE / UTF-16 BE）
+fn has_bom(bytes: &[u8]) -> bool {
+    bytes.starts_with(&UTF8_BOM)
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF])
 }
 
 /// 主导换行符判定：分别统计 CRLF / LF / CR，取占比最高者
@@ -90,17 +60,29 @@ fn detect_newline(text: &str) -> &'static str {
     }
 }
 
-/// 读取文件：探测 BOM 与换行符，按 UTF-8 宽松解码
-/// 二进制文件（前 8KB 出现 NUL 字节且非 UTF-16）拒绝读取，提示不支持
-fn read_file_inner(path: &str) -> Result<FileContent, String> {
+/// 读取文件：编码检测（或按指定编码）+ 换行符探测
+/// 二进制文件（前 8KB 出现 NUL 字节且无 BOM）拒绝读取，提示不支持
+fn read_with_encoding(path: &str, forced: Option<&str>) -> Result<FileContent, String> {
     let p = PathBuf::from(path);
     let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
-    let (encoding, has_bom) = detect_bom(&bytes);
-    // 二进制检测：NUL 字节启发式；UTF-16 的 NUL 属正常，豁免
-    if !has_bom && bytes[..bytes.len().min(8192)].contains(&0) {
+    let bom = has_bom(&bytes);
+    // 二进制检测：NUL 字节启发式；带 BOM 的 UTF-16 其 NUL 属正常，豁免
+    if !bom && bytes[..bytes.len().min(8192)].contains(&0) {
         return Err("二进制文件暂不支持查看".to_string());
     }
-    let content = decode_text(&bytes);
+
+    let (encoding, confidence, candidates) = match forced {
+        Some(name) => (
+            name.to_string(),
+            "user".to_string(),
+            encoding::CANDIDATES.iter().map(|s| (*s).to_string()).collect(),
+        ),
+        None => {
+            let g = encoding::guess(&bytes);
+            (g.encoding, g.confidence, g.candidates)
+        }
+    };
+    let content = encoding::decode(&bytes, &encoding)?;
     let newline = detect_newline(&content);
     let name = p
         .file_name()
@@ -112,39 +94,38 @@ fn read_file_inner(path: &str) -> Result<FileContent, String> {
         name,
         size: bytes.len() as u64,
         content,
-        encoding: encoding.to_string(),
+        encoding,
+        encoding_confidence: confidence,
+        encoding_candidates: candidates,
         newline: newline.to_string(),
-        has_bom,
+        has_bom: bom,
         readonly: false,
         readonly_reason: String::new(),
     })
 }
 
-/// 打开文本文件（大文件 / .log 只读守卫）
-/// 命中「体积 ≥ large_file_threshold」或「扩展名属 log_extensions」时，
-/// 仍读入内容但标记为只读，由前端以只读方式载入并禁用编辑入口。
-#[tauri::command]
-pub fn open_text_file(
-    path: String,
+/// 大文件 / .log 只读守卫：命中时标记只读，由前端禁用编辑入口
+fn apply_readonly_guard(
+    content: &mut FileContent,
+    path: &Path,
     large_file_threshold: u64,
-    log_extensions: Vec<String>,
-) -> Result<FileContent, String> {
-    let p = PathBuf::from(&path);
-    let size = fs::metadata(&p).map_err(|e| format!("读取失败: {e}"))?.len();
-
+    log_extensions: &[String],
+) {
+    let Ok(meta) = fs::metadata(path) else { return };
     // 扩展名归一化为「.xxx」小写后比对，兼容配置里带/不带点号的写法
-    let ext = p
+    let ext = path
         .extension()
         .map(|s| format!(".{}", s.to_string_lossy().to_lowercase()))
         .unwrap_or_default();
     let is_log = log_extensions.iter().any(|e| {
-        let e = e.to_ascii_lowercase();
-        let normalized = if e.starts_with('.') { e } else { format!(".{e}") };
+        let normalized = {
+            let lower = e.to_ascii_lowercase();
+            if lower.starts_with('.') { lower } else { format!(".{lower}") }
+        };
         !normalized.is_empty() && normalized == ext
     });
 
-    let mut content = read_file_inner(&path)?;
-    if size >= large_file_threshold {
+    if meta.len() >= large_file_threshold {
         content.readonly = true;
         content.readonly_reason =
             format!("体积超过 {} MB 阈值", large_file_threshold / 1024 / 1024);
@@ -152,6 +133,40 @@ pub fn open_text_file(
         content.readonly = true;
         content.readonly_reason = "日志文件（.log）默认只读".to_string();
     }
+}
+
+/// 打开文本文件：自动检测编码 + 大文件 / .log 只读守卫
+#[tauri::command]
+pub fn open_text_file(
+    path: String,
+    large_file_threshold: u64,
+    log_extensions: Vec<String>,
+) -> Result<FileContent, String> {
+    let mut content = read_with_encoding(&path, None)?;
+    apply_readonly_guard(
+        &mut content,
+        Path::new(&path),
+        large_file_threshold,
+        &log_extensions,
+    );
+    Ok(content)
+}
+
+/// 「重新打开为」：按指定编码重新解读磁盘字节（不写盘），并重算只读守卫
+#[tauri::command]
+pub fn reopen_with_encoding(
+    path: String,
+    encoding: String,
+    large_file_threshold: u64,
+    log_extensions: Vec<String>,
+) -> Result<FileContent, String> {
+    let mut content = read_with_encoding(&path, Some(&encoding))?;
+    apply_readonly_guard(
+        &mut content,
+        Path::new(&path),
+        large_file_threshold,
+        &log_extensions,
+    );
     Ok(content)
 }
 
@@ -237,13 +252,14 @@ fn atomic_write(target: &PathBuf, bytes: &[u8]) -> Result<u64, String> {
     ))
 }
 
-/// 保存文件：按目标换行符统一改写，保留 BOM，走原子替换
+/// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换
 #[tauri::command]
 pub fn save_file(
     path: String,
     content: String,
     newline: String,
     has_bom: bool,
+    encoding: String,
 ) -> Result<SaveResult, String> {
     let target = PathBuf::from(&path);
 
@@ -255,14 +271,7 @@ pub fn save_file(
         _ => text, // LF / NONE
     };
 
-    let mut bytes = text.into_bytes();
-    if has_bom {
-        let mut with_bom = Vec::with_capacity(bytes.len() + UTF8_BOM.len());
-        with_bom.extend_from_slice(&UTF8_BOM);
-        with_bom.append(&mut bytes);
-        bytes = with_bom;
-    }
-
+    let bytes = encoding::encode(&text, &encoding, has_bom)?;
     let size = atomic_write(&target, &bytes)?;
     Ok(SaveResult { path, size })
 }

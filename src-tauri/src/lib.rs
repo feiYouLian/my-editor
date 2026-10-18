@@ -7,6 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
+            commands::file::reopen_with_encoding,
             commands::file::read_image_file,
             commands::file::save_file,
             commands::fs::list_dir,

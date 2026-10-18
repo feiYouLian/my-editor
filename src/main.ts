@@ -35,6 +35,7 @@ import {
 import { tabStore, type Tab } from "./store/tabs";
 import { confirmCloseDirty } from "./ui/dialogs";
 import { showConfigReloaded, showSettingsHelp } from "./ui/settingsHelp";
+import { placeMenu } from "./ui/menu";
 import {
   loadWorkspace,
   saveWorkspaceDebounced,
@@ -108,29 +109,153 @@ function toggleWhitespacePersisted(): void {
 
 statusWhitespace.addEventListener("click", () => toggleWhitespacePersisted());
 
-/** 状态栏换行符：点击循环切换 LF → CRLF → CR 并保存 */
-const NEWLINE_CYCLE = ["LF", "CRLF", "CR"];
-async function cycleNewline(): Promise<void> {
-  if (blockIfReadonly()) return;
+// ---- 状态栏换行符菜单（与编码菜单一致的「弹出列表 → 选择」交互）----
+
+const NEWLINE_OPTIONS: { value: string; label: string }[] = [
+  { value: "LF", label: "LF（Unix / macOS）" },
+  { value: "CRLF", label: "CRLF（Windows）" },
+  { value: "CR", label: "CR（老式 Mac）" },
+];
+
+let newlineMenu: HTMLElement | null = null;
+
+function closeNewlineMenu(): void {
+  newlineMenu?.remove();
+  newlineMenu = null;
+}
+
+function showNewlineMenu(x: number, y: number): void {
   const tab = activeTab();
   if (!tab || tab.kind !== "text" || !tab.path) {
     showMessage("当前文件不支持切换换行符");
     return;
   }
-  const next =
-    NEWLINE_CYCLE[(NEWLINE_CYCLE.indexOf(tab.newline) + 1) % NEWLINE_CYCLE.length];
-  tabStore.setNewline(tab.id, next);
-  try {
-    await writeTo(tab, tab.path);
-    refreshStatus();
-    showMessage(`换行符已切换为 ${next} 并保存`);
-  } catch (e) {
-    showMessage(`切换失败: ${String(e).split("\n")[0]}`);
+  closeNewlineMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+
+  const header = document.createElement("div");
+  header.className = "context-menu-item";
+  header.style.opacity = "0.6";
+  header.style.cursor = "default";
+  header.textContent = `当前换行符：${tab.newline}`;
+  menu.append(header);
+
+  for (const option of NEWLINE_OPTIONS) {
+    const el = document.createElement("div");
+    el.className = "context-menu-item";
+    el.textContent = option.value === tab.newline ? `${option.label} ✓` : option.label;
+    el.addEventListener("click", () => {
+      closeNewlineMenu();
+      applyNewline(tab.id, option.value);
+    });
+    menu.append(el);
   }
+  document.body.append(menu);
+  placeMenu(menu, x, y);
+  newlineMenu = menu;
 }
+
+/** 应用换行符：仅改内存状态并标脏，由用户手动保存落盘 */
+function applyNewline(tabId: string, newline: string): void {
+  tabStore.setNewline(tabId, newline);
+  refreshStatus();
+  showMessage(`换行符已切换为 ${newline}（未保存，Ctrl+S 保存）`);
+}
+
 statusNewline.title = "点击切换换行符（LF / CRLF / CR）";
 statusNewline.style.cursor = "pointer";
-statusNewline.addEventListener("click", () => void cycleNewline());
+statusNewline.addEventListener("click", (e) => {
+  e.stopPropagation();
+  showNewlineMenu(e.clientX, e.clientY);
+});
+document.addEventListener("click", () => closeNewlineMenu());
+
+// ---- 状态栏编码菜单（「重新打开为」，只改解读方式、不写盘）----
+
+const FALLBACK_ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
+let encodingMenu: HTMLElement | null = null;
+
+function closeEncodingMenu(): void {
+  encodingMenu?.remove();
+  encodingMenu = null;
+}
+
+function showEncodingMenu(x: number, y: number): void {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    showMessage("当前文件不支持切换编码");
+    return;
+  }
+  closeEncodingMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+
+  const header = document.createElement("div");
+  header.className = "context-menu-item";
+  header.style.opacity = "0.6";
+  header.style.cursor = "default";
+  header.textContent = `当前编码：${tab.encoding}`;
+  menu.append(header);
+
+  const candidates = tab.encodingCandidates.length
+    ? tab.encodingCandidates
+    : FALLBACK_ENCODINGS;
+  for (const enc of candidates) {
+    const el = document.createElement("div");
+    el.className = "context-menu-item";
+    el.textContent = enc === tab.encoding ? `${enc} ✓` : enc;
+    el.addEventListener("click", () => {
+      closeEncodingMenu();
+      void reopenWithEncoding(tab.id, enc);
+    });
+    menu.append(el);
+  }
+  document.body.append(menu);
+  placeMenu(menu, x, y);
+  encodingMenu = menu;
+}
+
+/** 「重新打开为」：按新编码重新解读磁盘字节（不写盘） */
+async function reopenWithEncoding(tabId: string, encoding: string): Promise<void> {
+  const tab = tabStore.findById(tabId);
+  if (!tab || !tab.path) return;
+  if (
+    tab.dirty &&
+    !window.confirm(`「${tab.name}」有未保存修改，重新打开将丢弃这些修改。是否继续？`)
+  ) {
+    return;
+  }
+  try {
+    const data = await invoke<FileContent>("reopen_with_encoding", {
+      path: tab.path,
+      encoding,
+      largeFileThreshold: settings.largeFileThreshold,
+      logExtensions: getConfig().largeFile.logExtensions,
+    });
+    tabStore.reopenWith(tabId, data);
+    if (tabStore.active()?.id === tabId) {
+      await loadActiveTab();
+    } else {
+      refreshStatus();
+    }
+    showMessage(
+      tabStore.findById(tabId)?.dirty
+        ? `编码已切换为 ${data.encoding}（未保存，Ctrl+S 转码保存）`
+        : `已重新打开为 ${data.encoding}`,
+    );
+  } catch (e) {
+    showMessage(`重新打开失败: ${String(e).split("\n")[0]}`);
+  }
+}
+
+statusEncoding.title = "点击切换编码（重新打开为…）";
+statusEncoding.style.cursor = "pointer";
+statusEncoding.addEventListener("click", (e) => {
+  e.stopPropagation();
+  showEncodingMenu(e.clientX, e.clientY);
+});
+document.addEventListener("click", () => closeEncodingMenu());
 
 // ---- 插入时间戳 / UUID ----
 
@@ -384,8 +509,6 @@ function showTabMenu(x: number, y: number, tabId: string): void {
   closeTabMenu();
   const menu = document.createElement("div");
   menu.className = "context-menu";
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
 
   const items: { label: string; run: () => void }[] = [
     { label: "关闭当前", run: () => void closeTab(tabId) },
@@ -405,6 +528,7 @@ function showTabMenu(x: number, y: number, tabId: string): void {
     menu.append(el);
   }
   document.body.append(menu);
+  placeMenu(menu, x, y);
   tabMenu = menu;
 }
 
@@ -424,15 +548,12 @@ function persistWorkspaceWithExpanded(expanded: string[]): void {
 
 // ---- 编辑器初始化（CM6 仅承载 <20MB 文档）----
 editorHandle = createEditor($("editor"), {
-  onDocChange: (dirty) => {
+  onDocChange: () => {
     const tab = activeTab();
-    if (tab && dirty) {
-      tabStore.setContent(tab.id, editorHandle.getContent());
-      const t = tabStore.findById(tab.id);
-      if (t) previewHost.scheduleRender(toPreviewTab(t));
-    } else {
-      refreshStatus();
-    }
+    if (!tab) return;
+    tabStore.setContent(tab.id, editorHandle.getContent());
+    const t = tabStore.findById(tab.id);
+    if (t) previewHost.scheduleRender(toPreviewTab(t));
   },
   onCursorChange: ({ line, col, totalLines }) => {
     statusCursor.textContent = `行 ${line}，列 ${col}`;
@@ -556,8 +677,6 @@ function showPreviewMenu(x: number, y: number, tab: Tab): void {
   closePreviewMenu();
   const menu = document.createElement("div");
   menu.className = "context-menu";
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
 
   const items: { label: string; run: () => void }[] = [
     { label: "导出 HTML…", run: () => void exportPreview(tab, "html") },
@@ -575,6 +694,7 @@ function showPreviewMenu(x: number, y: number, tab: Tab): void {
     menu.append(el);
   }
   document.body.append(menu);
+  placeMenu(menu, x, y);
   previewMenu = menu;
 }
 
@@ -606,6 +726,7 @@ async function exportPreview(
       content,
       newline: "LF",
       hasBom: false,
+      encoding: "UTF-8",
     });
     showMessage(`已导出: ${result.path}`);
   } catch (e) {
@@ -672,8 +793,11 @@ async function openFilePath(
       logExtensions: getConfig().largeFile.logExtensions,
     });
     const tab = tabStore.open(data);
-    if (tab.readonly && !opts.silent) {
+    if (opts.silent) return;
+    if (tab.readonly) {
       showMessage(`${tab.readonlyReason}，已以只读方式打开`);
+    } else if (data.encoding_confidence === "low") {
+      showMessage(`已按 ${data.encoding} 解码（置信度低，可点击状态栏编码切换）`);
     }
   } catch (e) {
     if (!opts.silent) window.alert(`打开失败: ${e}`);
@@ -720,6 +844,7 @@ async function writeTo(tab: Tab, path: string): Promise<void> {
     content: tab.content,
     newline: tab.newline,
     hasBom: tab.has_bom,
+    encoding: tab.encoding,
   });
   if (path !== tab.path) {
     tabStore.setPath(tab.id, result.path, result.path.split(/[\\/]/).pop() ?? result.path);
@@ -740,6 +865,8 @@ function newUntitled(): void {
     size: 0,
     content: "",
     encoding: "UTF-8",
+    encoding_confidence: "high",
+    encoding_candidates: [],
     newline: "NONE",
     has_bom: false,
     readonly: false,

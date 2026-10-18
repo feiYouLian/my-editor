@@ -16,10 +16,20 @@ export interface Tab {
   /** 图片 tab 的 data URL（kind=image 时有效） */
   dataUrl?: string;
   content: string;
+  /** 最近一次打开/保存时的内容基线：用于判断是否真的与磁盘一致（撤销回原状即变干净） */
+  savedContent: string;
   size: number;
   dirty: boolean;
   encoding: string;
+  /** 最近一次打开/保存时的编码基线 */
+  savedEncoding: string;
+  /** 编码置信度："bom" | "high" | "low" | "user" */
+  encodingConfidence: string;
+  /** 候选编码（状态栏「重新打开为」菜单） */
+  encodingCandidates: string[];
   newline: string;
+  /** 最近一次打开/保存时的换行符基线 */
+  savedNewline: string;
   has_bom: boolean;
   /** 只读：大文件 / 日志文件命中只读守卫，编辑器禁用编辑入口 */
   readonly: boolean;
@@ -65,11 +75,16 @@ class TabStore {
       name: content.name,
       kind: "text",
       content: content.content,
+      savedContent: content.content,
       size: content.size,
       dirty: false,
       encoding: content.encoding,
+      savedEncoding: content.encoding,
       newline: content.newline,
+      savedNewline: content.newline,
       has_bom: content.has_bom,
+      encodingConfidence: content.encoding_confidence,
+      encodingCandidates: content.encoding_candidates,
       readonly: content.readonly,
       readonlyReason: content.readonly_reason,
     };
@@ -94,10 +109,15 @@ class TabStore {
       kind: "image",
       dataUrl,
       content: "",
+      savedContent: "",
       size,
       dirty: false,
       encoding: "binary",
+      savedEncoding: "binary",
+      encodingConfidence: "",
+      encodingCandidates: [],
       newline: "NONE",
+      savedNewline: "NONE",
       has_bom: false,
       readonly: true,
       readonlyReason: "图片查看器",
@@ -167,26 +187,58 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) {
       tab.content = content;
-      tab.dirty = true;
+      this.refreshDirty(tab);
       this.emit();
     }
+  }
+
+  /** 依据内容基线与元数据基线重算脏标记（撤销回基线即变干净） */
+  private refreshDirty(tab: Tab): void {
+    tab.dirty =
+      tab.content !== tab.savedContent ||
+      tab.encoding !== tab.savedEncoding ||
+      tab.newline !== tab.savedNewline;
   }
 
   markSaved(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) {
+      tab.savedContent = tab.content;
+      tab.savedEncoding = tab.encoding;
+      tab.savedNewline = tab.newline;
       tab.dirty = false;
       this.emit();
     }
   }
 
-  /** 更新换行符（状态栏切换用） */
+  /** 更新换行符（状态栏切换用）：属内容修改，标脏后由用户手动保存 */
   setNewline(id: string, newline: string): void {
     const tab = this.tabs.find((t) => t.id === id);
-    if (tab) {
+    if (tab && tab.newline !== newline) {
       tab.newline = newline;
+      this.refreshDirty(tab);
       this.emit();
     }
+  }
+
+  /** 「重新打开为」：按新编码重载内容（不写盘）；编码变化时标脏，待用户手动保存转码 */
+  reopenWith(id: string, content: FileContent): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.content = content.content;
+    tab.savedContent = content.content; // 磁盘内容成为内容基线
+    tab.size = content.size;
+    tab.encoding = content.encoding;
+    tab.encodingConfidence = content.encoding_confidence;
+    tab.encodingCandidates = content.encoding_candidates;
+    tab.newline = content.newline;
+    tab.savedNewline = content.newline;
+    tab.has_bom = content.has_bom;
+    tab.readonly = content.readonly;
+    tab.readonlyReason = content.readonly_reason;
+    // savedEncoding 保持不变：与磁盘编码是否一致由 refreshDirty 判定
+    this.refreshDirty(tab);
+    this.emit();
   }
 
   /** 保存成功后刷新路径（另存为） */

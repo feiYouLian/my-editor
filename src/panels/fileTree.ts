@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { promptText } from "../ui/dialogs";
+import { placeMenu } from "../ui/menu";
 import type { WorkspaceState } from "../services/workspace";
 
 /**
@@ -249,8 +250,6 @@ export class FileTree {
     this.closeContextMenu();
     const menu = document.createElement("div");
     menu.className = "context-menu";
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
 
     const items: { label: string; action: () => void }[] = [];
     if (entry.is_dir) {
@@ -280,6 +279,7 @@ export class FileTree {
       menu.append(el);
     }
     document.body.append(menu);
+    placeMenu(menu, x, y);
     this.menu = menu;
   }
 

@@ -45,8 +45,8 @@ import { searchExtensions } from "./search";
  */
 
 export interface EditorCallbacks {
-  /** 文档内容变化（用户输入） */
-  onDocChange?: (dirty: boolean) => void;
+  /** 文档内容变化（用户输入或撤销/重做） */
+  onDocChange?: () => void;
   /** 光标位置变化 */
   onCursorChange?: (info: { line: number; col: number; totalLines: number }) => void;
   /** 高亮因性能保护被禁用时通知一次 */
@@ -58,8 +58,6 @@ export interface EditorHandle {
   /** 加载文档内容并切换语言；重置 dirty 状态。readonly 为 true 时禁用编辑 */
   loadDocument: (path: string, content: string, readonly?: boolean) => Promise<void>;
   getContent: () => string;
-  /** 外部标记/清除未保存状态（如保存成功后调用 setDirty(false)） */
-  setDirty: (dirty: boolean) => void;
   toggleWhitespace: () => void;
   /** 空白字符当前是否显示（状态栏体现用） */
   isWhitespaceOn: () => boolean;
@@ -203,7 +201,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         placeholder("打开文件开始编辑（Ctrl+S 保存）"),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !loading) {
-            callbacks.onDocChange?.(true);
+            callbacks.onDocChange?.();
           }
           if (update.selectionSet || update.docChanged) {
             const head = update.state.selection.main.head;
@@ -280,9 +278,6 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     view,
     loadDocument,
     getContent: () => view.state.doc.toString(),
-    setDirty: (value: boolean) => {
-      callbacks.onDocChange?.(value);
-    },
     toggleWhitespace: () => {
       whitespaceOn = !whitespaceOn;
       view.dispatch({
