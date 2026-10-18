@@ -222,7 +222,7 @@ pub fn read_image_file(path: String) -> Result<ImageFile, String> {
 
 /// 原子写入：同目录临时文件 → fsync → rename
 /// rename 失败重试 1 次（应对杀毒软件等短暂占用）
-fn atomic_write(target: &PathBuf, bytes: &[u8]) -> Result<u64, String> {
+pub(crate) fn atomic_write(target: &Path, bytes: &[u8]) -> Result<u64, String> {
     let dir = target
         .parent()
         .ok_or_else(|| "无法确定目标目录".to_string())?;

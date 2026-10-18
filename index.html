@@ -46,8 +46,17 @@
             <button id="btn-open-dir" type="button" class="icon-btn" title="打开目录">📁</button>
           </div>
           <div id="file-tree" class="file-tree"></div>
+          <!-- 文件树下方的 tab 区：搜索视图 -->
+          <div class="sidebar-panel">
+            <div class="sidebar-panel-tabs">
+              <button type="button" class="sp-tab" id="sp-tab-search" data-view="search" title="搜索（Ctrl+Shift+F）">
+                <span class="sp-tab-icon">🔍</span><span>搜索</span>
+              </button>
+            </div>
+            <div id="sidebar-search" class="global-search hidden"></div>
+          </div>
         </aside>
-
+        <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整侧栏宽度（双击复位）"></div>
         <section class="editor-column">
           <div class="tabsbar">
             <div id="tabs" class="tabs-tabs"></div>

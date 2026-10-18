@@ -208,7 +208,11 @@ body {
 
 /* ---------- 侧栏隐藏态（Ctrl+B / 标题栏开关） ---------- */
 .main.no-sidebar {
-  grid-template-columns: 0 1fr;
+  grid-template-columns: 0 0 1fr;
+}
+
+.main.no-sidebar .sidebar-resizer {
+  visibility: hidden;
 }
 
 .main.no-sidebar .sidebar {
@@ -553,7 +557,7 @@ button:disabled:hover {
    与 CM6 的 height:100% 形成循环尺寸依赖，导致状态栏被挤出视口 */
 .main {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: var(--sidebar-width, 240px) 5px 1fr;
   grid-template-rows: 100%;
   min-height: 0;
   overflow: hidden;
@@ -565,6 +569,17 @@ button:disabled:hover {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* 侧栏宽度拖拽条（hover / 拖动时高亮） */
+.sidebar-resizer {
+  cursor: col-resize;
+  background: transparent;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
 }
 
 /* ---------- 滚动条（细、圆角、悬停加亮） ---------- */
@@ -1102,6 +1117,262 @@ button.danger:hover {
 
 .status-message.hidden {
   visibility: hidden;
+}
+
+/* ---------- 侧栏下方 tab 区（搜索视图） ---------- */
+.sidebar-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* 打开时占侧栏下半部分，文件树自动让出高度 */
+.sidebar-panel.open {
+  height: 58%;
+  min-height: 160px;
+}
+
+.sidebar-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+.sp-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.sp-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.global-search {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.global-search.hidden {
+  display: none;
+}
+
+/* 面板头部：标题 + 动作按钮 */
+.gs-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  flex-shrink: 0;
+}
+
+.gs-title {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.gs-head-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gs-head-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+.gs-head-btn.hidden {
+  display: none;
+}
+
+/* 输入行：输入框占满整行，开关紧贴右侧 */
+.gs-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 6px;
+  flex-shrink: 0;
+}
+
+.gs-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-elevated);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.gs-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gs-inline {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.gs-toggle {
+  padding: 2px 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.gs-toggle.active {
+  background: rgba(80, 160, 255, 0.25);
+  border-color: rgba(80, 160, 255, 0.55);
+  color: inherit;
+}
+
+.gs-actions button {
+  background: var(--bg-elevated);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.gs-status {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.gs-results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 6px;
+}
+
+.gs-empty {
+  padding: 12px;
+  color: var(--text-secondary);
+}
+
+.gs-file-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  color: var(--accent);
+  background: var(--bg-panel);
+  cursor: pointer;
+}
+
+.gs-chevron {
+  width: 10px;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.gs-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gs-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.gs-hit {
+  display: flex;
+  gap: 6px;
+  padding: 2px 8px 2px 24px;
+  cursor: pointer;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.gs-hit:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.gs-line {
+  min-width: 34px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.gs-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 命中词高亮 */
+.gs-match {
+  background: rgba(255, 200, 0, 0.3);
+  border-radius: 2px;
+}
+
+/* 替换预览：被替换文本下划线，替换内容高亮 */
+.gs-preview .gs-match {
+  background: transparent;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-decoration-color: var(--danger);
+}
+
+.gs-ins {
+  background: rgba(80, 200, 120, 0.3);
+  border-radius: 2px;
+}
+
+.gs-actions {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.gs-actions.hidden {
+  display: none;
 }
 
 .hidden {

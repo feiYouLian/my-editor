@@ -62,6 +62,8 @@ export interface EditorHandle {
   /** 空白字符当前是否显示（状态栏体现用） */
   isWhitespaceOn: () => boolean;
   currentLanguage: () => string | null;
+  /** 跳转到指定行（1 基）并聚焦编辑器 */
+  gotoLine: (line: number) => void;
   /** 应用当前 settings 到编辑器（配置载入/热更新后调用） */
   applySettings: () => void;
 }
@@ -286,6 +288,12 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     },
     isWhitespaceOn: () => whitespaceOn,
     currentLanguage: () => languageKey,
+    gotoLine: (line: number) => {
+      const n = Math.min(Math.max(1, line), view.state.doc.lines);
+      const from = view.state.doc.line(n).from;
+      view.dispatch({ selection: { anchor: from }, scrollIntoView: true });
+      view.focus();
+    },
     applySettings,
   };
 }

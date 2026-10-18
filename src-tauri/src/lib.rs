@@ -5,6 +5,7 @@ mod commands;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(commands::search::SearchState::default())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
             commands::file::reopen_with_encoding,
@@ -21,6 +22,11 @@ pub fn run() {
             commands::config::load_config,
             commands::config::save_config,
             commands::config::config_path,
+            commands::search::search_in_files,
+            commands::search::cancel_search,
+            commands::search::preview_replace,
+            commands::search::replace_in_files,
+            commands::search::restore_backups,
             commands::format::run_cli_formatter,
         ])
         .run(tauri::generate_context!())

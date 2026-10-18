@@ -23,6 +23,7 @@ import { openSearchPanel } from "@codemirror/search";
 import { FileTree } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
 import { MenuBar } from "./panels/menubar";
+import { GlobalSearchPanel } from "./panels/globalSearch";
 import {
   PreviewHost,
   buildStandaloneHtml,
@@ -621,6 +622,47 @@ editorHandle.view.scrollDOM.addEventListener("scroll", () =>
   previewHost.syncFromEditor(editorHandle.view),
 );
 
+// ---- 侧栏搜索视图（文件树下方的 tab 区）----
+
+const sidebarPanel = document.querySelector<HTMLElement>(".sidebar-panel")!;
+const searchTab = $<HTMLButtonElement>("sp-tab-search");
+
+const globalSearch = new GlobalSearchPanel($("sidebar-search"), {
+  getRoot: () => workspaceRoot,
+  onOpenHit: (path, line) => void openHit(path, line),
+  onMessage: showMessage,
+});
+globalSearch.mount();
+
+/** 打开 / 收起侧栏下方的搜索面板 */
+function setSearchPanelOpen(open: boolean): void {
+  sidebarPanel.classList.toggle("open", open);
+  searchTab.classList.toggle("active", open);
+  if (open) globalSearch.show();
+  else globalSearch.hide();
+}
+
+searchTab.addEventListener("click", () =>
+  setSearchPanelOpen(!sidebarPanel.classList.contains("open")),
+);
+
+/** 显示全局搜索（并确保侧栏可见） */
+function showGlobalSearch(): void {
+  sidebarVisible = true;
+  document.querySelector(".main")?.classList.toggle("no-sidebar", false);
+  setSearchPanelOpen(true);
+}
+
+/** 打开全局搜索命中项并跳转到对应行 */
+async function openHit(path: string, line: number): Promise<void> {
+  await openFilePath(path, { silent: true });
+  const tab = tabStore.findByPath(path);
+  if (!tab) return;
+  if (tabStore.active()?.id !== tab.id) tabStore.activate(tab.id);
+  await loadActiveTab();
+  editorHandle.gotoLine(line);
+}
+
 // ---- 双栏分割线拖动（比例记忆于 localStorage，双击复位）----
 const splitResizer = $("split-resizer");
 let resizing = false;
@@ -983,6 +1025,52 @@ function toggleSidebar(): void {
   persistConfig({ layout: { ...getConfig().layout, sidebarVisible } });
 }
 
+// ---- 侧栏宽度拖拽（比例记忆于 localStorage，双击复位）----
+const DEFAULT_SIDEBAR_WIDTH = 240;
+let sidebarResizing = false;
+
+function setSidebarWidth(px: number): void {
+  const clamped = Math.min(640, Math.max(150, px));
+  document
+    .querySelector<HTMLElement>(".main")
+    ?.style.setProperty("--sidebar-width", `${clamped}px`);
+  try {
+    localStorage.setItem("my-editor.sidebarWidth", String(clamped));
+  } catch {
+    // localStorage 不可用时仅会话内生效
+  }
+}
+
+const sidebarResizerEl = document.getElementById("sidebar-resizer");
+sidebarResizerEl?.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  sidebarResizing = true;
+  sidebarResizerEl.classList.add("dragging");
+  document.body.classList.add("dragging-split");
+  e.preventDefault();
+});
+window.addEventListener("mousemove", (e) => {
+  if (!sidebarResizing) return;
+  const main = document.querySelector(".main");
+  if (!main) return;
+  setSidebarWidth(e.clientX - main.getBoundingClientRect().left);
+});
+window.addEventListener("mouseup", () => {
+  if (!sidebarResizing) return;
+  sidebarResizing = false;
+  sidebarResizerEl?.classList.remove("dragging");
+  document.body.classList.remove("dragging-split");
+});
+sidebarResizerEl?.addEventListener("dblclick", () =>
+  setSidebarWidth(DEFAULT_SIDEBAR_WIDTH),
+);
+try {
+  const savedSidebar = localStorage.getItem("my-editor.sidebarWidth");
+  if (savedSidebar) setSidebarWidth(Number(savedSidebar));
+} catch {
+  // 同上
+}
+
 // ---- 标签页导航（上一个/下一个）----
 function switchTab(delta: number): void {
   const tabs = tabStore.list();
@@ -1042,6 +1130,8 @@ new MenuBar($("menubar"), [
       { separator: true },
       { label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() },
       { label: "格式化选中内容", run: () => void formatSelectionCurrent() },
+      { separator: true },
+      { label: "全局查找…", shortcut: "Ctrl+Shift+F", run: () => showGlobalSearch() },
       { separator: true },
       { label: "列编辑器", shortcut: "Alt+C", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
       { label: "命令面板", shortcut: "Ctrl+Shift+P", run: () => palette.open() },
@@ -1116,6 +1206,7 @@ palette.registerAll([
   { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
   { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", run: () => toggleWhitespacePersisted() },
   { id: "search.results", title: "查找结果面板", section: "查找", run: () => toggleResultsPanel() },
+  { id: "search.global", title: "全局查找…（Ctrl+Shift+F）", section: "查找", run: () => showGlobalSearch() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", run: () => gotoBookmark(editorHandle.view, 1) },
   { id: "insert.localTime", title: "插入本地时间（YYYY-MM-DD HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().local) },
@@ -1153,6 +1244,10 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       palette.toggle();
+    } else if (mod && e.shiftKey && !e.altKey && (code === "KeyF" || key === "f")) {
+      e.preventDefault();
+      e.stopPropagation();
+      showGlobalSearch();
     } else if (mod && !e.shiftKey && !e.altKey && (code === "KeyF" || key === "f")) {
       // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，
       // 故查找（Ctrl+F）在此全局兜底放行；替换仍由只读态禁用
