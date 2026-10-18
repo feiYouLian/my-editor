@@ -18,6 +18,10 @@ pub struct FileContent {
     pub encoding: String,
     pub newline: String,
     pub has_bom: bool,
+    /// 是否只读：命中大文件阈值或日志扩展名时为 true
+    pub readonly: bool,
+    /// 只读原因（供前端提示；非只读时为空串）
+    pub readonly_reason: String,
 }
 
 #[derive(Serialize)]
@@ -69,14 +73,18 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// 主导换行符判定：比较 CRLF 与 LF 出现次数
+/// 主导换行符判定：分别统计 CRLF / LF / CR，取占比最高者
 fn detect_newline(text: &str) -> &'static str {
     let crlf = text.matches("\r\n").count();
-    let lf = text.matches('\n').count();
-    if crlf == 0 && lf == 0 {
+    let lf = text.matches('\n').count() - crlf; // 纯 LF
+    let cr = text.matches('\r').count() - crlf; // 纯 CR
+    let max = crlf.max(lf).max(cr);
+    if max == 0 {
         "NONE"
-    } else if crlf * 2 >= lf {
+    } else if max == crlf {
         "CRLF"
+    } else if max == cr {
+        "CR"
     } else {
         "LF"
     }
@@ -107,53 +115,44 @@ fn read_file_inner(path: &str) -> Result<FileContent, String> {
         encoding: encoding.to_string(),
         newline: newline.to_string(),
         has_bom,
+        readonly: false,
+        readonly_reason: String::new(),
     })
 }
 
-/// 大文件分流提示：体积 ≥ 阈值且未强制打开时不进编辑器，
-/// 仅返回提示，前端可确认后强制打开
-#[derive(Serialize)]
-pub struct LargeFileNotice {
-    pub path: String,
-    pub name: String,
-    pub size: u64,
-    pub reason: String,
-}
-
-/// 打开文本文件的结果：正常进入编辑器 / 大文件只读提示
-#[derive(Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "lowercase")]
-pub enum OpenTextResult {
-    Text(Box<FileContent>),
-    Large(Box<LargeFileNotice>),
-}
-
-/// 打开文本文件（带大文件分流守卫）
-/// force 为 true 时跳过体积检查（用户在确认风险后选择强制打开）。
+/// 打开文本文件（大文件 / .log 只读守卫）
+/// 命中「体积 ≥ large_file_threshold」或「扩展名属 log_extensions」时，
+/// 仍读入内容但标记为只读，由前端以只读方式载入并禁用编辑入口。
 #[tauri::command]
 pub fn open_text_file(
     path: String,
     large_file_threshold: u64,
-    force: bool,
-) -> Result<OpenTextResult, String> {
+    log_extensions: Vec<String>,
+) -> Result<FileContent, String> {
     let p = PathBuf::from(&path);
     let size = fs::metadata(&p).map_err(|e| format!("读取失败: {e}"))?.len();
-    let name = p
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
+
+    // 扩展名归一化为「.xxx」小写后比对，兼容配置里带/不带点号的写法
+    let ext = p
+        .extension()
+        .map(|s| format!(".{}", s.to_string_lossy().to_lowercase()))
         .unwrap_or_default();
+    let is_log = log_extensions.iter().any(|e| {
+        let e = e.to_ascii_lowercase();
+        let normalized = if e.starts_with('.') { e } else { format!(".{e}") };
+        !normalized.is_empty() && normalized == ext
+    });
 
-    if !force && size >= large_file_threshold {
-        let reason = format!("体积超过 {} MB 阈值", large_file_threshold / 1024 / 1024);
-        return Ok(OpenTextResult::Large(Box::new(LargeFileNotice {
-            path,
-            name,
-            size,
-            reason,
-        })));
+    let mut content = read_file_inner(&path)?;
+    if size >= large_file_threshold {
+        content.readonly = true;
+        content.readonly_reason =
+            format!("体积超过 {} MB 阈值", large_file_threshold / 1024 / 1024);
+    } else if is_log {
+        content.readonly = true;
+        content.readonly_reason = "日志文件（.log）默认只读".to_string();
     }
-
-    Ok(OpenTextResult::Text(Box::new(read_file_inner(&path)?)))
+    Ok(content)
 }
 
 /// 图片文件读取：返回 data URL（前端 <img> 直接展示）
@@ -238,7 +237,7 @@ fn atomic_write(target: &PathBuf, bytes: &[u8]) -> Result<u64, String> {
     ))
 }
 
-/// 保存文件：保留换行符与 BOM，走原子替换
+/// 保存文件：按目标换行符统一改写，保留 BOM，走原子替换
 #[tauri::command]
 pub fn save_file(
     path: String,
@@ -248,10 +247,13 @@ pub fn save_file(
 ) -> Result<SaveResult, String> {
     let target = PathBuf::from(&path);
 
-    let mut text = content;
-    if newline == "CRLF" {
-        text = text.replace("\r\n", "\n").replace('\n', "\r\n");
-    }
+    // 先把既有换行统一为 \n，再按目标格式改写（避免 \r\n 被当作两个字符）
+    let text = content.replace("\r\n", "\n");
+    let text = match newline.as_str() {
+        "CRLF" => text.replace('\n', "\r\n"),
+        "CR" => text.replace('\n', "\r"),
+        _ => text, // LF / NONE
+    };
 
     let mut bytes = text.into_bytes();
     if has_bom {

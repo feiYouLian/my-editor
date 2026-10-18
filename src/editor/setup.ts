@@ -1,6 +1,7 @@
 import { Compartment, EditorState } from "@codemirror/state";
 import {
   EditorView,
+  type KeyBinding,
   crosshairCursor,
   drawSelection,
   highlightActiveLine,
@@ -11,7 +12,15 @@ import {
   placeholder,
   rectangularSelection,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import {
+  copyLineDown,
+  copyLineUp,
+  defaultKeymap,
+  deleteLine,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands";
 import {
   bracketMatching,
   indentUnit,
@@ -46,8 +55,8 @@ export interface EditorCallbacks {
 
 export interface EditorHandle {
   view: EditorView;
-  /** 加载文档内容并切换语言；重置 dirty 状态 */
-  loadDocument: (path: string, content: string) => Promise<void>;
+  /** 加载文档内容并切换语言；重置 dirty 状态。readonly 为 true 时禁用编辑 */
+  loadDocument: (path: string, content: string, readonly?: boolean) => Promise<void>;
   getContent: () => string;
   /** 外部标记/清除未保存状态（如保存成功后调用 setDirty(false)） */
   setDirty: (dirty: boolean) => void;
@@ -80,10 +89,36 @@ function hasLongLine(state: EditorState): boolean {
   return false;
 }
 
+/** Home 双段跳转：第 1 次跳到行内首个非空白字符，第 2 次跳到行首 */
+function smartHome(view: EditorView, select: boolean): boolean {
+  const range = view.state.selection.main;
+  const line = view.state.doc.lineAt(range.head);
+  const firstNonSpace = line.text.search(/\S/);
+  const indentPos = firstNonSpace < 0 ? line.from : line.from + firstNonSpace;
+  const target = range.head === indentPos ? line.from : indentPos;
+  view.dispatch({
+    selection: select ? { anchor: range.anchor, head: target } : { anchor: target },
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+/** 行操作键位：先于 defaultKeymap，用于覆盖同键默认绑定 */
+function lineEditKeys(): KeyBinding[] {
+  return [
+    { key: "Mod-d", preventDefault: true, run: deleteLine },
+    { key: "Mod-Alt-ArrowUp", preventDefault: true, run: copyLineUp },
+    { key: "Mod-Alt-ArrowDown", preventDefault: true, run: copyLineDown },
+    { key: "Home", preventDefault: true, run: (v) => smartHome(v, false) },
+    { key: "Shift-Home", preventDefault: true, run: (v) => smartHome(v, true) },
+  ];
+}
+
 /** 键位表（列编辑器快捷键来自配置，需随 Compartment 热更新） */
 function buildKeymap() {
   return keymap.of([
     indentWithTab,
+    ...lineEditKeys(),
     ...defaultKeymap,
     ...historyKeymap,
     ...bookmarkKeymap,
@@ -91,6 +126,8 @@ function buildKeymap() {
       key: settings.columnEditorKey,
       preventDefault: true,
       run: (v) => {
+        // 只读文档不进入列编辑器（其编辑动作绕过 CM6 输入路径）
+        if (v.state.readOnly) return true;
         openColumnEditor(v);
         return true;
       },
@@ -115,6 +152,14 @@ function columnSelectionExtensions() {
   ];
 }
 
+/** 只读态：readOnly 拦截文档变更事务，editable 关闭输入（含 IME 与粘贴） */
+function readOnlyExtensions(readonly: boolean) {
+  return [
+    EditorState.readOnly.of(readonly),
+    EditorView.editable.of(!readonly),
+  ];
+}
+
 export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): EditorHandle {
   const languageCompartment = new Compartment();
   const whitespaceCompartment = new Compartment();
@@ -124,6 +169,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   const indentGuidesCompartment = new Compartment();
   const occurrenceCompartment = new Compartment();
   const columnSelectionCompartment = new Compartment();
+  const readOnlyCompartment = new Compartment();
 
   /** loadDocument 期间抑制 dirty 回调 */
   let loading = false;
@@ -149,6 +195,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         columnSelectionCompartment.of(columnSelectionExtensions()),
         occurrenceCompartment.of(settings.occurrenceHighlight ? occurrences() : []),
         whitespaceCompartment.of(whitespaceOn ? highlightWhitespace() : []),
+        readOnlyCompartment.of(readOnlyExtensions(false)),
         languageCompartment.of([]),
         ...bookmarkGutter,
         ...searchExtensions(),
@@ -172,9 +219,17 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     }),
   });
 
-  async function loadDocument(path: string, content: string): Promise<void> {
+  async function loadDocument(
+    path: string,
+    content: string,
+    readonly = false,
+  ): Promise<void> {
     loading = true;
     try {
+      // 只读态随文档切换重建（切换标签时读写状态可能不同）
+      view.dispatch({
+        effects: readOnlyCompartment.reconfigure(readOnlyExtensions(readonly)),
+      });
       // 整篇替换文档内容
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: content },

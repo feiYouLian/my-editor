@@ -61,6 +61,56 @@ export function promptText(message: string, initial = ""): Promise<string | null
 }
 
 /**
+ * 通用确认对话框（确定/取消），返回是否确认。
+ * 为什么不用 window.confirm：Tauri 运行时的 confirm 由 dialog 插件接管，
+ * 异步回调不阻塞后续代码，确认结果会晚于副作用发生。
+ */
+export function confirmAction(message: string, confirmLabel = "确定"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop";
+
+    const dialog = document.createElement("div");
+    dialog.className = "dialog";
+    dialog.setAttribute("role", "dialog");
+
+    const title = document.createElement("h3");
+    title.textContent = message;
+    dialog.append(title);
+
+    const actions = document.createElement("div");
+    actions.className = "dialog-actions";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "取消";
+    const okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "danger";
+    okBtn.textContent = confirmLabel;
+    actions.append(cancelBtn, okBtn);
+    dialog.append(actions);
+    backdrop.append(dialog);
+    document.body.append(backdrop);
+
+    const done = (ok: boolean) => {
+      backdrop.remove();
+      resolve(ok);
+    };
+
+    okBtn.addEventListener("click", () => done(true));
+    cancelBtn.addEventListener("click", () => done(false));
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) done(false);
+    });
+    dialog.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") done(false);
+    });
+
+    okBtn.focus();
+  });
+}
+
+/**
  * 关闭未保存文件的三选确认：
  * 保存 / 不保存 / 取消。
  */

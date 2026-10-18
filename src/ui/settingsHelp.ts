@@ -24,9 +24,10 @@ const GROUPS: Group[] = [
       { key: "insertSpaces", meaning: "Tab 键是否插入空格", effect: "预留" },
       { key: "formatOnSave", meaning: "保存时自动格式化", effect: "预留" },
       { key: "highlighterDisabledOver", meaning: "行数超过此值禁用语法高亮、降级纯文本", effect: "下次打开文件" },
-      { key: "largeFileThreshold", meaning: "文件字节数 ≥ 此值时不进入编辑器（默认 20MB）", effect: "即时" },
+      { key: "largeFileThreshold", meaning: "文件字节数 ≥ 此值（默认 20MB）则打开为只读", effect: "即时" },
       { key: "longLineSkipChars", meaning: "单行超过此字符数则整篇降级纯文本", effect: "下次打开文件" },
       { key: "languageExtensions", meaning: '扩展名 → 语言 覆盖，如 ".log": "plaintext"', effect: "即时" },
+      { key: "largeFile.logExtensions", meaning: '日志扩展名（默认 [".log"]）：命中任意大小时打开为只读', effect: "即时" },
     ],
   },
   {
@@ -53,7 +54,6 @@ const GROUPS: Group[] = [
   {
     title: "其余分组（当前尚未接入）",
     fields: [
-      { key: "largeFile.logExtensions", meaning: "视为日志的扩展名（大文件只读视图启用后使用）", effect: "预留" },
       { key: "largeFile.sparseIndexAnchorBytes", meaning: "稀疏行索引锚点字节间隔", effect: "预留" },
       { key: "largeFile.viewportPaddingLines", meaning: "虚拟视图视口上下额外渲染行数", effect: "预留" },
       { key: "keybindings", meaning: "自定义键位表（命令 → 键位）", effect: "预留" },

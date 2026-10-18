@@ -19,6 +19,7 @@ import { formatDocument, formatSelection } from "./editor/format";
 import { openColumnEditor } from "./editor/columnEditor";
 import { toggleBookmark, gotoBookmark } from "./editor/bookmarks";
 import { undo, redo } from "@codemirror/commands";
+import { openSearchPanel } from "@codemirror/search";
 import { FileTree } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
 import { MenuBar } from "./panels/menubar";
@@ -74,6 +75,7 @@ const statusLines = $<HTMLSpanElement>("status-lines");
 const statusDirty = $<HTMLSpanElement>("status-dirty");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
+const statusReadonly = $<HTMLSpanElement>("status-readonly");
 
 /** 状态栏空白字符指示（与编辑器实际状态联动） */
 function refreshWhitespace(): void {
@@ -106,6 +108,77 @@ function toggleWhitespacePersisted(): void {
 
 statusWhitespace.addEventListener("click", () => toggleWhitespacePersisted());
 
+/** 状态栏换行符：点击循环切换 LF → CRLF → CR 并保存 */
+const NEWLINE_CYCLE = ["LF", "CRLF", "CR"];
+async function cycleNewline(): Promise<void> {
+  if (blockIfReadonly()) return;
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    showMessage("当前文件不支持切换换行符");
+    return;
+  }
+  const next =
+    NEWLINE_CYCLE[(NEWLINE_CYCLE.indexOf(tab.newline) + 1) % NEWLINE_CYCLE.length];
+  tabStore.setNewline(tab.id, next);
+  try {
+    await writeTo(tab, tab.path);
+    refreshStatus();
+    showMessage(`换行符已切换为 ${next} 并保存`);
+  } catch (e) {
+    showMessage(`切换失败: ${String(e).split("\n")[0]}`);
+  }
+}
+statusNewline.title = "点击切换换行符（LF / CRLF / CR）";
+statusNewline.style.cursor = "pointer";
+statusNewline.addEventListener("click", () => void cycleNewline());
+
+// ---- 插入时间戳 / UUID ----
+
+const pad2 = (n: number): string => String(n).padStart(2, "0");
+
+/** 在光标处插入文本（替换选中内容） */
+function insertAtCursor(text: string): void {
+  if (blockIfReadonly()) return;
+  const view = editorHandle.view;
+  const { from, to } = view.state.selection.main;
+  view.dispatch({
+    changes: { from, to, insert: text },
+    selection: { anchor: from + text.length },
+    scrollIntoView: true,
+  });
+}
+
+/** 常用时间戳格式 */
+function localStamps(): {
+  local: string;
+  iso: string;
+  unix: string;
+  date: string;
+  time: string;
+} {
+  const d = new Date();
+  const date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return {
+    local: `${date} ${time}`,
+    iso: d.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    unix: String(Math.floor(d.getTime() / 1000)),
+    date,
+    time,
+  };
+}
+
+/** 生成 UUID v4 */
+function newUuid(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = c.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
+
 /** 状态栏瞬时消息（格式化结果等，3 秒后淡出） */
 let messageTimer: ReturnType<typeof setTimeout> | null = null;
 function showMessage(text: string): void {
@@ -132,6 +205,16 @@ function activeTab(): Tab | null {
   return tabStore.active();
 }
 
+/** 只读标签：统一拦截需要写盘或改内容的编辑入口 */
+function blockIfReadonly(): boolean {
+  const tab = activeTab();
+  if (tab?.readonly) {
+    showMessage(`只读文件：${tab.readonlyReason || "不可编辑"}`);
+    return true;
+  }
+  return false;
+}
+
 function refreshStatus(): void {
   const tab = activeTab();
   statusPath.textContent = tab ? tab.name : "未打开文件";
@@ -142,6 +225,8 @@ function refreshStatus(): void {
   const key = tab?.path ? languageKeyFromPath(tab.path) : null;
   statusLanguage.textContent = key ? (languageDisplayNames[key] ?? key) : "纯文本";
   statusDirty.classList.toggle("hidden", !tab?.dirty);
+  statusReadonly.classList.toggle("hidden", tab?.readonly !== true);
+  statusReadonly.title = tab?.readonly ? tab.readonlyReason : "";
   refreshWhitespace();
 }
 
@@ -227,7 +312,7 @@ async function loadActiveTab(): Promise<void> {
     resultsPanel?.refresh();
     return;
   }
-  await editorHandle.loadDocument(tab.path ?? "", tab.content);
+  await editorHandle.loadDocument(tab.path ?? "", tab.content, tab.readonly);
   // 文件树联动：展开祖先目录并高亮当前文件
   if (tab.path) fileTree.revealPath(tab.path);
   // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器
@@ -304,10 +389,10 @@ function showTabMenu(x: number, y: number, tabId: string): void {
 
   const items: { label: string; run: () => void }[] = [
     { label: "关闭当前", run: () => void closeTab(tabId) },
-    { label: "关闭左侧", run: () => tabStore.closeLeft(tabId) },
-    { label: "关闭右侧", run: () => tabStore.closeRight(tabId) },
-    { label: "关闭其他", run: () => tabStore.closeOthers(tabId) },
-    { label: "关闭全部", run: () => tabStore.closeAll() },
+    { label: "关闭左侧", run: () => void tabStore.closeLeft(tabId) },
+    { label: "关闭右侧", run: () => void tabStore.closeRight(tabId) },
+    { label: "关闭其他", run: () => void tabStore.closeOthers(tabId) },
+    { label: "关闭全部", run: () => void tabStore.closeAll() },
   ];
   for (const item of items) {
     const el = document.createElement("div");
@@ -558,19 +643,6 @@ function isImagePath(path: string): boolean {
   return IMAGE_EXTS.has(ext);
 }
 
-/** open_text_file 返回：正常文本 / 大文件只读提示 */
-type OpenTextResult =
-  | { kind: "text"; data: FileContent }
-  | { kind: "large"; data: { path: string; name: string; size: number; reason: string } };
-
-/** 大文件确认：提示体积风险，询问是否仍以编辑器打开 */
-function confirmOpenLarge(info: { name: string; size: number; reason: string }): boolean {
-  showMessage(`${info.name}：${info.reason}`);
-  return window.confirm(
-    `${info.name}（${formatSize(info.size)}）：${info.reason}。\n仍要在编辑器中打开吗？文件过大可能导致卡顿甚至失败。`,
-  );
-}
-
 /** 从路径打开（文件树点击 / 工作区恢复 / 对话框共用） */
 async function openFilePath(
   path: string,
@@ -591,25 +663,17 @@ async function openFilePath(
         data_url: string;
       }>("read_image_file", { path });
       tabStore.openImage(img.path, img.name, img.size, img.data_url);
-    } else {
-      // 文本：经大文件守卫（阈值来自 config.json）
-      const res = await invoke<OpenTextResult>("open_text_file", {
-        path,
-        largeFileThreshold: settings.largeFileThreshold,
-        force: false,
-      });
-      if (res.kind === "text") {
-        tabStore.open(res.data);
-        return;
-      }
-      // 大文件：恢复会话时不打断；用户主动打开时确认后可强制加载
-      if (opts.silent || !confirmOpenLarge(res.data)) return;
-      const forced = await invoke<OpenTextResult>("open_text_file", {
-        path,
-        largeFileThreshold: settings.largeFileThreshold,
-        force: true,
-      });
-      if (forced.kind === "text") tabStore.open(forced.data);
+      return;
+    }
+    // 文本：经只读守卫——≥20MB 或 .log 命中时仍载入但标记只读
+    const data = await invoke<FileContent>("open_text_file", {
+      path,
+      largeFileThreshold: settings.largeFileThreshold,
+      logExtensions: getConfig().largeFile.logExtensions,
+    });
+    const tab = tabStore.open(data);
+    if (tab.readonly && !opts.silent) {
+      showMessage(`${tab.readonlyReason}，已以只读方式打开`);
     }
   } catch (e) {
     if (!opts.silent) window.alert(`打开失败: ${e}`);
@@ -630,6 +694,7 @@ async function openFileDialog(): Promise<void> {
 async function saveFile(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
+  if (blockIfReadonly()) return;
   if (!tab.path) {
     await saveFileAs();
     return;
@@ -640,6 +705,7 @@ async function saveFile(): Promise<void> {
 async function saveFileAs(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
+  if (blockIfReadonly()) return;
   const target = await save({ defaultPath: tab.name });
   if (typeof target !== "string") return;
   await writeTo(tab, target);
@@ -676,6 +742,8 @@ function newUntitled(): void {
     encoding: "UTF-8",
     newline: "NONE",
     has_bom: false,
+    readonly: false,
+    readonly_reason: "",
   };
   tabStore.open(content);
 }
@@ -736,6 +804,7 @@ const FORMAT_CONFIRM_LINES = 10000;
 async function formatCurrent(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
+  if (blockIfReadonly()) return;
   const key = tab.path ? languageKeyFromPath(tab.path) : null;
   if (editorHandle.view.state.doc.lines > FORMAT_CONFIRM_LINES) {
     const ok = window.confirm(
@@ -757,6 +826,7 @@ async function formatCurrent(): Promise<void> {
 async function formatSelectionCurrent(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
+  if (blockIfReadonly()) return;
   const key = tab.path ? languageKeyFromPath(tab.path) : null;
   const result = await formatSelection(editorHandle.view, key, tab.path);
   if (!result.ok) {
@@ -846,7 +916,7 @@ new MenuBar($("menubar"), [
       { label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() },
       { label: "格式化选中内容", run: () => void formatSelectionCurrent() },
       { separator: true },
-      { label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(editorHandle.view) },
+      { label: "列编辑器", shortcut: "Alt+C", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
       { label: "命令面板", shortcut: "Ctrl+Shift+P", run: () => palette.open() },
     ],
   },
@@ -916,11 +986,17 @@ palette.registerAll([
   { id: "help.settings", title: "配置说明（字段含义与生效方式）", section: "设置", run: () => showSettingsHelp() },
   { id: "edit.format", title: "格式化文档（Shift+Alt+F）", section: "编辑", run: () => void formatCurrent() },
   { id: "edit.formatSelection", title: "格式化选中内容", section: "编辑", run: () => void formatSelectionCurrent() },
-  { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", run: () => openColumnEditor(editorHandle.view) },
+  { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
   { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", run: () => toggleWhitespacePersisted() },
   { id: "search.results", title: "查找结果面板", section: "查找", run: () => toggleResultsPanel() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", run: () => gotoBookmark(editorHandle.view, 1) },
+  { id: "insert.localTime", title: "插入本地时间（YYYY-MM-DD HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().local) },
+  { id: "insert.isoTime", title: "插入 ISO 时间戳", section: "插入", run: () => insertAtCursor(localStamps().iso) },
+  { id: "insert.unixTime", title: "插入 Unix 时间戳", section: "插入", run: () => insertAtCursor(localStamps().unix) },
+  { id: "insert.date", title: "插入日期（YYYY-MM-DD）", section: "插入", run: () => insertAtCursor(localStamps().date) },
+  { id: "insert.time", title: "插入时间（HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().time) },
+  { id: "insert.uuid", title: "插入 UUID（v4）", section: "插入", run: () => insertAtCursor(newUuid()) },
 ]);
 
 async function openWorkspaceDir(): Promise<void> {
@@ -950,6 +1026,13 @@ window.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       palette.toggle();
+    } else if (mod && !e.shiftKey && !e.altKey && (code === "KeyF" || key === "f")) {
+      // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，
+      // 故查找（Ctrl+F）在此全局兜底放行；替换仍由只读态禁用
+      if (activeTab()?.kind !== "text") return;
+      e.preventDefault();
+      e.stopPropagation();
+      openSearchPanel(editorHandle.view);
     } else if (
       // 主绑定 Shift+Alt+F；备用 Ctrl+Shift+L——
       // 中文 Windows 下 Alt+Shift 常被输入法/系统热键吞掉，故提供无 Alt 备用

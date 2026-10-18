@@ -1,4 +1,5 @@
 import type { FileContent } from "../types/app";
+import { confirmAction } from "../ui/dialogs";
 
 /**
  * 多标签页状态。
@@ -20,6 +21,10 @@ export interface Tab {
   encoding: string;
   newline: string;
   has_bom: boolean;
+  /** 只读：大文件 / 日志文件命中只读守卫，编辑器禁用编辑入口 */
+  readonly: boolean;
+  /** 只读原因（非只读时为空串） */
+  readonlyReason: string;
 }
 
 let seq = 0;
@@ -65,6 +70,8 @@ class TabStore {
       encoding: content.encoding,
       newline: content.newline,
       has_bom: content.has_bom,
+      readonly: content.readonly,
+      readonlyReason: content.readonly_reason,
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
@@ -92,6 +99,8 @@ class TabStore {
       encoding: "binary",
       newline: "NONE",
       has_bom: false,
+      readonly: true,
+      readonlyReason: "图片查看器",
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
@@ -119,38 +128,38 @@ class TabStore {
   }
 
   /** 批量关闭（脏标签一次性确认，避免逐个弹窗） */
-  private closeMany(ids: string[]): void {
+  private async closeMany(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const dirtyCount = this.tabs.filter((t) => ids.includes(t.id) && t.dirty).length;
     if (dirtyCount > 0) {
-      const ok = window.confirm(`有 ${dirtyCount} 个未保存的标签将被关闭，确定？`);
+      const ok = await confirmAction(`有 ${dirtyCount} 个未保存的标签将被关闭，确定？`);
       if (!ok) return;
     }
     for (const id of ids) this.close(id);
   }
 
   /** 关闭左侧全部（保留自己） */
-  closeLeft(id: string): void {
+  closeLeft(id: string): Promise<void> {
     const idx = this.tabs.findIndex((t) => t.id === id);
-    if (idx <= 0) return;
-    this.closeMany(this.tabs.slice(0, idx).map((t) => t.id));
+    if (idx <= 0) return Promise.resolve();
+    return this.closeMany(this.tabs.slice(0, idx).map((t) => t.id));
   }
 
   /** 关闭右侧全部（保留自己） */
-  closeRight(id: string): void {
+  closeRight(id: string): Promise<void> {
     const idx = this.tabs.findIndex((t) => t.id === id);
-    if (idx < 0 || idx === this.tabs.length - 1) return;
-    this.closeMany(this.tabs.slice(idx + 1).map((t) => t.id));
+    if (idx < 0 || idx === this.tabs.length - 1) return Promise.resolve();
+    return this.closeMany(this.tabs.slice(idx + 1).map((t) => t.id));
   }
 
   /** 关闭其他（只保留自己） */
-  closeOthers(id: string): void {
-    this.closeMany(this.tabs.filter((t) => t.id !== id).map((t) => t.id));
+  closeOthers(id: string): Promise<void> {
+    return this.closeMany(this.tabs.filter((t) => t.id !== id).map((t) => t.id));
   }
 
   /** 关闭全部 */
-  closeAll(): void {
-    this.closeMany(this.tabs.map((t) => t.id));
+  closeAll(): Promise<void> {
+    return this.closeMany(this.tabs.map((t) => t.id));
   }
 
   /** 更新标签内容（编辑器输入时调用） */
@@ -167,6 +176,15 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) {
       tab.dirty = false;
+      this.emit();
+    }
+  }
+
+  /** 更新换行符（状态栏切换用） */
+  setNewline(id: string, newline: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab) {
+      tab.newline = newline;
       this.emit();
     }
   }

@@ -7,6 +7,10 @@ export interface FileContent {
   encoding: string;
   newline: string;
   has_bom: boolean;
+  /** 只读：大文件或日志文件命中只读守卫时为 true */
+  readonly: boolean;
+  /** 只读原因（非只读时为空串） */
+  readonly_reason: string;
 }
 
 export interface SaveResult {

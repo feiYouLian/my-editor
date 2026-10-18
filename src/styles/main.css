@@ -1088,6 +1088,11 @@ button.danger:hover {
   color: var(--danger);
 }
 
+.status-readonly {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .status-message {
   color: var(--accent);
   max-width: 40vw;
