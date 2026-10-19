@@ -9,7 +9,9 @@ import { setLanguageOverrides } from "../editor/languages";
  * `settings` 为编辑器实际消费的配置子集（可变对象，原地刷新，供 setup.ts 等直接读取）。
  */
 
-export type ThemeSetting = "dark" | "light" | "system";
+export type ThemeSetting = "dark" | "light" | "high-contrast" | "system";
+/** 编辑器语法主题（独立于应用 UI 主题，见 15.2） */
+export type EditorThemeSetting = "dark" | "light" | "high-contrast";
 export type ColumnModifier = "Alt" | "Control" | "Shift" | "Meta";
 
 // ---------------------------------------------------------------------------
@@ -24,11 +26,19 @@ export interface EditorEnhancements {
   showWhitespace: boolean;
   bracketMatching: boolean;
   indentGuides: boolean;
+  /** 彩虹括号：括号对按嵌套深度循环着色，便于区分配对 */
+  rainbowBrackets: boolean;
 }
 
 export interface KeybindingEntry {
   command: string;
   key: string;
+}
+
+/** 状态栏字段（显隐与排序，见 15.4） */
+export interface StatusBarFieldEntry {
+  id: string;
+  visible: boolean;
 }
 
 export interface LayoutSettings {
@@ -37,6 +47,10 @@ export interface LayoutSettings {
   defaultViewMode: "edit" | "preview" | "split";
   showLineNumbers: boolean;
   showActiveLine: boolean;
+  /** 编辑器字号（px） */
+  editorFontSize: number;
+  /** 状态栏字段（数组顺序即展示顺序） */
+  statusBarFields: StatusBarFieldEntry[];
 }
 
 export interface SessionSettings {
@@ -86,6 +100,8 @@ export interface LogSettings {
 export interface AppConfig {
   version: number;
   theme: ThemeSetting;
+  /** 编辑器语法主题（dark / light / high-contrast） */
+  editorTheme: EditorThemeSetting;
   tabSize: number;
   insertSpaces: boolean;
   formatOnSave: boolean;
@@ -111,6 +127,8 @@ export interface AppConfig {
 /** 编辑器直接消费的配置子集（由 AppConfig 派生） */
 export interface EditorSettings {
   theme: ThemeSetting;
+  editorTheme: EditorThemeSetting;
+  editorFontSize: number;
   tabSize: number;
   insertSpaces: boolean;
   formatOnSave: boolean;
@@ -123,7 +141,26 @@ export interface EditorSettings {
   showWhitespace: boolean;
   bracketMatching: boolean;
   indentGuides: boolean;
+  rainbowBrackets: boolean;
   columnEditorKey: string;
+  showLineNumbers: boolean;
+  showActiveLine: boolean;
+}
+
+/** 状态栏字段默认显隐顺序（与 index.html data-field 对应） */
+export function defaultStatusBarFields(): StatusBarFieldEntry[] {
+  return [
+    { id: "path", visible: true },
+    { id: "readonly", visible: true },
+    { id: "size", visible: true },
+    { id: "encoding", visible: true },
+    { id: "newline", visible: true },
+    { id: "language", visible: true },
+    { id: "whitespace", visible: true },
+    { id: "cursor", visible: true },
+    { id: "lines", visible: true },
+    { id: "dirty", visible: true },
+  ];
 }
 
 /** 前端默认值，须与 Rust AppConfig::default() 保持一致 */
@@ -131,6 +168,7 @@ export function defaultConfig(): AppConfig {
   return {
     version: 2,
     theme: "dark",
+    editorTheme: "dark",
     tabSize: 2,
     insertSpaces: true,
     formatOnSave: false,
@@ -154,6 +192,7 @@ export function defaultConfig(): AppConfig {
       showWhitespace: false,
       bracketMatching: true,
       indentGuides: true,
+      rainbowBrackets: true,
     },
     keybindings: [],
     layout: {
@@ -162,6 +201,8 @@ export function defaultConfig(): AppConfig {
       defaultViewMode: "split",
       showLineNumbers: true,
       showActiveLine: true,
+      editorFontSize: 13,
+      statusBarFields: defaultStatusBarFields(),
     },
     session: {
       restoreOnStartup: true,
@@ -200,6 +241,8 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
   const e = cfg.editorEnhancements;
   return {
     theme: cfg.theme,
+    editorTheme: cfg.editorTheme,
+    editorFontSize: cfg.layout.editorFontSize,
     tabSize: cfg.tabSize,
     insertSpaces: cfg.insertSpaces,
     formatOnSave: cfg.formatOnSave,
@@ -212,7 +255,10 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     showWhitespace: e.showWhitespace,
     bracketMatching: e.bracketMatching,
     indentGuides: e.indentGuides,
+    rainbowBrackets: e.rainbowBrackets,
     columnEditorKey: e.columnEditorKey,
+    showLineNumbers: cfg.layout.showLineNumbers,
+    showActiveLine: cfg.layout.showActiveLine,
   };
 }
 

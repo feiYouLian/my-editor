@@ -50,7 +50,14 @@ import {
   updateSettings,
   subscribeSettings,
   type AppConfig,
+  type StatusBarFieldEntry,
 } from "./config/settings";
+import {
+  registerKeyCommands,
+  matchKeyCommand,
+  setExtraReservedKeys,
+} from "./config/keybindings";
+import { SettingsPanel } from "./panels/settingsPanel";
 import type { FileContent, SaveResult } from "./types/app";
 
 // ---------------------------------------------------------------------------
@@ -356,6 +363,47 @@ function refreshStatus(): void {
   refreshWhitespace();
 }
 
+// ---- 应用主题（设置中心 B7，15.2）：CSS 变量切换，system 跟随系统偏好 ----
+
+const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+/** theme 配置 → 实际生效的深浅（system 时读系统偏好） */
+function resolveAppTheme(theme: AppConfig["theme"]): "dark" | "light" | "high-contrast" {
+  if (theme === "system") return systemDarkQuery.matches ? "dark" : "light";
+  return theme;
+}
+
+function applyAppTheme(cfg: AppConfig): void {
+  document.documentElement.dataset.theme = resolveAppTheme(cfg.theme);
+}
+
+systemDarkQuery.addEventListener("change", () => {
+  if (getConfig().theme === "system") applyAppTheme(getConfig());
+});
+
+// ---- 状态栏字段显隐（15.4：数组顺序即展示顺序）----
+
+function applyStatusBarFields(fields: StatusBarFieldEntry[]): void {
+  const visible = new Map(fields.map((f) => [f.id, f.visible]));
+  document.querySelectorAll<HTMLElement>(".statusbar [data-field]").forEach((el) => {
+    const on = visible.get(el.dataset.field ?? "") ?? true;
+    el.classList.toggle("field-hidden", !on);
+    const next = el.nextElementSibling;
+    if (next?.classList.contains("status-sep")) next.classList.toggle("field-hidden", !on);
+  });
+}
+
+/** 应用分栏比例（设置中心滑杆 / 配置默认值共用） */
+function applySplitRatio(ratio: number): void {
+  const clamped = Math.min(0.85, Math.max(0.15, ratio));
+  editorArea.style.setProperty("--split-ratio", `${(clamped * 100).toFixed(1)}%`);
+  try {
+    localStorage.setItem("my-editor.splitRatio", String(clamped));
+  } catch {
+    // localStorage 不可用时仅会话内生效
+  }
+}
+
 // ---- 标签栏渲染 ----
 
 function renderTabs(): void {
@@ -566,8 +614,11 @@ editorHandle = createEditor($("editor"), {
   },
 });
 
-// 配置变更 → 热更新编辑器（缩进/括号/缩进线/同名高亮/列选择/键位等 Compartment 重配）
+// 配置变更 → 热更新编辑器（缩进/括号/缩进线/同名高亮/列选择/键位/主题等 Compartment 重配）
+// + 应用主题（CSS 变量）与状态栏字段显隐
 subscribeSettings(() => {
+  applyAppTheme(getConfig());
+  applyStatusBarFields(getConfig().layout.statusBarFields);
   editorHandle.applySettings();
   refreshStatus();
   refreshWhitespace();
@@ -594,7 +645,8 @@ function currentPreviewMode(): PreviewMode {
   if (!tab) return "edit";
   if (tab.kind === "image") return "preview";
   if (!pathKindOf(tab.path)) return "edit";
-  return previewModes.get(tab.id) ?? "split";
+  // 默认视图模式来自配置（设置中心 ▸ 页面布局）
+  return previewModes.get(tab.id) ?? getConfig().layout.defaultViewMode;
 }
 
 function refreshPreview(): void {
@@ -1017,6 +1069,28 @@ function toggleResultsPanel(): void {
   resultsPanel = new SearchResultsPanel(resultsContainer, editorHandle.view);
 }
 
+// ---- 设置中心（B7，Ctrl+, / 菜单 / 命令面板）----
+const settingsPanel = new SettingsPanel({
+  onSidebarVisible: (visible) => {
+    // 仅应用到界面；持久化由 updateSettings 完成
+    sidebarVisible = visible;
+    document.querySelector(".main")?.classList.toggle("no-sidebar", !visible);
+  },
+  onSplitRatio: (ratio) => applySplitRatio(ratio),
+  onViewMode: (mode) => {
+    const tab = activeTab();
+    if (tab && pathKindOf(tab.path)) {
+      previewModes.set(tab.id, mode);
+      refreshPreview();
+    }
+  },
+  onMessage: showMessage,
+});
+
+function openSettings(category: "theme" | "keybindings" | "layout" = "theme"): void {
+  settingsPanel.open(category);
+}
+
 // ---- 侧栏显隐 ----
 let sidebarVisible = true;
 function toggleSidebar(): void {
@@ -1179,6 +1253,8 @@ new MenuBar($("menubar"), [
     id: "settings",
     label: "设置",
     items: [
+      { label: "设置…", shortcut: "Ctrl+,", run: () => openSettings() },
+      { separator: true },
       { label: "配置说明", run: () => showSettingsHelp() },
       { label: "打开配置文件（config.json）", run: () => void openConfigFile() },
       { label: "重新加载配置", run: () => void reloadConfig() },
@@ -1198,6 +1274,9 @@ palette.registerAll([
       if (tab) void closeTab(tab.id);
     } },
   { id: "workspace.openDir", title: "打开目录（工作区）", section: "工作区", run: () => void openWorkspaceDir() },
+  { id: "settings.open", title: "打开设置…", section: "设置", run: () => openSettings() },
+  { id: "settings.openKeybindings", title: "设置：快捷键", section: "设置", run: () => openSettings("keybindings") },
+  { id: "settings.openLayout", title: "设置：页面布局", section: "设置", run: () => openSettings("layout") },
   { id: "config.openFile", title: "打开配置文件（config.json）", section: "设置", run: () => void openConfigFile() },
   { id: "config.reload", title: "重新加载配置（config.json）", section: "设置", run: () => void reloadConfig() },
   { id: "help.settings", title: "配置说明（字段含义与生效方式）", section: "设置", run: () => showSettingsHelp() },
@@ -1225,79 +1304,77 @@ async function openWorkspaceDir(): Promise<void> {
   persistWorkspaceWithExpanded([]);
 }
 
-// ---- 快捷键 ----
+// ---- 快捷键（注册表驱动；设置中心可重绑定，见 config/keybindings.ts）----
 // 捕获阶段 + e.code（物理键位）：
 // 1) CM6 在冒泡链上游消费按键，挂 window 冒泡会收不到；
 // 2) 中文 IME / 不同键盘布局下 e.key 不可靠，e.code 稳定。
+// 记法："Mod-Shift-P" / "Alt-C" / "Mod-,"；用户覆盖存 config.json 的 keybindings 段。
+registerKeyCommands([
+  // 文件
+  { id: "file.save", title: "保存", section: "文件", defaultKey: "Mod-S", run: () => void saveFile() },
+  { id: "file.saveAs", title: "另存为…", section: "文件", defaultKey: "Mod-Shift-S", run: () => void saveFileAs() },
+  { id: "file.open", title: "打开文件…", section: "文件", defaultKey: "Mod-O", run: () => void openFileDialog() },
+  { id: "file.new", title: "新建", section: "文件", defaultKey: "Mod-N", run: () => newUntitled() },
+  { id: "file.closeTab", title: "关闭标签", section: "文件", defaultKey: "Mod-W", run: () => {
+      const tab = activeTab();
+      if (tab) void closeTab(tab.id);
+    } },
+  { id: "file.quit", title: "退出", section: "文件", defaultKey: "Mod-Q", run: () => void appWindow.close() },
+  // 编辑
+  { id: "edit.format", title: "格式化文档", section: "编辑", defaultKey: "Shift-Alt-F",
+    // 备用键：中文 Windows 下 Alt+Shift 常被输入法/系统热键吞掉
+    altKeys: ["Mod-Shift-L"],
+    run: () => void formatCurrent() },
+  // 查找
+  { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", run: () => {
+      // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，故全局兜底放行
+      if (activeTab()?.kind !== "text") return;
+      openSearchPanel(editorHandle.view);
+    } },
+  { id: "search.replace", title: "替换（当前文档）", section: "查找", defaultKey: "Mod-H", run: () => {
+      const tab = activeTab();
+      if (tab?.kind !== "text") return;
+      openSearchPanel(editorHandle.view);
+      // 面板内替换框（只读文档不渲染替换框，退化为仅查找）
+      editorHandle.view.dom.querySelector<HTMLInputElement>('input[name="replace"]')?.focus();
+    } },
+  { id: "search.global", title: "全局查找…", section: "查找", defaultKey: "Mod-Shift-F", run: () => showGlobalSearch() },
+  { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", run: () => toggleResultsPanel() },
+  // 视图
+  { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", run: () => palette.toggle() },
+  { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", run: () => toggleSidebar() },
+  { id: "view.settings", title: "打开设置…", section: "视图", defaultKey: "Mod-,", run: () => openSettings() },
+  { id: "view.toggleWhitespace", title: "切换空白字符显示", section: "视图", defaultKey: "", run: () => toggleWhitespacePersisted() },
+  { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", run: () => switchTab(-1) },
+  { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", run: () => switchTab(1) },
+  // ---- 以下为编辑器内置（CM6）绑定，仅展示不可重绑 ----
+  { id: "edit.undo", title: "撤销", section: "编辑", defaultKey: "Mod-Z", fixed: true, run: () => void undo(editorHandle.view) },
+  { id: "edit.redo", title: "重做", section: "编辑", defaultKey: "Mod-Shift-Z", fixed: true, run: () => void redo(editorHandle.view) },
+  { id: "edit.comment", title: "切换注释", section: "编辑", defaultKey: "Mod-/", fixed: true, run: () => {} },
+  { id: "edit.deleteLine", title: "删除当前行", section: "编辑", defaultKey: "Mod-D", fixed: true, run: () => {} },
+  { id: "edit.copyLineUp", title: "复制行到上方", section: "编辑", defaultKey: "Mod-Alt-Up", fixed: true, run: () => {} },
+  { id: "edit.copyLineDown", title: "复制行到下方", section: "编辑", defaultKey: "Mod-Alt-Down", fixed: true, run: () => {} },
+  { id: "edit.moveLineUp", title: "上移当前行", section: "编辑", defaultKey: "Alt-Up", fixed: true, run: () => {} },
+  { id: "edit.moveLineDown", title: "下移当前行", section: "编辑", defaultKey: "Alt-Down", fixed: true, run: () => {} },
+  { id: "edit.columnEditor", title: "列编辑器", section: "编辑", defaultKey: "Alt-C", fixed: true, run: () => {
+      if (!blockIfReadonly()) openColumnEditor(editorHandle.view);
+    } },
+  { id: "search.toggleBookmark", title: "切换书签", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(editorHandle.view) },
+  { id: "search.nextBookmark", title: "下一个书签", section: "查找", defaultKey: "F2", fixed: true, run: () => gotoBookmark(editorHandle.view, 1) },
+  { id: "search.prevBookmark", title: "上一个书签", section: "查找", defaultKey: "Shift-F2", fixed: true, run: () => gotoBookmark(editorHandle.view, -1) },
+]);
+
+// 列编辑器当前键位加入保留集：全局命令不得抢占（其自身经 editorEnhancements.columnEditorKey 改绑）
+setExtraReservedKeys([settings.columnEditorKey]);
+
 window.addEventListener(
   "keydown",
   (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    const code = e.code;
-    const key = typeof e.key === "string" ? e.key.toLowerCase() : "";
-
-    if (mod && !e.shiftKey && !e.altKey && (code === "KeyS" || key === "s")) {
-      e.preventDefault();
-      e.stopPropagation();
-      void saveFile();
-    } else if (mod && e.shiftKey && !e.altKey && (code === "KeyP" || key === "p")) {
-      e.preventDefault();
-      e.stopPropagation();
-      palette.toggle();
-    } else if (mod && e.shiftKey && !e.altKey && (code === "KeyF" || key === "f")) {
-      e.preventDefault();
-      e.stopPropagation();
-      showGlobalSearch();
-    } else if (mod && !e.shiftKey && !e.altKey && (code === "KeyF" || key === "f")) {
-      // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，
-      // 故查找（Ctrl+F）在此全局兜底放行；替换仍由只读态禁用
-      if (activeTab()?.kind !== "text") return;
-      e.preventDefault();
-      e.stopPropagation();
-      openSearchPanel(editorHandle.view);
-    } else if (
-      // 主绑定 Shift+Alt+F；备用 Ctrl+Shift+L——
-      // 中文 Windows 下 Alt+Shift 常被输入法/系统热键吞掉，故提供无 Alt 备用
-      (e.altKey && e.shiftKey && !mod && (code === "KeyF" || key === "f")) ||
-      (mod && e.shiftKey && !e.altKey && (code === "KeyL" || key === "l"))
-    ) {
-      e.preventDefault();
-      e.stopPropagation();
-      void formatCurrent();
-    } else if (mod && !e.shiftKey && !e.altKey && code === "KeyO") {
-      e.preventDefault();
-      e.stopPropagation();
-      void openFileDialog();
-    } else if (mod && !e.shiftKey && !e.altKey && code === "KeyN") {
-      e.preventDefault();
-      e.stopPropagation();
-      newUntitled();
-    } else if (mod && !e.shiftKey && !e.altKey && code === "KeyW") {
-      e.preventDefault();
-      e.stopPropagation();
-      const tab = activeTab();
-      if (tab) void closeTab(tab.id);
-    } else if (mod && e.shiftKey && !e.altKey && code === "KeyS") {
-      e.preventDefault();
-      e.stopPropagation();
-      void saveFileAs();
-    } else if (mod && !e.shiftKey && !e.altKey && code === "KeyB") {
-      e.preventDefault();
-      e.stopPropagation();
-      toggleSidebar();
-    } else if (mod && !e.shiftKey && !e.altKey && code === "KeyQ") {
-      e.preventDefault();
-      e.stopPropagation();
-      void appWindow.close();
-    } else if (mod && !e.shiftKey && code === "PageUp") {
-      e.preventDefault();
-      e.stopPropagation();
-      switchTab(-1);
-    } else if (mod && !e.shiftKey && code === "PageDown") {
-      e.preventDefault();
-      e.stopPropagation();
-      switchTab(1);
-    }
+    const cmd = matchKeyCommand(e, getConfig());
+    if (!cmd) return;
+    e.preventDefault();
+    e.stopPropagation();
+    cmd.run();
   },
   true,
 );
@@ -1305,11 +1382,20 @@ window.addEventListener(
 // ---- 启动：恢复工作区 ----
 
 async function bootstrap(): Promise<void> {
-  // 1) 载入配置：编辑器扩展与语言映射依赖它（订阅回调会热更新编辑器）
+  // 1) 载入配置：编辑器扩展与语言映射依赖它（订阅回调会热更新编辑器 + 应用主题/状态栏）
   await loadSettings();
   // 2) 布局项：侧栏显隐按 config.layout 恢复
   sidebarVisible = getConfig().layout.sidebarVisible;
   document.querySelector(".main")?.classList.toggle("no-sidebar", !sidebarVisible);
+  // 3) 分栏默认比例：localStorage 无记录时按配置（不写回，留给用户拖动/设置时落盘）
+  if (!localStorage.getItem("my-editor.splitRatio")) {
+    editorArea.style.setProperty(
+      "--split-ratio",
+      `${Math.round(getConfig().layout.splitRatio * 100)}%`,
+    );
+  }
+  // 4) 列编辑器键位随配置刷新保留集
+  setExtraReservedKeys([settings.columnEditorKey]);
 
   let state: WorkspaceState;
   try {

@@ -10,6 +10,78 @@
   --danger: #ff6b6b;
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  /* 彩虹括号色板：6 色相 60° 均分 + 暖冷交替排序，相邻层级色相差 ≥90°
+     （红→青→琥珀→蓝→绿→紫；配 one-dark 编辑器底色，亮度一致） */
+  --rb-0: #ff7b72; /* 红 */
+  --rb-1: #56d4dd; /* 青 */
+  --rb-2: #f2be5c; /* 琥珀 */
+  --rb-3: #6cb6ff; /* 蓝 */
+  --rb-4: #7ee787; /* 绿 */
+  --rb-5: #b48ef7; /* 紫 */
+}
+
+/* ---------- 浅色主题（设置中心 B7，15.2） ---------- */
+:root[data-theme="light"] {
+  --bg-app: #eef0f3;
+  --bg-panel: #ffffff;
+  --bg-elevated: #ffffff;
+  --border: #d0d7de;
+  --text-primary: #1f2328;
+  --text-secondary: #57606a;
+  --accent: #0969da;
+  --accent-hover: #0550ae;
+  --danger: #cf222e;
+  /* 彩虹括号色板（浅色纸底：加深保对比度，同样暖冷交替排序） */
+  --rb-0: #cf222e; /* 红 */
+  --rb-1: #0e7490; /* 青 */
+  --rb-2: #9a6700; /* 琥珀 */
+  --rb-3: #0969da; /* 蓝 */
+  --rb-4: #1a7f37; /* 绿 */
+  --rb-5: #6f42c1; /* 紫 */
+}
+
+/* 浅色下覆盖几处深色专用的半透明 hover 底 */
+:root[data-theme="light"] .gs-head-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+:root[data-theme="light"] .gs-hit:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* ---------- 高对比度主题（黑底白字 + 强边框） ---------- */
+:root[data-theme="high-contrast"] {
+  --bg-app: #000000;
+  --bg-panel: #000000;
+  --bg-elevated: #101010;
+  --border: #ffffff;
+  --text-primary: #ffffff;
+  --text-secondary: #e8e8e8;
+  --accent: #ffd60a;
+  --accent-hover: #ffe666;
+  --danger: #ff6b6b;
+  /* 彩虹括号色板（高饱和，黑底上保证辨识；同暖冷交替排序） */
+  --rb-0: #ff5f56; /* 红 */
+  --rb-1: #2ee6e6; /* 青 */
+  --rb-2: #ffab2e; /* 琥珀 */
+  --rb-3: #4da3ff; /* 蓝 */
+  --rb-4: #5fe07a; /* 绿 */
+  --rb-5: #c77dff; /* 紫 */
+}
+
+:root[data-theme="high-contrast"] .tab.active {
+  border-top: 2px solid var(--accent);
+}
+
+:root[data-theme="high-contrast"] .menu-item:hover,
+:root[data-theme="high-contrast"] .context-menu-item:hover {
+  background: var(--accent);
+  color: #000;
+}
+
+:root[data-theme="high-contrast"] .palette-item.selected {
+  background: var(--accent);
+  color: #000;
 }
 
 * {
@@ -1377,4 +1449,377 @@ button.danger:hover {
 
 .hidden {
   visibility: hidden;
+}
+
+/* 状态栏字段显隐（设置中心 ▸ 页面布局 ▸ 状态栏字段） */
+.statusbar .field-hidden {
+  display: none;
+}
+
+/* 彩虹括号：嵌套深度 0-5 循环取色（editor/rainbowBrackets.ts，配 editorEnhancements.rainbowBrackets） */
+.rbk-0 { color: var(--rb-0); }
+.rbk-1 { color: var(--rb-1); }
+.rbk-2 { color: var(--rb-2); }
+.rbk-3 { color: var(--rb-3); }
+.rbk-4 { color: var(--rb-4); }
+.rbk-5 { color: var(--rb-5); }
+
+/* ---------- 设置中心（B7，第 15 章） ---------- */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+}
+
+.settings-dialog {
+  width: min(880px, 94vw);
+  height: min(620px, 88vh);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-head h3 {
+  font-size: 14px;
+}
+
+.settings-close {
+  border: none;
+  background: none;
+  font-size: 16px;
+  padding: 2px 8px;
+  color: var(--text-secondary);
+}
+
+.settings-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.settings-nav {
+  width: 132px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-panel);
+}
+
+.settings-nav-item {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.settings-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-section {
+  margin-bottom: 22px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.settings-section-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.settings-row-label {
+  width: 180px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-row-check {
+  cursor: pointer;
+}
+
+.settings-row-check input {
+  cursor: pointer;
+}
+
+.settings-row-check span {
+  font-size: 12px;
+}
+
+.settings-radios {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.settings-radio {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.settings-radio.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.settings-number {
+  width: 72px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-number:focus {
+  border-color: var(--accent);
+}
+
+.settings-select {
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-select:focus {
+  border-color: var(--accent);
+}
+
+.settings-slider {
+  flex: 1;
+  max-width: 220px;
+}
+
+.settings-slider-value {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 40px;
+  text-align: right;
+}
+
+.settings-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  padding: 6px 0;
+}
+
+/* 快捷键页 */
+.settings-kb-head {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-kb-filter {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 5px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-kb-filter:focus {
+  border-color: var(--accent);
+}
+
+.settings-kb-group {
+  margin-bottom: 14px;
+}
+
+.settings-kb-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.settings-kb-row {
+  display: grid;
+  grid-template-columns: 1fr 150px 88px;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 0;
+}
+
+.settings-kb-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-kb-key {
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+button.settings-kb-key:hover {
+  border-color: var(--accent);
+}
+
+.settings-kb-key.recording {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: settings-kb-pulse 1s ease-in-out infinite;
+}
+
+@keyframes settings-kb-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.settings-kb-badge {
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.settings-kb-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-kb-reset {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.settings-kb-default-hint {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.settings-kb-empty {
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 状态栏字段排序 */
+.settings-status-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-status-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.settings-status-field input {
+  cursor: pointer;
+}
+
+.settings-status-move {
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-status-move:disabled {
+  opacity: 0.35;
 }

@@ -1,4 +1,4 @@
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import {
   EditorView,
   type KeyBinding,
@@ -28,9 +28,10 @@ import {
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 
 import { settings, type ColumnModifier } from "../config/settings";
-import { editorTheme } from "./theme";
+import { editorThemeFor } from "./theme";
 import { loadLanguage, languageKeyFromPath } from "./languages";
 import { occurrences } from "./occurrences";
+import { rainbowBrackets } from "./rainbowBrackets";
 import { bookmarkGutter, bookmarkKeymap } from "./bookmarks";
 import { openColumnEditor } from "./columnEditor";
 import { searchExtensions } from "./search";
@@ -137,9 +138,22 @@ function buildKeymap() {
 
 function indentationExtensions() {
   return [
-    indentUnit.of(" ".repeat(settings.tabSize)),
+    indentUnit.of(settings.insertSpaces ? " ".repeat(settings.tabSize) : "\t"),
     EditorState.tabSize.of(settings.tabSize),
   ];
+}
+
+/** 编辑器主题扩展（语法主题 + 字号，随配置热更新） */
+function themeExtensions() {
+  return editorThemeFor(settings.editorTheme, settings.editorFontSize);
+}
+
+/** 行号 / 活动行高亮（layout 配置可开关） */
+function chromeExtensions() {
+  const exts: Extension[] = [];
+  if (settings.showLineNumbers) exts.push(lineNumbers());
+  if (settings.showActiveLine) exts.push(highlightActiveLine(), highlightActiveLineGutter());
+  return exts;
 }
 
 function columnSelectionExtensions() {
@@ -166,10 +180,13 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   const indentCompartment = new Compartment();
   const keymapCompartment = new Compartment();
   const bracketCompartment = new Compartment();
+  const rainbowBracketsCompartment = new Compartment();
   const indentGuidesCompartment = new Compartment();
   const occurrenceCompartment = new Compartment();
   const columnSelectionCompartment = new Compartment();
   const readOnlyCompartment = new Compartment();
+  const themeCompartment = new Compartment();
+  const chromeCompartment = new Compartment();
 
   /** loadDocument 期间抑制 dirty 回调 */
   let loading = false;
@@ -181,9 +198,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     state: EditorState.create({
       doc: "",
       extensions: [
-        lineNumbers(),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
+        chromeCompartment.of(chromeExtensions()),
         drawSelection(),
         history(),
         // 列选择前提：允许多选区（rectangularSelection 来自 @codemirror/view 核心）
@@ -191,15 +206,18 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         indentCompartment.of(indentationExtensions()),
         keymapCompartment.of(buildKeymap()),
         bracketCompartment.of(settings.bracketMatching ? bracketMatching() : []),
+        rainbowBracketsCompartment.of(
+          settings.rainbowBrackets ? rainbowBrackets() : [],
+        ),
         indentGuidesCompartment.of(settings.indentGuides ? indentationMarkers() : []),
         columnSelectionCompartment.of(columnSelectionExtensions()),
         occurrenceCompartment.of(settings.occurrenceHighlight ? occurrences() : []),
         whitespaceCompartment.of(whitespaceOn ? highlightWhitespace() : []),
         readOnlyCompartment.of(readOnlyExtensions(false)),
         languageCompartment.of([]),
+        themeCompartment.of(themeExtensions()),
         ...bookmarkGutter,
         ...searchExtensions(),
-        ...editorTheme,
         placeholder("打开文件开始编辑（Ctrl+S 保存）"),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !loading) {
@@ -261,9 +279,13 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     whitespaceOn = settings.showWhitespace;
     view.dispatch({
       effects: [
+        chromeCompartment.reconfigure(chromeExtensions()),
         indentCompartment.reconfigure(indentationExtensions()),
         keymapCompartment.reconfigure(buildKeymap()),
         bracketCompartment.reconfigure(settings.bracketMatching ? bracketMatching() : []),
+        rainbowBracketsCompartment.reconfigure(
+          settings.rainbowBrackets ? rainbowBrackets() : [],
+        ),
         indentGuidesCompartment.reconfigure(
           settings.indentGuides ? indentationMarkers() : [],
         ),
@@ -272,6 +294,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           settings.occurrenceHighlight ? occurrences() : [],
         ),
         whitespaceCompartment.reconfigure(whitespaceOn ? highlightWhitespace() : []),
+        themeCompartment.reconfigure(themeExtensions()),
       ],
     });
   }

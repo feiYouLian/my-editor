@@ -29,6 +29,8 @@ pub struct EditorEnhancements {
     pub show_whitespace: bool,
     pub bracket_matching: bool,
     pub indent_guides: bool,
+    /// 彩虹括号：括号对按嵌套深度循环着色
+    pub rainbow_brackets: bool,
 }
 
 impl Default for EditorEnhancements {
@@ -41,6 +43,7 @@ impl Default for EditorEnhancements {
             show_whitespace: false,
             bracket_matching: true,
             indent_guides: true,
+            rainbow_brackets: true,
         }
     }
 }
@@ -63,6 +66,44 @@ impl Default for KeybindingEntry {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
+pub struct StatusBarFieldEntry {
+    pub id: String,
+    pub visible: bool,
+}
+
+impl Default for StatusBarFieldEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            visible: true,
+        }
+    }
+}
+
+/// 状态栏字段默认显隐顺序（与前端 index.html data-field 对应）
+fn default_status_bar_fields() -> Vec<StatusBarFieldEntry> {
+    [
+        "path",
+        "readonly",
+        "size",
+        "encoding",
+        "newline",
+        "language",
+        "whitespace",
+        "cursor",
+        "lines",
+        "dirty",
+    ]
+    .iter()
+    .map(|id| StatusBarFieldEntry {
+        id: (*id).into(),
+        visible: true,
+    })
+    .collect()
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
 pub struct LayoutSettings {
     pub sidebar_visible: bool,
     pub split_ratio: f64,
@@ -70,6 +111,10 @@ pub struct LayoutSettings {
     pub default_view_mode: String,
     pub show_line_numbers: bool,
     pub show_active_line: bool,
+    /// 编辑器字号（px）
+    pub editor_font_size: u32,
+    /// 状态栏字段（数组顺序即展示顺序）
+    pub status_bar_fields: Vec<StatusBarFieldEntry>,
 }
 
 impl Default for LayoutSettings {
@@ -80,6 +125,8 @@ impl Default for LayoutSettings {
             default_view_mode: "split".into(),
             show_line_numbers: true,
             show_active_line: true,
+            editor_font_size: 13,
+            status_bar_fields: default_status_bar_fields(),
         }
     }
 }
@@ -222,8 +269,10 @@ impl Default for LogSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct AppConfig {
     pub version: u32,
-    /// "dark" | "light" | "system"
+    /// "dark" | "light" | "high-contrast" | "system"
     pub theme: String,
+    /// 编辑器语法主题："dark" | "light" | "high-contrast"
+    pub editor_theme: String,
     pub tab_size: u32,
     pub insert_spaces: bool,
     pub format_on_save: bool,
@@ -251,6 +300,7 @@ impl Default for AppConfig {
         Self {
             version: CONFIG_VERSION,
             theme: "dark".into(),
+            editor_theme: "dark".into(),
             tab_size: 2,
             insert_spaces: true,
             format_on_save: false,

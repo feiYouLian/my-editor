@@ -19,9 +19,10 @@ const GROUPS: Group[] = [
   {
     title: "编辑器",
     fields: [
-      { key: "theme", meaning: "主题：dark / light / system（当前仅 dark 生效）", effect: "预留" },
+      { key: "theme", meaning: "应用主题：dark / light / high-contrast / system（设置中心切换）", effect: "即时" },
+      { key: "editorTheme", meaning: "编辑器语法主题：dark / light / high-contrast（独立于应用主题）", effect: "即时" },
       { key: "tabSize", meaning: "缩进宽度（空格数）", effect: "即时" },
-      { key: "insertSpaces", meaning: "Tab 键是否插入空格", effect: "预留" },
+      { key: "insertSpaces", meaning: "Tab 键插入空格（false 时插入制表符）", effect: "即时" },
       { key: "formatOnSave", meaning: "保存时自动格式化", effect: "预留" },
       { key: "highlighterDisabledOver", meaning: "行数超过此值禁用语法高亮、降级纯文本", effect: "下次打开文件" },
       { key: "largeFileThreshold", meaning: "文件字节数 ≥ 此值（默认 20MB）则打开为只读", effect: "即时" },
@@ -45,10 +46,12 @@ const GROUPS: Group[] = [
   {
     title: "layout（窗口与布局）",
     fields: [
-      { key: "sidebarVisible", meaning: "启动时是否显示左侧文件树", effect: "重启后" },
-      { key: "splitRatio", meaning: "双栏预览默认分割比例（0–1）", effect: "预留" },
-      { key: "defaultViewMode", meaning: "Markdown / HTML 默认视图：edit / preview / split", effect: "预留" },
-      { key: "showLineNumbers / showActiveLine", meaning: "行号 / 当前行高亮开关", effect: "预留" },
+      { key: "sidebarVisible", meaning: "是否显示左侧文件树（启动时按此恢复）", effect: "即时" },
+      { key: "splitRatio", meaning: "双栏预览默认分割比例（0.15–0.85，拖动后记忆到 localStorage）", effect: "即时" },
+      { key: "defaultViewMode", meaning: "Markdown / HTML 默认视图：edit / preview / split", effect: "即时" },
+      { key: "showLineNumbers / showActiveLine", meaning: "行号 / 当前行高亮开关", effect: "即时" },
+      { key: "editorFontSize", meaning: "编辑器字号（px，10–24）", effect: "即时" },
+      { key: "statusBarFields", meaning: "状态栏字段显隐与排序（id + visible 数组）", effect: "即时" },
     ],
   },
   {
@@ -56,7 +59,7 @@ const GROUPS: Group[] = [
     fields: [
       { key: "largeFile.sparseIndexAnchorBytes", meaning: "稀疏行索引锚点字节间隔", effect: "预留" },
       { key: "largeFile.viewportPaddingLines", meaning: "虚拟视图视口上下额外渲染行数", effect: "预留" },
-      { key: "keybindings", meaning: "自定义键位表（命令 → 键位）", effect: "预留" },
+      { key: "keybindings", meaning: "自定义键位表（命令 → 键位），设置中心可重绑定 / 冲突检测", effect: "即时" },
       { key: "session", meaning: "会话恢复、草稿自动保存与保留天数", effect: "预留" },
       { key: "workspace", meaning: "工作区记忆开关与上次目录", effect: "预留" },
       { key: "search", meaning: "全局搜索并行度与分块字节数", effect: "预留" },
@@ -97,7 +100,7 @@ export function showSettingsHelp(): void {
   const intro = document.createElement("p");
   intro.className = "dialog-text";
   intro.textContent =
-    "改完 config.json 后，用「帮助 ▸ 重新加载配置」立即生效，或重启应用。文件大小阈值等项标注了生效方式。";
+    "大多数设置也可在「设置」面板（Ctrl+,）中图形化修改，效果相同。改完 config.json 后，用「设置 ▸ 重新加载配置」立即生效，或重启应用。文件大小阈值等项标注了生效方式。";
   dialog.append(intro);
 
   const body = document.createElement("div");
