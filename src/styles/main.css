@@ -1653,6 +1653,174 @@ button.danger:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* ---------- 大文件只读虚拟视图 ---------- */
+.large-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+}
+
+.large-view.hidden {
+  display: none;
+}
+
+/* 虚拟视图占用整列，编辑器与预览一并隐藏 */
+.editor-column.virtual .editor-area {
+  display: none;
+}
+
+.lv-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.lv-title {
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lv-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.lv-filter {
+  width: 200px;
+  background: var(--bg-elevated);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.lv-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.lv-select {
+  background: var(--bg-elevated);
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.lv-btn,
+.lv-toggle {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.lv-btn:hover {
+  color: inherit;
+  border-color: var(--accent);
+}
+
+.lv-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.lv-index {
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lv-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.lv-minimap {
+  flex-shrink: 0;
+  width: 64px;
+  border-right: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.lv-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.lv-spacer {
+  position: relative;
+}
+
+.lv-rows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+
+.lv-row {
+  display: flex;
+  height: 18px;
+  line-height: 18px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.lv-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.lv-no {
+  width: 64px;
+  flex-shrink: 0;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--text-secondary);
+  opacity: 0.65;
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.lv-text {
+  flex: 1;
+  min-width: 0;
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lv-status {
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .hidden {
   visibility: hidden;
 }

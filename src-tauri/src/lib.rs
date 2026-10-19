@@ -6,8 +6,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::search::SearchState::default())
+        .manage(commands::large::LargeState::default())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
+            commands::file::probe_file,
             commands::file::reopen_with_encoding,
             commands::file::read_image_file,
             commands::file::save_file,
@@ -33,6 +35,14 @@ pub fn run() {
             commands::diff::git_available,
             commands::diff::git_diff,
             commands::diff::export_patch,
+            commands::large::open_large_file,
+            commands::large::large_file_info,
+            commands::large::read_large_lines,
+            commands::large::filter_large_file,
+            commands::large::cancel_large_task,
+            commands::large::large_minimap,
+            commands::large::set_large_encoding,
+            commands::large::close_large_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

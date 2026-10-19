@@ -59,6 +59,7 @@ import {
 } from "./config/keybindings";
 import { SettingsPanel } from "./panels/settingsPanel";
 import { DiffPanel, type DiffPayload } from "./panels/diffPanel";
+import { LargeView, type LargeFileInfo } from "./panels/largeView";
 import type { FileContent, SaveResult } from "./types/app";
 
 // ---------------------------------------------------------------------------
@@ -462,6 +463,7 @@ async function closeTab(id: string): Promise<void> {
   }
   tabStore.close(id);
   previewModes.delete(id);
+  void releaseLargeSession(tab);
 }
 
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化工作区 */
@@ -483,10 +485,29 @@ async function loadActiveTab(): Promise<void> {
   if (!tab) {
     // 无标签：清空编辑器、预览与结果面板，回到默认空态
     editorHandle.loadDocument("", "");
+    editorColumn()?.classList.remove("virtual");
+    largeView().close();
     refreshPreview();
     resultsPanel?.refresh();
     return;
   }
+  if (tab.virtual && tab.largeId) {
+    // 大文件只读虚拟视图：隐藏编辑器与预览，行内容按窗口拉取
+    editorColumn()?.classList.add("virtual");
+    try {
+      const info = await invoke<LargeFileInfo>("large_file_info", { id: tab.largeId });
+      await largeView().open(info);
+    } catch {
+      // 会话已释放（例如应用重建）：退回编辑器路径
+      tab.virtual = false;
+      tab.largeId = undefined;
+      editorColumn()?.classList.remove("virtual");
+      await loadActiveTab();
+    }
+    return;
+  }
+  editorColumn()?.classList.remove("virtual");
+  largeView().close();
   await editorHandle.loadDocument(tab.path ?? "", tab.content, tab.readonly);
   // 文件树联动：展开祖先目录并高亮当前文件
   if (tab.path) fileTree.revealPath(tab.path);
@@ -864,7 +885,7 @@ function isImagePath(path: string): boolean {
 /** 从路径打开（文件树点击 / 工作区恢复 / 对话框共用） */
 async function openFilePath(
   path: string,
-  opts: { silent?: boolean } = {},
+  opts: { silent?: boolean; forceEditor?: boolean } = {},
 ): Promise<void> {
   const existing = tabStore.findByPath(path);
   if (existing) {
@@ -883,7 +904,27 @@ async function openFilePath(
       tabStore.openImage(img.path, img.name, img.size, img.data_url);
       return;
     }
-    // 文本：经只读守卫——≥20MB 或 .log 命中时仍载入但标记只读
+    // 文本：先探测体积与扩展名——命中分流规则则进入只读虚拟视图（不全量载入内存）
+    if (!opts.forceEditor) {
+      try {
+        const probe = await invoke<{ size: number; extension: string }>("probe_file", { path });
+        if (needVirtualView(probe.size, probe.extension)) {
+          const info = await invoke<LargeFileInfo>("open_large_file", {
+            path,
+            anchorBytes: getConfig().largeFile.sparseIndexAnchorBytes,
+          });
+          tabStore.openVirtual(info);
+          if (!opts.silent) {
+            showMessage(`${info.name}：${info.totalLines} 行，已进入只读虚拟视图`);
+          }
+          return;
+        }
+      } catch (e) {
+        // 虚拟视图不可用（如 UTF-16）时回退编辑器路径
+        console.warn("[large] 回退编辑器打开:", e);
+      }
+    }
+    // 编辑器路径：经只读守卫——命中阈值或日志扩展名时仍载入但标记只读
     const data = await invoke<FileContent>("open_text_file", {
       path,
       largeFileThreshold: settings.largeFileThreshold,
@@ -1070,6 +1111,68 @@ function toggleResultsPanel(): void {
     return;
   }
   resultsPanel = new SearchResultsPanel(resultsContainer, editorHandle.view);
+}
+
+// ---- 大文件只读虚拟视图（B4）----
+
+/** 延迟构造：工作区恢复可能早于本模块初始化完成，避免取不到 DOM 或触发 TDZ */
+let largeViewInstance: LargeView | null = null;
+
+function largeView(): LargeView {
+  if (!largeViewInstance) {
+    largeViewInstance = new LargeView($("large-view"), {
+      onMessage: showMessage,
+      onOpenInEditor: (info) => void openLargeInEditor(info),
+    });
+  }
+  return largeViewInstance;
+}
+
+function editorColumn(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".editor-column");
+}
+
+/** 是否走只读虚拟视图：体积超阈值，或扩展名命中日志列表 */
+function needVirtualView(size: number, extension: string): boolean {
+  if (size >= settings.largeFileThreshold) return true;
+  return extension !== "" && getConfig().largeFile.logExtensions.includes(extension);
+}
+
+/** 释放大文件会话（标签关闭时调用） */
+async function releaseLargeSession(tab: Tab): Promise<void> {
+  if (!tab.largeId) return;
+  await largeView().cancel();
+  try {
+    await invoke("close_large_file", { id: tab.largeId });
+  } catch {
+    // 会话已释放
+  }
+}
+
+/** 逃生门：改用编辑器打开（超阈值时二次确认） */
+async function openLargeInEditor(info: LargeFileInfo): Promise<void> {
+  const tab = tabStore.findByPath(info.path);
+  if (!tab) return;
+  if (info.size >= settings.largeFileThreshold) {
+    const mb = Math.round(info.size / 1024 / 1024);
+    const ok = window.confirm(
+      `文件约 ${mb} MB，以编辑器打开会全量载入内存，可能影响性能。确定继续吗？`,
+    );
+    if (!ok) return;
+  }
+  try {
+    await invoke("close_large_file", { id: info.id });
+    const data = await invoke<FileContent>("open_text_file", {
+      path: info.path,
+      largeFileThreshold: settings.largeFileThreshold,
+      logExtensions: getConfig().largeFile.logExtensions,
+    });
+    tabStore.convertVirtual(tab.id, data);
+    await loadActiveTab();
+    showMessage(data.readonly ? `${data.readonly_reason}，已以只读方式打开` : "已在编辑器中打开");
+  } catch (e) {
+    showMessage(`打开失败：${String(e).split("\n")[0]}`);
+  }
 }
 
 // ---- 差异比较（B8）：未保存改动 / 与另一文件 / 与 Git ----

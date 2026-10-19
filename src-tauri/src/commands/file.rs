@@ -252,6 +252,28 @@ pub(crate) fn atomic_write(target: &Path, bytes: &[u8]) -> Result<u64, String> {
     ))
 }
 
+/// 文件字节数与扩展名：供打开前判断走编辑器还是只读虚拟视图
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileProbe {
+    pub size: u64,
+    pub extension: String,
+}
+
+#[tauri::command]
+pub fn probe_file(path: String) -> Result<FileProbe, String> {
+    let p = PathBuf::from(&path);
+    let meta = fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?;
+    let extension = p
+        .extension()
+        .map(|s| format!(".{}", s.to_string_lossy().to_lowercase()))
+        .unwrap_or_default();
+    Ok(FileProbe {
+        size: meta.len(),
+        extension,
+    })
+}
+
 /// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换
 #[tauri::command]
 pub fn save_file(

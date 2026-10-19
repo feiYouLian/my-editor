@@ -1912,6 +1912,7 @@ dependencies = [
  "chardetng",
  "encoding_rs",
  "ignore",
+ "memchr",
  "regex",
  "serde",
  "serde_json",

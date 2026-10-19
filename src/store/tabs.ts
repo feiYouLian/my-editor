@@ -35,6 +35,10 @@ export interface Tab {
   readonly: boolean;
   /** 只读原因（非只读时为空串） */
   readonlyReason: string;
+  /** 大文件虚拟视图标签：content 为空，行内容按窗口从后端拉取 */
+  virtual?: boolean;
+  /** 大文件会话 id（virtual 时有效） */
+  largeId?: string;
 }
 
 let seq = 0;
@@ -90,6 +94,75 @@ class TabStore {
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
+    this.emit();
+    return tab;
+  }
+
+  /** 打开大文件只读虚拟视图标签（同一路径若已有普通标签则以虚拟视图取代） */
+  openVirtual(info: {
+    id: string;
+    path: string;
+    name: string;
+    size: number;
+    encoding: string;
+    newline: string;
+  }): Tab {
+    const existing = this.tabs.find((t) => t.path === info.path);
+    if (existing) {
+      if (existing.virtual) {
+        this.activeId = existing.id;
+        this.emit();
+        return existing;
+      }
+      const idx = this.tabs.indexOf(existing);
+      if (idx >= 0) this.tabs.splice(idx, 1);
+    }
+    const tab: Tab = {
+      id: `tab-${++seq}`,
+      path: info.path,
+      name: info.name,
+      kind: "text",
+      content: "",
+      savedContent: "",
+      size: info.size,
+      dirty: false,
+      encoding: info.encoding,
+      savedEncoding: info.encoding,
+      newline: info.newline,
+      savedNewline: info.newline,
+      has_bom: false,
+      encodingConfidence: "high",
+      encodingCandidates: [],
+      readonly: true,
+      readonlyReason: "大文件只读视图",
+      virtual: true,
+      largeId: info.id,
+    };
+    this.tabs.push(tab);
+    this.activeId = tab.id;
+    this.emit();
+    return tab;
+  }
+
+  /** 把虚拟视图标签就地转为普通文本标签（逃生门：改用编辑器打开） */
+  convertVirtual(id: string, content: FileContent): Tab | null {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return null;
+    tab.virtual = false;
+    tab.largeId = undefined;
+    tab.content = content.content;
+    tab.savedContent = content.content;
+    tab.size = content.size;
+    tab.encoding = content.encoding;
+    tab.savedEncoding = content.encoding;
+    tab.newline = content.newline;
+    tab.savedNewline = content.newline;
+    tab.has_bom = content.has_bom;
+    tab.encodingConfidence = content.encoding_confidence;
+    tab.encodingCandidates = content.encoding_candidates;
+    tab.readonly = content.readonly;
+    tab.readonlyReason = content.readonly_reason;
+    tab.dirty = false;
     this.emit();
     return tab;
   }

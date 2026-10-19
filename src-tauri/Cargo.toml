@@ -23,6 +23,7 @@ chardetng = "0.1"
 ignore = "0.4"
 regex = "1"
 similar = "2.7.0"
+memchr = "2.8.3"
 
 # 设计文档 8 风险表：strip + LTO + 体积优化，目标安装包 <15MB
 [profile.release]
