@@ -17,6 +17,8 @@
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
+        "resizable": true,
+        "center": true,
         "decorations": false
       }
     ],
@@ -26,13 +28,29 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis"],
+    "targets": "all",
+    "publisher": "my-editor",
+    "copyright": "Copyright © 2026 my-editor",
+    "category": "DeveloperTool",
+    "shortDescription": "轻量级定制文本编辑器",
+    "longDescription": "面向开发者的轻量级文本编辑器：多标签、编码检测与转码、全局搜索替换、大文件只读虚拟视图、差异比较、预览导出与格式化。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null
+    }
   }
 }

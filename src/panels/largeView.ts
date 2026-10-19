@@ -41,7 +41,7 @@ export interface LargeViewDeps {
 
 /** 固定行高是虚拟化的前提；长行横向裁剪并用 tooltip 呈现全文 */
 const LINE_HEIGHT = 18;
-const PADDING_LINES = 200;
+const DEFAULT_PADDING_LINES = 200;
 const MINIMAP_BUCKETS = 240;
 const CACHE_LIMIT = 5000;
 const ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
@@ -65,6 +65,7 @@ export class LargeView {
   private caseOn = false;
   private regexOn = false;
   private loading = false;
+  private paddingLines = DEFAULT_PADDING_LINES;
   private rafId = 0;
   private unlisteners: Array<() => void> = [];
 
@@ -211,8 +212,9 @@ export class LargeView {
 
   // ---- 生命周期 ----
 
-  async open(info: LargeFileInfo): Promise<void> {
+  async open(info: LargeFileInfo, paddingLines = DEFAULT_PADDING_LINES): Promise<void> {
     this.info = info;
+    this.paddingLines = Math.max(0, paddingLines);
     this.matches = null;
     this.density = [];
     this.cache.clear();
@@ -348,8 +350,8 @@ export class LargeView {
       return;
     }
 
-    const start = Math.max(0, firstVisible - PADDING_LINES);
-    const end = Math.min(total, firstVisible + visibleCount + PADDING_LINES);
+    const start = Math.max(0, firstVisible - this.paddingLines);
+    const end = Math.min(total, firstVisible + visibleCount + this.paddingLines);
     this.loading = true;
     try {
       await this.fetchRange(start, end - start);

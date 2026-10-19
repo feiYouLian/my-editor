@@ -25,8 +25,9 @@ regex = "1"
 similar = "2.7.0"
 memchr = "2.8.3"
 
-# 设计文档 8 风险表：strip + LTO + 体积优化，目标安装包 <15MB
+# 发布体积优化：strip 符号 + LTO + 体积优先优化 + 单代码单元
 [profile.release]
 strip = true
 lto = true
 opt-level = "s"
+codegen-units = 1

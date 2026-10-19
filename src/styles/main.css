@@ -20,7 +20,7 @@
   --rb-5: #b48ef7; /* 紫 */
 }
 
-/* ---------- 浅色主题（设置中心 B7，15.2） ---------- */
+/* ---------- 浅色主题 ---------- */
 :root[data-theme="light"] {
   --bg-app: #eef0f3;
   --bg-panel: #ffffff;
@@ -1838,7 +1838,7 @@ button.danger:hover {
 .rbk-4 { color: var(--rb-4); }
 .rbk-5 { color: var(--rb-5); }
 
-/* ---------- 设置中心（B7，第 15 章） ---------- */
+/* ---------- 设置中心 ---------- */
 .settings-backdrop {
   position: fixed;
   inset: 0;

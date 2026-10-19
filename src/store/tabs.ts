@@ -39,6 +39,8 @@ export interface Tab {
   virtual?: boolean;
   /** 大文件会话 id（virtual 时有效） */
   largeId?: string;
+  /** 会话恢复的占位标签：仅登记路径，内容待首次激活时才载入 */
+  pending?: boolean;
 }
 
 let seq = 0;
@@ -144,12 +146,8 @@ class TabStore {
     return tab;
   }
 
-  /** 把虚拟视图标签就地转为普通文本标签（逃生门：改用编辑器打开） */
-  convertVirtual(id: string, content: FileContent): Tab | null {
-    const tab = this.tabs.find((t) => t.id === id);
-    if (!tab) return null;
-    tab.virtual = false;
-    tab.largeId = undefined;
+  /** 用已载入内容填充标签（占位标签载入 / 虚拟标签转编辑器共用） */
+  private applyContent(tab: Tab, content: FileContent): void {
     tab.content = content.content;
     tab.savedContent = content.content;
     tab.size = content.size;
@@ -163,6 +161,54 @@ class TabStore {
     tab.readonly = content.readonly;
     tab.readonlyReason = content.readonly_reason;
     tab.dirty = false;
+    tab.pending = false;
+  }
+
+  /** 把虚拟视图标签就地转为普通文本标签（逃生门：改用编辑器打开） */
+  convertVirtual(id: string, content: FileContent): Tab | null {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return null;
+    tab.virtual = false;
+    tab.largeId = undefined;
+    this.applyContent(tab, content);
+    this.emit();
+    return tab;
+  }
+
+  /** 会话恢复的占位标签：仅登记路径，首次激活时才载入内容 */
+  openPending(path: string, name: string): Tab {
+    const existing = this.tabs.find((t) => t.path === path);
+    if (existing) return existing;
+    const tab: Tab = {
+      id: `tab-${++seq}`,
+      path,
+      name,
+      kind: "text",
+      content: "",
+      savedContent: "",
+      size: 0,
+      dirty: false,
+      encoding: "",
+      savedEncoding: "",
+      encodingConfidence: "",
+      encodingCandidates: [],
+      newline: "",
+      savedNewline: "",
+      has_bom: false,
+      readonly: false,
+      readonlyReason: "",
+      pending: true,
+    };
+    this.tabs.push(tab);
+    this.emit();
+    return tab;
+  }
+
+  /** 占位标签内容载入完成 */
+  fillPending(id: string, content: FileContent): Tab | null {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return null;
+    this.applyContent(tab, content);
     this.emit();
     return tab;
   }

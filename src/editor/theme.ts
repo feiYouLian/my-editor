@@ -6,7 +6,7 @@ import type { Extension } from "@codemirror/state";
 import type { EditorThemeSetting } from "../config/settings";
 
 /**
- * 编辑器主题工厂（设置中心 B7，见设计文档 15.2）。
+ * 编辑器主题工厂：按主题类别与字号组装编辑器扩展。
  * 应用 UI 主题走 CSS 变量（main.css :root[data-theme]），编辑器语法主题在此切换：
  * - dark：one-dark（默认）
  * - light：CM6 默认浅色高亮 + 浅色结构底

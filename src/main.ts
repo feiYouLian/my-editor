@@ -365,7 +365,7 @@ function refreshStatus(): void {
   refreshWhitespace();
 }
 
-// ---- 应用主题（设置中心 B7，15.2）：CSS 变量切换，system 跟随系统偏好 ----
+// ---- 应用主题：CSS 变量切换，system 跟随系统偏好 ----
 
 const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
@@ -491,12 +491,16 @@ async function loadActiveTab(): Promise<void> {
     resultsPanel?.refresh();
     return;
   }
+  if (tab.pending && tab.path) {
+    // 会话恢复的占位标签：首次激活时才载入内容
+    if (!(await loadPendingTab(tab))) return;
+  }
   if (tab.virtual && tab.largeId) {
     // 大文件只读虚拟视图：隐藏编辑器与预览，行内容按窗口拉取
     editorColumn()?.classList.add("virtual");
     try {
       const info = await invoke<LargeFileInfo>("large_file_info", { id: tab.largeId });
-      await largeView().open(info);
+      await largeView().open(info, getConfig().largeFile.viewportPaddingLines);
     } catch {
       // 会话已释放（例如应用重建）：退回编辑器路径
       tab.virtual = false;
@@ -1113,7 +1117,7 @@ function toggleResultsPanel(): void {
   resultsPanel = new SearchResultsPanel(resultsContainer, editorHandle.view);
 }
 
-// ---- 大文件只读虚拟视图（B4）----
+// ---- 大文件只读虚拟视图 ----
 
 /** 延迟构造：工作区恢复可能早于本模块初始化完成，避免取不到 DOM 或触发 TDZ */
 let largeViewInstance: LargeView | null = null;
@@ -1136,6 +1140,35 @@ function editorColumn(): HTMLElement | null {
 function needVirtualView(size: number, extension: string): boolean {
   if (size >= settings.largeFileThreshold) return true;
   return extension !== "" && getConfig().largeFile.logExtensions.includes(extension);
+}
+
+/** 占位标签首次激活：按分流规则载入内容；返回 false 表示已改走其它路径 */
+async function loadPendingTab(tab: Tab): Promise<boolean> {
+  const path = tab.path;
+  if (!path) return false;
+  try {
+    const probe = await invoke<{ size: number; extension: string }>("probe_file", { path });
+    if (needVirtualView(probe.size, probe.extension)) {
+      const info = await invoke<LargeFileInfo>("open_large_file", {
+        path,
+        anchorBytes: getConfig().largeFile.sparseIndexAnchorBytes,
+      });
+      tabStore.close(tab.id);
+      tabStore.openVirtual(info);
+      return false;
+    }
+    const data = await invoke<FileContent>("open_text_file", {
+      path,
+      largeFileThreshold: settings.largeFileThreshold,
+      logExtensions: getConfig().largeFile.logExtensions,
+    });
+    tabStore.fillPending(tab.id, data);
+    return true;
+  } catch (e) {
+    tabStore.close(tab.id);
+    showMessage(`载入失败：${String(e).split("\n")[0]}`);
+    return false;
+  }
 }
 
 /** 释放大文件会话（标签关闭时调用） */
@@ -1175,7 +1208,7 @@ async function openLargeInEditor(info: LargeFileInfo): Promise<void> {
   }
 }
 
-// ---- 差异比较（B8）：未保存改动 / 与另一文件 / 与 Git ----
+// ---- 差异比较：未保存改动 / 与另一文件 / 与 Git ----
 
 const diffPanel = new DiffPanel();
 
@@ -1295,7 +1328,7 @@ async function diffWithGit(scope: "worktree" | "index"): Promise<void> {
   }
 }
 
-// ---- 设置中心（B7，Ctrl+, / 菜单 / 命令面板）----
+// ---- 设置中心（Ctrl+, / 菜单 / 命令面板）----
 const settingsPanel = new SettingsPanel({
   onSidebarVisible: (visible) => {
     // 仅应用到界面；持久化由 updateSettings 完成
@@ -1650,16 +1683,18 @@ async function bootstrap(): Promise<void> {
     wsName.textContent = state.root.split(/[\\/]/).pop() || state.root;
     wsName.title = state.root;
   }
-  // 恢复打开的文件（含当前文件）
-  for (const path of state.open_files) {
-    await openFilePath(path, { silent: true });
-  }
+  // 恢复打开的文件：当前文件即时载入，其余先建占位标签（首次激活时才读盘）
   if (state.active_file) {
-    const tab = tabStore.findByPath(state.active_file);
-    if (tab) tabStore.activate(tab.id);
-  } else if (activeTab()) {
-    tabStore.activate(tabStore.list()[0].id);
+    await openFilePath(state.active_file, { silent: true });
   }
+  for (const path of state.open_files) {
+    if (path === state.active_file) continue;
+    tabStore.openPending(path, path.split(/[\\/]/).pop() ?? path);
+  }
+  const target = state.active_file
+    ? tabStore.findByPath(state.active_file)
+    : tabStore.list()[0];
+  if (target) tabStore.activate(target.id);
 }
 
 void bootstrap();
