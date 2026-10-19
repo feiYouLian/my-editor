@@ -239,8 +239,6 @@ export class FileTree {
     this.callbacks.onWorkspaceStateChange({
       root: this.root,
       expanded: [...this.expanded],
-      open_files: [],
-      active_file: null,
     });
   }
 

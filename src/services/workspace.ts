@@ -2,16 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 /**
- * 工作区服务：
- * 打开目录 + 持久化根目录/展开状态/打开文件列表。
+ * 工作区服务：打开目录 + 持久化根目录与展开状态。
  * 状态存 Rust 侧 workspace.json（Tauri 配置目录），启动时恢复。
+ * 打开的文件列表与光标位置不在此文件，见 services/session.ts。
  */
 
 export interface WorkspaceState {
   root: string | null;
   expanded: string[];
-  open_files: string[];
-  active_file: string | null;
 }
 
 export async function loadWorkspace(): Promise<WorkspaceState> {

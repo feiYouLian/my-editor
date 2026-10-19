@@ -37,6 +37,19 @@ export interface DiffAction {
   run: () => void | Promise<void>;
 }
 
+/**
+ * 差异块级「采用某一侧」。
+ * side 为要采用的一侧；另一侧视为文档基线，采用后写回编辑器内容（由调用方实现）。
+ */
+export interface HunkAdopt {
+  side: "left" | "right";
+  /** 当前是否可执行（如标签有未保存改动时禁用） */
+  enabled: () => boolean;
+  /** 不可用时的解释（作为按钮 title） */
+  title?: string;
+  run: (hunkIndex: number) => void;
+}
+
 /** 未变动区段超过该行数时折叠 */
 const COLLAPSE_OVER = 8;
 const COLLAPSE_KEEP = 3;
@@ -45,18 +58,35 @@ export class DiffPanel {
   private backdrop: HTMLElement | null = null;
   private payload: DiffPayload | null = null;
   private actions: DiffAction[] = [];
+  private adopt: HunkAdopt | null = null;
+  private adoptBtn: HTMLButtonElement | null = null;
   private body!: HTMLElement;
   private navInfo!: HTMLElement;
   private currentHunk = -1;
   private expandedGaps = new Set<number>();
   private wrap = true;
 
-  /** 打开差异视图；actions 为场景相关操作按钮 */
-  open(payload: DiffPayload, actions: DiffAction[] = []): void {
+  /** 当前展示的差异数据（供调用方在采用差异块后重新合并） */
+  getPayload(): DiffPayload | null {
+    return this.payload;
+  }
+
+  /** 打开差异视图；actions 为场景相关操作按钮，adopt 为差异块级采用（可选） */
+  open(
+    payload: DiffPayload,
+    actions: DiffAction[] = [],
+    adopt?: HunkAdopt,
+    initialHunk?: number,
+  ): void {
     this.close();
     this.payload = payload;
     this.actions = actions;
-    this.currentHunk = payload.hunks.length ? 0 : -1;
+    this.adopt = adopt ?? null;
+    this.adoptBtn = null;
+    const last = payload.hunks.length - 1;
+    this.currentHunk = payload.hunks.length
+      ? Math.min(Math.max(initialHunk ?? 0, 0), last)
+      : -1;
     this.expandedGaps.clear();
 
     const backdrop = document.createElement("div");
@@ -162,6 +192,25 @@ export class DiffPanel {
         actionBar.append(btn);
       }
       dialog.append(actionBar);
+    }
+
+    // ---- 差异块采用（块级合并：把当前差异块替换为某一侧内容） ----
+    if (this.adopt) {
+      const adoptBar = document.createElement("div");
+      adoptBar.className = "diff-action-bar";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "df-btn df-btn-wide";
+      btn.textContent = this.adopt.side === "left" ? "采用左侧" : "采用右侧";
+      btn.title =
+        this.adopt.title ??
+        `把当前差异块替换为${this.adopt.side === "left" ? "左侧" : "右侧"}内容（写回编辑器，需手动保存）`;
+      btn.addEventListener("click", () => {
+        if (this.currentHunk >= 0) this.adopt?.run(this.currentHunk);
+      });
+      adoptBar.append(btn);
+      dialog.append(adoptBar);
+      this.adoptBtn = btn;
     }
 
     // ---- 主体 ----
@@ -334,5 +383,8 @@ export class DiffPanel {
   private syncNav(): void {
     const total = this.payload?.hunks.length ?? 0;
     this.navInfo.textContent = total === 0 ? "无差异" : `第 ${this.currentHunk + 1} / ${total} 处`;
+    if (this.adoptBtn) {
+      this.adoptBtn.disabled = total === 0 || this.currentHunk < 0 || !this.adopt?.enabled();
+    }
   }
 }

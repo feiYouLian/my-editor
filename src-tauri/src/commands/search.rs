@@ -414,3 +414,71 @@ pub fn restore_backups(files: Vec<String>) -> Result<usize, String> {
     }
     Ok(restored)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_query_is_literal() {
+        // '.' 与 '*' 在非正则模式下不应作为通配符
+        let re = build_regex("a.b*c", &SearchOptions::default()).unwrap();
+        assert!(re.is_match("xa.b*cy"));
+        assert!(!re.is_match("aXb/c"));
+    }
+
+    #[test]
+    fn case_insensitive_by_default() {
+        let re = build_regex("Hello", &SearchOptions::default()).unwrap();
+        assert!(re.is_match("say hello world"));
+    }
+
+    #[test]
+    fn case_sensitive_when_requested() {
+        let opts = SearchOptions {
+            case_sensitive: true,
+            ..SearchOptions::default()
+        };
+        let re = build_regex("Hello", &opts).unwrap();
+        assert!(!re.is_match("say hello world"));
+        assert!(re.is_match("say Hello world"));
+    }
+
+    #[test]
+    fn regex_mode_uses_raw_pattern() {
+        let opts = SearchOptions {
+            use_regex: true,
+            ..SearchOptions::default()
+        };
+        let re = build_regex(r"\d{3}", &opts).unwrap();
+        assert!(re.is_match("abc123"));
+        assert!(!re.is_match("ab12"));
+    }
+
+    #[test]
+    fn invalid_regex_reports_error() {
+        let opts = SearchOptions {
+            use_regex: true,
+            ..SearchOptions::default()
+        };
+        assert!(build_regex("(", &opts).is_err());
+    }
+
+    #[test]
+    fn clamp_head_keeps_tail_with_ellipsis() {
+        let long = "a".repeat(100);
+        let out = clamp_head(&long);
+        assert!(out.starts_with('…'));
+        assert_eq!(out.chars().count(), 81);
+        assert_eq!(clamp_head("short"), "short");
+    }
+
+    #[test]
+    fn clamp_tail_keeps_head_with_ellipsis() {
+        let long = "b".repeat(200);
+        let out = clamp_tail(&long);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 121);
+        assert_eq!(clamp_tail("short"), "short");
+    }
+}

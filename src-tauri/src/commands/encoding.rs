@@ -121,3 +121,66 @@ pub fn encode(text: &str, name: &str, bom: bool) -> Result<Vec<u8>, String> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 「中文测试」的 GBK 字节
+    const GBK_CJK: [u8; 8] = [0xD6, 0xD0, 0xCE, 0xC4, 0xB2, 0xE2, 0xCA, 0xD4];
+
+    #[test]
+    fn bom_takes_priority() {
+        let mut utf8 = vec![0xEF, 0xBB, 0xBF];
+        utf8.extend_from_slice("中文".as_bytes());
+        let g = guess(&utf8);
+        assert_eq!(g.encoding, "UTF-8");
+        assert_eq!(g.confidence, "bom");
+
+        assert_eq!(guess(&[0xFF, 0xFE, 0x41, 0x00]).encoding, "UTF-16 LE");
+        assert_eq!(guess(&[0xFE, 0xFF, 0x00, 0x41]).encoding, "UTF-16 BE");
+        assert_eq!(guess(&[0xFF, 0xFE, 0x41, 0x00]).confidence, "bom");
+    }
+
+    #[test]
+    fn valid_utf8_preferred() {
+        let g = guess("你好，世界 hello".as_bytes());
+        assert_eq!(g.encoding, "UTF-8");
+        assert_eq!(g.confidence, "high");
+    }
+
+    #[test]
+    fn non_utf8_cjk_not_judged_as_utf8() {
+        let g = guess(&GBK_CJK);
+        assert_ne!(g.encoding, "UTF-8");
+        assert_eq!(decode(&GBK_CJK, "GBK").unwrap(), "中文测试");
+    }
+
+    #[test]
+    fn candidates_always_returned() {
+        assert_eq!(guess(&GBK_CJK).candidates.len(), CANDIDATES.len());
+    }
+
+    #[test]
+    fn gbk_roundtrip() {
+        let text = "中文测试 ABC 123";
+        let bytes = encode(text, "GBK", false).unwrap();
+        assert_eq!(decode(&bytes, "GBK").unwrap(), text);
+    }
+
+    #[test]
+    fn utf8_bom_only_when_requested() {
+        let plain = encode("hi", "UTF-8", false).unwrap();
+        assert!(!plain.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let with_bom = encode("hi", "UTF-8", true).unwrap();
+        assert!(with_bom.starts_with(&[0xEF, 0xBB, 0xBF]));
+        assert_eq!(decode(&with_bom, "UTF-8").unwrap(), "hi");
+    }
+
+    #[test]
+    fn unknown_label_rejected() {
+        assert!(lookup("NO-SUCH-ENCODING").is_none());
+        assert!(decode(b"x", "NO-SUCH-ENCODING").is_err());
+        assert!(encode("x", "NO-SUCH-ENCODING", false).is_err());
+    }
+}

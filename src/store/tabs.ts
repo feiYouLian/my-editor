@@ -213,6 +213,17 @@ class TabStore {
     return tab;
   }
 
+  /** 应用草稿内容：作为未保存修改（基线仍取磁盘内容，故标脏） */
+  applyDraft(id: string, content: string): Tab | null {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return null;
+    tab.content = content;
+    tab.pending = false;
+    this.refreshDirty(tab);
+    this.emit();
+    return tab;
+  }
+
   /** 打开图片（只读查看器） */
   openImage(path: string, name: string, size: number, dataUrl: string): Tab {
     const existing = this.tabs.find((t) => t.path === path);

@@ -1212,6 +1212,11 @@ button.danger:hover {
   font-weight: 600;
 }
 
+/* 草稿标记：仅激活标签存在未保存草稿时显示 */
+.status-draft {
+  color: var(--text-secondary);
+}
+
 .status-message {
   color: var(--accent);
   max-width: 40vw;

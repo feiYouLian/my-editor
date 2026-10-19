@@ -6,4 +6,5 @@ pub mod format;
 pub mod fs;
 pub mod large;
 pub mod search;
+pub mod session;
 pub mod workspace;

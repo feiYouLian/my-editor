@@ -1,7 +1,6 @@
 //! 工作区持久化
 //! 轻量版：workspace.json 存于 Tauri 应用配置目录，
-//! 记录根目录、展开状态、打开的文件列表与当前文件。
-//! 草稿与会话数据不存于此文件。
+//! 仅记录根目录与展开状态；打开的文件列表与光标见 session.rs。
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -15,12 +14,6 @@ pub struct WorkspaceState {
     /// 展开的目录路径列表
     #[serde(default)]
     pub expanded: Vec<String>,
-    /// 打开的文件列表（路径）
-    #[serde(default)]
-    pub open_files: Vec<String>,
-    /// 当前激活文件
-    #[serde(default)]
-    pub active_file: Option<String>,
 }
 
 fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {

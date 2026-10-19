@@ -34,7 +34,7 @@ import {
   type PreviewTab,
 } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
-import { confirmCloseDirty } from "./ui/dialogs";
+import { confirmAction, confirmCloseDirty } from "./ui/dialogs";
 import { showConfigReloaded, showSettingsHelp } from "./ui/settingsHelp";
 import { placeMenu } from "./ui/menu";
 import {
@@ -43,6 +43,17 @@ import {
   pickDirectory,
   type WorkspaceState,
 } from "./services/workspace";
+import {
+  loadSession,
+  saveSessionDebounced,
+  writeDraft,
+  deleteDraft,
+  listDrafts,
+  readDraft,
+  cleanupDrafts,
+  type DraftInfo,
+  type SessionFile,
+} from "./services/session";
 import {
   settings,
   getConfig,
@@ -58,7 +69,13 @@ import {
   setExtraReservedKeys,
 } from "./config/keybindings";
 import { SettingsPanel } from "./panels/settingsPanel";
-import { DiffPanel, type DiffPayload } from "./panels/diffPanel";
+import {
+  DiffPanel,
+  type DiffAction,
+  type DiffPayload,
+  type DiffRow,
+  type HunkAdopt,
+} from "./panels/diffPanel";
 import { LargeView, type LargeFileInfo } from "./panels/largeView";
 import type { FileContent, SaveResult } from "./types/app";
 
@@ -87,6 +104,7 @@ const statusDirty = $<HTMLSpanElement>("status-dirty");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
 const statusReadonly = $<HTMLSpanElement>("status-readonly");
+const statusDraft = $<HTMLSpanElement>("status-draft");
 
 /** 状态栏空白字符指示（与编辑器实际状态联动） */
 function refreshWhitespace(): void {
@@ -327,7 +345,7 @@ let editorHandle: EditorHandle;
 let resultsPanel: SearchResultsPanel | null = null;
 const palette = new CommandPalette();
 
-/** 工作区状态（root/expanded 由文件树维护，open_files/active 由标签页维护） */
+/** 工作区根目录（root/expanded 由文件树维护并落 workspace.json） */
 let workspaceRoot: string | null = null;
 
 function formatSize(bytes: number): string {
@@ -477,20 +495,30 @@ async function closeTab(id: string): Promise<void> {
       }
     }
   }
+  // 关闭前把未保存内容落草稿，避免静默丢弃（已保存则顺带清除草稿）
+  if (tab.dirty) await persistDraft(id);
   tabStore.close(id);
   previewModes.delete(id);
+  cursorPos.delete(id);
+  draftKeys.delete(id);
+  const timer = draftTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    draftTimers.delete(id);
+  }
   void releaseLargeSession(tab);
 }
 
-/** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化工作区 */
+/** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
 tabStore.subscribe(() => {
   const prevActiveId = currentLoadedTabId;
   renderTabs();
   refreshStatus();
+  refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
     void loadActiveTab();
   }
-  persistWorkspace();
+  persistSession();
 });
 
 let currentLoadedTabId: string | null = null;
@@ -529,6 +557,7 @@ async function loadActiveTab(): Promise<void> {
   editorColumn()?.classList.remove("virtual");
   largeView().close();
   await editorHandle.loadDocument(tab.path ?? "", tab.content, tab.readonly);
+  applyRestoredCursor(tab);
   // 文件树联动：展开祖先目录并高亮当前文件
   if (tab.path) fileTree.revealPath(tab.path);
   // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器
@@ -536,16 +565,206 @@ async function loadActiveTab(): Promise<void> {
   resultsPanel?.refresh();
 }
 
-// ---- 工作区持久化 ----
+// ---- 工作区持久化（根目录与展开状态） ----
 
-function persistWorkspace(): void {
-  const state: WorkspaceState = {
-    root: workspaceRoot,
-    expanded: [],
-    open_files: tabStore.list().map((t) => t.path).filter((p): p is string => !!p),
-    active_file: activeTab()?.path ?? null,
-  };
-  saveWorkspaceDebounced(state);
+function persistWorkspaceWithExpanded(expanded: string[]): void {
+  saveWorkspaceDebounced({ root: workspaceRoot, expanded });
+}
+
+// ---- 会话与草稿持久化 ----
+
+/** 各标签最近光标位置（会话恢复用） */
+const cursorPos = new Map<string, { line: number; col: number }>();
+
+/** 会话恢复待应用的光标位置：文件路径 → 位置（标签首次载入后消费） */
+const restoredCursors = new Map<string, { line: number; col: number }>();
+
+/** 标签载入后应用会话恢复的光标位置 */
+function applyRestoredCursor(tab: Tab | null): void {
+  if (!tab?.path) return;
+  const pos = restoredCursors.get(tab.path);
+  if (!pos) return;
+  restoredCursors.delete(tab.path);
+  cursorPos.set(tab.id, { line: pos.line, col: pos.col });
+  const view = editorHandle.view;
+  const line = view.state.doc.line(Math.min(Math.max(1, pos.line), view.state.doc.lines));
+  const anchor = Math.min(line.from + Math.max(0, pos.col - 1), line.to);
+  view.dispatch({ selection: { anchor }, scrollIntoView: true });
+}
+
+/** 当前存在草稿的标签 id → 草稿 key */
+const draftKeys = new Map<string, string>();
+
+/** 每标签的草稿写入防抖定时器 */
+const draftTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function currentSplitRatio(): number | null {
+  try {
+    const v = localStorage.getItem("my-editor.splitRatio");
+    return v ? Number(v) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 落 session.json：打开文件列表（含光标）+ 激活文件 + 分栏比例 */
+function persistSession(): void {
+  const openFiles: SessionFile[] = [];
+  for (const tab of tabStore.list()) {
+    if (tab.kind !== "text" || !tab.path) continue;
+    const pos = cursorPos.get(tab.id);
+    openFiles.push({ path: tab.path, line: pos?.line ?? 1, col: pos?.col ?? 1 });
+  }
+  saveSessionDebounced({
+    openFiles,
+    activeFile: activeTab()?.path ?? null,
+    splitRatio: currentSplitRatio(),
+  });
+}
+
+/** 草稿只针对可编辑的普通文本标签（大文件虚拟视图 / 只读 / 占位标签不写） */
+function draftable(tab: Tab): boolean {
+  return tab.kind === "text" && !tab.virtual && !tab.pending && !tab.readonly;
+}
+
+/** 草稿标识：文件路径；未命名标签用其标签 id */
+function draftKeyFor(tab: Tab): string {
+  return tab.path || `untitled:${tab.id}`;
+}
+
+/** 输入后防抖写草稿（配置关闭时不写） */
+function scheduleDraftSave(tab: Tab): void {
+  if (!getConfig().session.draftAutosave || !draftable(tab)) return;
+  const pending = draftTimers.get(tab.id);
+  if (pending) clearTimeout(pending);
+  draftTimers.set(
+    tab.id,
+    setTimeout(() => {
+      draftTimers.delete(tab.id);
+      void persistDraft(tab.id);
+    }, getConfig().session.draftDebounceMs),
+  );
+}
+
+/** 写草稿：内容与磁盘一致时清除，否则写入并标记「草稿已存」 */
+async function persistDraft(tabId: string): Promise<void> {
+  const tab = tabStore.findById(tabId);
+  if (!tab || !draftable(tab)) return;
+  if (!tab.dirty) {
+    await discardDraft(tabId);
+    return;
+  }
+  const key = draftKeyFor(tab);
+  try {
+    await writeDraft({
+      key,
+      path: tab.path,
+      name: tab.name,
+      content: tab.content,
+      encoding: tab.encoding,
+      newline: tab.newline,
+      hasBom: tab.has_bom,
+    });
+    draftKeys.set(tabId, key);
+    refreshDraftBadge();
+  } catch (e) {
+    console.warn("[draft] 写入失败", e);
+  }
+}
+
+/** 删除草稿（保存成功 / 用户丢弃 / 内容回到基线时） */
+async function discardDraft(tabId: string): Promise<void> {
+  const timer = draftTimers.get(tabId);
+  if (timer) {
+    clearTimeout(timer);
+    draftTimers.delete(tabId);
+  }
+  const tab = tabStore.findById(tabId);
+  const key = draftKeys.get(tabId) ?? (tab ? draftKeyFor(tab) : null);
+  draftKeys.delete(tabId);
+  if (!key) return;
+  try {
+    await deleteDraft(key);
+  } catch {
+    // 草稿不存在或删除失败：忽略
+  }
+  refreshDraftBadge();
+}
+
+/** 状态栏「草稿已存」标记：仅激活标签存在草稿时显示 */
+function refreshDraftBadge(): void {
+  const tab = activeTab();
+  statusDraft.classList.toggle("hidden", !tab || !draftKeys.has(tab.id));
+}
+
+/** 草稿时间展示（YYYY-MM-DD HH:mm） */
+function draftTime(secs: number): string {
+  const d = new Date(secs * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** 找到/新建草稿对应的标签：有路径则打开（占位标签先载入），未命名则新建 */
+async function ensureTabForDraft(draft: DraftInfo): Promise<Tab | null> {
+  if (!draft.path) return newUntitled(draft.name);
+  let tab = tabStore.findByPath(draft.path);
+  if (!tab) {
+    await openFilePath(draft.path, { silent: true });
+    tab = tabStore.findByPath(draft.path);
+  }
+  if (!tab) return null;
+  // 大文件虚拟视图 / 占位标签尚未载入时草稿不适用
+  if (tab.virtual) return null;
+  if (tab.pending && !(await loadPendingTab(tab))) return null;
+  return tab;
+}
+
+/** 启动时处理草稿：原文件未变 →「恢复 / 丢弃」；原文件已变 →「另存为」 */
+async function offerDraftRecovery(): Promise<void> {
+  let drafts: DraftInfo[];
+  try {
+    drafts = await listDrafts();
+  } catch {
+    return;
+  }
+  let applied = false;
+  for (const draft of drafts) {
+    const payload = await readDraft(draft.key).catch(() => null);
+    if (draft.stale) {
+      const ok = await confirmAction(
+        `「${draft.name}」的原文件已被修改，草稿（${draftTime(draft.savedAt)}）已过期。是否另存为新的未命名文档？`,
+        "另存为",
+      );
+      if (!ok || !payload?.content) {
+        await deleteDraft(draft.key).catch(() => {});
+        continue;
+      }
+      const tab = newUntitled(draft.name);
+      tabStore.applyDraft(tab.id, payload.content);
+      applied = true;
+    } else {
+      const ok = await confirmAction(
+        `「${draft.name}」存在未保存的草稿（${draftTime(draft.savedAt)}），是否恢复？`,
+        "恢复",
+      );
+      if (!ok || !payload?.content) {
+        await deleteDraft(draft.key).catch(() => {});
+        continue;
+      }
+      const tab = await ensureTabForDraft(draft);
+      if (!tab) continue;
+      tabStore.applyDraft(tab.id, payload.content);
+      applied = true;
+      // 内容已接管：以新 key 立即重落草稿，避免中途丢失
+      void persistDraft(tab.id);
+    }
+    // 原草稿已消费，删除以免下次启动重复提示
+    await deleteDraft(draft.key).catch(() => {});
+  }
+  if (applied) {
+    if (activeTab()) await loadActiveTab();
+    showMessage("已恢复草稿内容（未保存，Ctrl+S 保存）");
+  }
 }
 
 // ---- 文件树 ----
@@ -630,15 +849,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeTabMenu();
 });
 
-function persistWorkspaceWithExpanded(expanded: string[]): void {
-  saveWorkspaceDebounced({
-    root: workspaceRoot,
-    expanded,
-    open_files: tabStore.list().map((t) => t.path).filter((p): p is string => !!p),
-    active_file: activeTab()?.path ?? null,
-  });
-}
-
 // ---- 编辑器初始化（CM6 仅承载 <20MB 文档）----
 editorHandle = createEditor($("editor"), {
   onDocChange: () => {
@@ -647,10 +857,17 @@ editorHandle = createEditor($("editor"), {
     tabStore.setContent(tab.id, editorHandle.getContent());
     const t = tabStore.findById(tab.id);
     if (t) previewHost.scheduleRender(toPreviewTab(t));
+    // 未保存内容防抖写入草稿（配置关闭时不写）
+    if (t) scheduleDraftSave(t);
   },
   onCursorChange: ({ line, col, totalLines }) => {
     statusCursor.textContent = `行 ${line}，列 ${col}`;
     statusLines.textContent = `共 ${totalLines} 行`;
+    const tab = activeTab();
+    if (tab) {
+      cursorPos.set(tab.id, { line, col });
+      persistSession();
+    }
   },
   onHighlightDisabled: (reason) => {
     console.info(`[editor] 高亮已禁用: ${reason}`);
@@ -1160,14 +1377,16 @@ async function writeTo(tab: Tab, path: string): Promise<void> {
     current.size = result.size;
   }
   tabStore.markSaved(tab.id);
+  // 内容已落盘：草稿不再需要
+  void discardDraft(tab.id);
   refreshStatus();
 }
 
-/** 新建未命名文档 */
-function newUntitled(): void {
+/** 新建未命名文档（可指定初始名称，用于草稿恢复） */
+function newUntitled(name = "未命名"): Tab {
   const content: FileContent = {
     path: "",
-    name: "未命名",
+    name,
     size: 0,
     content: "",
     encoding: "UTF-8",
@@ -1178,7 +1397,7 @@ function newUntitled(): void {
     readonly: false,
     readonly_reason: "",
   };
-  tabStore.open(content);
+  return tabStore.open(content);
 }
 
 /** 打开 config.json（便于查看/编辑配置） */
@@ -1216,10 +1435,17 @@ async function reloadConfig(): Promise<void> {
     } catch {
       cfgPath = null;
     }
-    // 配置若在编辑器标签中改过但未保存，先落盘——否则重新读到的仍是旧值
+    // 配置若在编辑器标签中改过但未保存，先询问是否落盘——否则重新读到的仍是旧值
     if (cfgPath) {
       const tab = tabStore.findByPath(cfgPath);
-      if (tab?.dirty) await writeTo(tab, cfgPath);
+      if (tab?.dirty) {
+        const ok = await confirmAction(
+          "config.json 有未保存的修改，是否保存后再重新加载？",
+          "保存并重新加载",
+        );
+        if (!ok) return; // 取消：不做任何改动，避免误丢编辑中的修改
+        await writeTo(tab, cfgPath);
+      }
     }
     const cfg = await loadSettings();
     showMessage("配置已重新加载");
@@ -1376,6 +1602,91 @@ async function openLargeInEditor(info: LargeFileInfo): Promise<void> {
 
 const diffPanel = new DiffPanel();
 
+/** 一次差异会话：采用差异块后可重新计算并刷新面板 */
+interface DiffSession {
+  /** 重新计算差异（采用后左侧基线可能已变，必须重新调用） */
+  load: () => Promise<DiffPayload>;
+  actions: DiffAction[];
+  /** 可采用的差异块动作；返回 null 表示当前场景不提供 */
+  adopt: () => HunkAdopt | null;
+  /** 合并结果是否保留结尾换行：按编辑器内容 / 磁盘基线判断 */
+  trailingFrom: "content" | "saved";
+}
+
+let diffSession: DiffSession | null = null;
+
+async function openDiff(session: DiffSession, hunkIndex?: number): Promise<void> {
+  diffSession = session;
+  try {
+    const payload = await session.load();
+    diffPanel.open(payload, session.actions, session.adopt() ?? undefined, hunkIndex);
+  } catch (e) {
+    showMessage(`比较失败：${String(e).split("\n")[0]}`);
+  }
+}
+
+/**
+ * 差异块合并：块内取 applySide、块外取 baseSide；该侧无对应行的行被丢弃。
+ * 差异行由 Rust 对齐输出，两侧单元格可拼回原文，故无需重新读取文件。
+ */
+function mergeHunk(
+  payload: DiffPayload,
+  hunkIndex: number,
+  baseSide: "left" | "right",
+  applySide: "left" | "right",
+  trailingNewline: boolean,
+): string {
+  const start = payload.hunks[hunkIndex]?.row;
+  let end = payload.rows.length;
+  if (start !== undefined) {
+    end = start;
+    while (end < payload.rows.length && payload.rows[end].kind !== "equal") end += 1;
+  }
+  const cell = (row: DiffRow, side: "left" | "right"): string | null => {
+    if (side === "left") return row.oldNo === null ? null : row.left;
+    return row.newNo === null ? null : row.right;
+  };
+
+  const lines: string[] = [];
+  payload.rows.forEach((row, i) => {
+    const side = start !== undefined && i >= start && i < end ? applySide : baseSide;
+    const text = cell(row, side);
+    if (text !== null) lines.push(text);
+  });
+  if (lines.length === 0) return "";
+  const joined = lines.join("\n");
+  return trailingNewline ? `${joined}\n` : joined;
+}
+
+/** 采用当前差异块：写回编辑器并重新计算差异，保持所在差异块位置 */
+async function adoptHunk(hunkIndex: number): Promise<void> {
+  const session = diffSession;
+  const payload = diffPanel.getPayload();
+  const adopt = session?.adopt();
+  if (!session || !payload || !adopt || !adopt.enabled()) return;
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text") return;
+  if (tab.readonly) {
+    showMessage("只读文件不支持差异块合并");
+    return;
+  }
+  // 文档基线侧：可采用侧的对侧
+  const baseSide: "left" | "right" = adopt.side === "left" ? "right" : "left";
+  const trailing =
+    session.trailingFrom === "content"
+      ? tab.content.endsWith("\n")
+      : tab.savedContent.endsWith("\n");
+  const merged = mergeHunk(payload, hunkIndex, baseSide, adopt.side, trailing);
+  if (merged === tab.content) {
+    showMessage("该处内容已与所选侧一致，无需改动");
+    return;
+  }
+  tabStore.setContent(tab.id, merged);
+  await loadActiveTab();
+  await openDiff(session, hunkIndex);
+  showMessage(`已采用第 ${hunkIndex + 1} 处差异块（未保存，Ctrl+S 生效）`);
+}
+
 /** 导出统一 diff 补丁到 <path>.patch */
 async function exportPatch(basePath: string, patch: string): Promise<void> {
   try {
@@ -1398,14 +1709,30 @@ async function compareWithPath(rightPath: string): Promise<void> {
     return;
   }
   const leftPath = tab.path;
-  try {
-    const payload = await invoke<DiffPayload>("diff_files", { leftPath, rightPath });
-    diffPanel.open(payload, [
-      { label: "导出补丁", run: () => void exportPatch(leftPath, payload.patch) },
-    ]);
-  } catch (e) {
-    showMessage(`比较失败：${String(e).split("\n")[0]}`);
-  }
+  const tabId = tab.id;
+  await openDiff({
+    load: () => invoke<DiffPayload>("diff_files", { leftPath, rightPath }),
+    actions: [
+      {
+        label: "导出补丁",
+        run: () => {
+          const p = diffPanel.getPayload();
+          if (p) void exportPatch(leftPath, p.patch);
+        },
+      },
+    ],
+    // 文档基线为左侧（当前文件磁盘内容）；仅当标签无未保存改动时两侧内容才对齐
+    adopt: () => ({
+      side: "right",
+      enabled: () => {
+        const t = tabStore.findById(tabId);
+        return !!t && !t.dirty && !t.readonly;
+      },
+      title: "采用右侧：把当前差异块替换为另一文件的内容（需先保存当前标签的改动）",
+      run: (i) => void adoptHunk(i),
+    }),
+    trailingFrom: "saved",
+  });
 }
 
 /** 与系统文件选择器挑选的文件比较 */
@@ -1444,29 +1771,48 @@ async function diffUnsaved(): Promise<void> {
     showMessage("当前文件没有未保存改动");
     return;
   }
-  try {
-    const payload = await invoke<DiffPayload>("diff_texts", {
-      leftText: tab.savedContent,
-      rightText: tab.content,
-      leftLabel: `磁盘 · ${tab.name}`,
-      rightLabel: `编辑中 · ${tab.name}`,
-    });
-    diffPanel.open(payload, [
+  const tabId = tab.id;
+  const name = tab.name;
+  await openDiff({
+    load: () => {
+      const t = tabStore.findById(tabId);
+      return invoke<DiffPayload>("diff_texts", {
+        leftText: t?.savedContent ?? "",
+        rightText: t?.content ?? "",
+        leftLabel: `磁盘 · ${name}`,
+        rightLabel: `编辑中 · ${name}`,
+      });
+    },
+    actions: [
       {
         label: "还原改动",
         title: "放弃编辑中的内容，回到磁盘版本",
         run: async () => {
-          tabStore.setContent(tab.id, tab.savedContent);
+          const t = tabStore.findById(tabId);
+          if (!t) return;
+          tabStore.setContent(tabId, t.savedContent);
           await loadActiveTab();
           diffPanel.close();
           showMessage("已还原为磁盘内容");
         },
       },
-      { label: "导出补丁", run: () => void exportPatch(tab.path ?? tab.name, payload.patch) },
-    ]);
-  } catch (e) {
-    showMessage(`比较失败：${String(e).split("\n")[0]}`);
-  }
+      {
+        label: "导出补丁",
+        run: () => {
+          const p = diffPanel.getPayload();
+          if (p) void exportPatch(tabStore.findById(tabId)?.path ?? name, p.patch);
+        },
+      },
+    ],
+    // 文档基线为右侧（编辑中）；可采用左侧把该处还原为磁盘内容
+    adopt: () => ({
+      side: "left",
+      enabled: () => !activeTab()?.readonly,
+      title: "采用左侧：把当前差异块还原为磁盘内容（写回编辑器，需手动保存）",
+      run: (i) => void adoptHunk(i),
+    }),
+    trailingFrom: "content",
+  });
 }
 
 /** 场景三：与 Git 比较（scope = worktree 工作区 | index 暂存区） */
@@ -1477,19 +1823,45 @@ async function diffWithGit(scope: "worktree" | "index"): Promise<void> {
     return;
   }
   const path = tab.path;
+  const tabId = tab.id;
+  let available: boolean;
   try {
-    const available = await invoke<boolean>("git_available", { path });
-    if (!available) {
-      showMessage("当前文件不在 Git 仓库中，无法比较");
-      return;
-    }
-    const payload = await invoke<DiffPayload>("git_diff", { path, scope });
-    diffPanel.open(payload, [
-      { label: "导出补丁", run: () => void exportPatch(path, payload.patch) },
-    ]);
+    available = await invoke<boolean>("git_available", { path });
   } catch (e) {
     showMessage(`Git 比较失败：${String(e).split("\n")[0]}`);
+    return;
   }
+  if (!available) {
+    showMessage("当前文件不在 Git 仓库中，无法比较");
+    return;
+  }
+  await openDiff({
+    load: () => invoke<DiffPayload>("git_diff", { path, scope }),
+    actions: [
+      {
+        label: "导出补丁",
+        run: () => {
+          const p = diffPanel.getPayload();
+          if (p) void exportPatch(path, p.patch);
+        },
+      },
+    ],
+    // worktree：文档基线为右侧（工作区磁盘内容），可采用左侧还原为 Git 版本；
+    // index：右侧是暂存区，与编辑器内容不对应，故不提供差异块采用
+    adopt: () =>
+      scope === "index"
+        ? null
+        : {
+            side: "left",
+            enabled: () => {
+              const t = tabStore.findById(tabId);
+              return !!t && !t.dirty && !t.readonly;
+            },
+            title: "采用左侧：把当前差异块还原为 Git 版本（需先保存当前标签的改动）",
+            run: (i) => void adoptHunk(i),
+          },
+    trailingFrom: "saved",
+  });
 }
 
 // ---- 设置中心（Ctrl+, / 菜单 / 命令面板）----
@@ -1830,7 +2202,7 @@ async function bootstrap(): Promise<void> {
   try {
     state = await loadWorkspace();
   } catch {
-    state = { root: null, expanded: [], open_files: [], active_file: null };
+    state = { root: null, expanded: [] };
   }
   workspaceRoot = state.root;
   if (state.root) {
@@ -1838,18 +2210,34 @@ async function bootstrap(): Promise<void> {
     wsName.textContent = state.root.split(/[\\/]/).pop() || state.root;
     wsName.title = state.root;
   }
-  // 恢复打开的文件：当前文件即时载入，其余先建占位标签（首次激活时才读盘）
-  if (state.active_file) {
-    await openFilePath(state.active_file, { silent: true });
+
+  // 过期草稿清理（保留天数取自配置，0 表示不清理）
+  void cleanupDrafts(getConfig().session.draftRetentionDays).catch(() => {});
+
+  // 恢复会话：打开文件列表 + 光标位置 + 分栏比例（可在配置中关闭）
+  if (getConfig().session.restoreOnStartup) {
+    try {
+      const sess = await loadSession();
+      if (sess.splitRatio != null) applySplitRatio(sess.splitRatio);
+      for (const f of sess.openFiles) {
+        restoredCursors.set(f.path, { line: f.line, col: f.col });
+      }
+      if (sess.activeFile) await openFilePath(sess.activeFile, { silent: true });
+      for (const f of sess.openFiles) {
+        if (f.path === sess.activeFile) continue;
+        tabStore.openPending(f.path, f.path.split(/[\\/]/).pop() ?? f.path);
+      }
+      const target = sess.activeFile
+        ? tabStore.findByPath(sess.activeFile)
+        : tabStore.list()[0];
+      if (target) tabStore.activate(target.id);
+    } catch (e) {
+      console.warn("[session] 恢复失败", e);
+    }
   }
-  for (const path of state.open_files) {
-    if (path === state.active_file) continue;
-    tabStore.openPending(path, path.split(/[\\/]/).pop() ?? path);
-  }
-  const target = state.active_file
-    ? tabStore.findByPath(state.active_file)
-    : tabStore.list()[0];
-  if (target) tabStore.activate(target.id);
+
+  // 草稿恢复提示（在会话恢复之后：原文件未变可恢复，已变则提示另存为）
+  await offerDraftRecovery();
 }
 
 void bootstrap();

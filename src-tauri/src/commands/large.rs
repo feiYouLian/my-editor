@@ -653,3 +653,104 @@ pub fn close_large_file(state: tauri::State<LargeState>, id: String) {
     let mut map = state.files.lock().unwrap_or_else(|e| e.into_inner());
     map.remove(&id);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// 写临时文件并返回路径（文件名带前缀，避免并发用例互相覆盖）
+    fn temp_file(tag: &str, content: &[u8]) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("my_editor_large_test_{tag}.txt"));
+        let mut file = File::create(&path).unwrap();
+        file.write_all(content).unwrap();
+        path
+    }
+
+    /// 跑完整索引，返回 Indexer 终态
+    fn index_all(path: &Path, anchor_bytes: u64) -> Indexer {
+        let mut indexer = Indexer::new(File::open(path).unwrap(), anchor_bytes);
+        while indexer.step().unwrap() {}
+        indexer
+    }
+
+    #[test]
+    fn counts_lines_for_lf_file() {
+        let p = temp_file("lf", b"a\nb\nc\n");
+        let idx = index_all(&p, 4096);
+        assert_eq!(idx.total_lines(), 3);
+        assert_eq!(idx.newline(), "LF");
+    }
+
+    #[test]
+    fn counts_residual_last_line_without_newline() {
+        let p = temp_file("noeol", b"a\nb\nc");
+        let idx = index_all(&p, 4096);
+        assert_eq!(idx.total_lines(), 3);
+        assert_eq!(idx.newline(), "LF");
+    }
+
+    #[test]
+    fn detects_crlf_when_majority() {
+        let p = temp_file("crlf", b"a\r\nb\r\nc\r\n");
+        let idx = index_all(&p, 4096);
+        assert_eq!(idx.total_lines(), 3);
+        assert_eq!(idx.newline(), "CRLF");
+    }
+
+    #[test]
+    fn empty_file_has_no_newline_style() {
+        let p = temp_file("empty", b"");
+        let idx = index_all(&p, 4096);
+        assert_eq!(idx.total_lines(), 0);
+        assert_eq!(idx.newline(), "NONE");
+    }
+
+    #[test]
+    fn anchors_always_land_on_line_start() {
+        // 每行 5000 字节，行距超过 4096 锚点间隔 → 每行各记一个锚点
+        let line = format!("{}\n", "x".repeat(5000));
+        let content = line.repeat(4);
+        let p = temp_file("anchors", content.as_bytes());
+        let idx = index_all(&p, 4096);
+        assert_eq!(idx.total_lines(), 4);
+        assert!(idx.anchors.len() >= 4);
+        let bytes = std::fs::read(&p).unwrap();
+        // 锚点首项固定为 (0,0)；其余锚点前一个字节必须是换行符（行首不变式）
+        assert_eq!(idx.anchors[0], (0, 0));
+        for &(pos, _line) in idx.anchors.iter().skip(1) {
+            assert_eq!(bytes[pos as usize - 1], b'\n');
+        }
+    }
+
+    #[test]
+    fn locate_returns_last_anchor_at_or_before_line() {
+        let anchors = vec![(0u64, 0usize), (10, 3), (20, 7)];
+        assert_eq!(locate(&anchors, 0), (0, 0));
+        assert_eq!(locate(&anchors, 3), (10, 3));
+        assert_eq!(locate(&anchors, 5), (10, 3));
+        assert_eq!(locate(&anchors, 7), (20, 7));
+        assert_eq!(locate(&anchors, 999), (20, 7));
+    }
+
+    #[test]
+    fn clamp_line_truncates_over_threshold() {
+        let short = "hello".to_string();
+        assert_eq!(clamp_line(short.clone()), (short, false));
+
+        let long = "y".repeat(MAX_LINE_CHARS + 10);
+        let (text, truncated) = clamp_line(long);
+        assert!(truncated);
+        assert!(text.ends_with('…'));
+        assert_eq!(text.chars().count(), MAX_LINE_CHARS + 1);
+    }
+
+    #[test]
+    fn utf16_bom_detected_and_utf8_rejected() {
+        assert!(is_utf16_bom(&[0xFF, 0xFE, 0x41, 0x00]));
+        assert!(is_utf16_bom(&[0xFE, 0xFF, 0x00, 0x41]));
+        assert!(!is_utf16_bom(&[0xEF, 0xBB, 0xBF]));
+        assert!(!is_utf16_bom(b"plain"));
+    }
+}

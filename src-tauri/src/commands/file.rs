@@ -60,6 +60,16 @@ fn detect_newline(text: &str) -> &'static str {
     }
 }
 
+/// 统一换行符为 LF（\r\n / \r → \n）。
+/// 编辑器内核按 \n 存储行；若原样保留 \r\n，编辑器内容与基线永远不相等，
+/// 会出现「撤销回原状仍显示未保存」。原始风格由 newline 字段承载，保存时还原。
+fn normalize_eol(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// 读取文件：编码检测（或按指定编码）+ 换行符探测
 /// 二进制文件（前 8KB 出现 NUL 字节且无 BOM）拒绝读取，提示不支持
 fn read_with_encoding(path: &str, forced: Option<&str>) -> Result<FileContent, String> {
@@ -82,8 +92,10 @@ fn read_with_encoding(path: &str, forced: Option<&str>) -> Result<FileContent, S
             (g.encoding, g.confidence, g.candidates)
         }
     };
-    let content = encoding::decode(&bytes, &encoding)?;
-    let newline = detect_newline(&content);
+    let raw = encoding::decode(&bytes, &encoding)?;
+    // 换行符风格取自原始文本，内容统一为 LF（见 normalize_eol）
+    let newline = detect_newline(&raw);
+    let content = normalize_eol(&raw);
     let name = p
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -274,6 +286,16 @@ pub fn probe_file(path: String) -> Result<FileProbe, String> {
     })
 }
 
+/// 按目标风格改写换行符（先把内容统一为 \n，避免 \r\n 被当作两个字符）
+fn apply_eol(text: &str, newline: &str) -> String {
+    let unified = normalize_eol(text);
+    match newline {
+        "CRLF" => unified.replace('\n', "\r\n"),
+        "CR" => unified.replace('\n', "\r"),
+        _ => unified, // LF / NONE
+    }
+}
+
 /// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换
 #[tauri::command]
 pub fn save_file(
@@ -284,16 +306,46 @@ pub fn save_file(
     encoding: String,
 ) -> Result<SaveResult, String> {
     let target = PathBuf::from(&path);
-
-    // 先把既有换行统一为 \n，再按目标格式改写（避免 \r\n 被当作两个字符）
-    let text = content.replace("\r\n", "\n");
-    let text = match newline.as_str() {
-        "CRLF" => text.replace('\n', "\r\n"),
-        "CR" => text.replace('\n', "\r"),
-        _ => text, // LF / NONE
-    };
-
+    let text = apply_eol(&content, &newline);
     let bytes = encoding::encode(&text, &encoding, has_bom)?;
     let size = atomic_write(&target, &bytes)?;
     Ok(SaveResult { path, size })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crlf_read_normalizes_content_but_keeps_style() {
+        assert_eq!(detect_newline("a\r\nb\r\n"), "CRLF");
+        assert_eq!(normalize_eol("a\r\nb\r\n"), "a\nb\n");
+    }
+
+    #[test]
+    fn lone_cr_read_normalizes_content_but_keeps_style() {
+        assert_eq!(detect_newline("a\rb\r"), "CR");
+        assert_eq!(normalize_eol("a\rb\r"), "a\nb\n");
+    }
+
+    #[test]
+    fn lf_and_single_line_texts_pass_through() {
+        assert_eq!(normalize_eol("a\nb\n"), "a\nb\n");
+        assert_eq!(detect_newline("a\nb\n"), "LF");
+        assert_eq!(detect_newline("no line break"), "NONE");
+    }
+
+    #[test]
+    fn mixed_endings_take_majority_style() {
+        assert_eq!(detect_newline("a\r\nb\r\nc\n"), "CRLF");
+    }
+
+    #[test]
+    fn save_restores_the_original_style() {
+        // 读入（CRLF → LF）后再保存（LF → CRLF）应还原原始字节风格
+        assert_eq!(apply_eol(&normalize_eol("a\r\nb\r\n"), "CRLF"), "a\r\nb\r\n");
+        assert_eq!(apply_eol("a\nb\n", "LF"), "a\nb\n");
+        assert_eq!(apply_eol("a\nb\n", "CR"), "a\rb\r");
+        assert_eq!(apply_eol("a\nb\n", "NONE"), "a\nb\n");
+    }
 }

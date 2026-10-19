@@ -97,21 +97,21 @@ fn flush_pending(
     inss.clear();
 }
 
-/// 归一化：CRLF / CR → LF，并去掉末尾单个换行。
-/// 编辑器内部一律使用 LF，若不归一化，CRLF 文件与编辑内容会整篇被判为修改。
+/// 归一化：CRLF / CR → LF，并保证文本以单个换行结尾。
+/// 编辑器内部一律使用 LF；不归一化时 CRLF 文件与编辑内容会整篇被判为修改。
+/// 补齐结尾换行让「最后一行缺少换行」与「有换行」等价，避免行数不同时把首行误判为修改。
 /// 返回值第二项表示原文是否含 CR（供界面提示「已忽略行尾差异」）。
 fn normalize(text: &str) -> (String, bool) {
     let had_cr = text.contains('\r');
-    let unified = if had_cr {
+    let mut unified = if had_cr {
         text.replace("\r\n", "\n").replace('\r', "\n")
     } else {
         text.to_string()
     };
-    let trimmed = match unified.strip_suffix('\n') {
-        Some(s) => s.to_string(),
-        None => unified,
-    };
-    (trimmed, had_cr)
+    if !unified.is_empty() && !unified.ends_with('\n') {
+        unified.push('\n');
+    }
+    (unified, had_cr)
 }
 
 fn payload(left_label: &str, right_label: &str, left: &str, right: &str) -> DiffPayload {
@@ -284,4 +284,79 @@ pub fn export_patch(path: String, content: String) -> Result<String, String> {
     std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
     std::fs::rename(&tmp, &target).map_err(|e| format!("替换失败: {e}"))?;
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_unifies_eol_and_ensures_trailing_newline() {
+        assert_eq!(normalize("a\r\nb\r\n"), ("a\nb\n".to_string(), true));
+        assert_eq!(normalize("a\nb"), ("a\nb\n".to_string(), false));
+        assert_eq!(normalize("x\ry"), ("x\ny\n".to_string(), true));
+        assert_eq!(normalize("z"), ("z\n".to_string(), false));
+        assert_eq!(normalize(""), (String::new(), false));
+    }
+
+    #[test]
+    fn trailing_newline_presence_is_not_a_difference() {
+        let p = payload("l", "r", "a\nb", "a\nb\n");
+        assert!(p.identical);
+    }
+
+    #[test]
+    fn identical_when_only_eol_differs() {
+        let p = payload("l", "r", "a\r\nb\r\n", "a\nb\n");
+        assert!(p.identical);
+        assert!(p.newline_normalized);
+        assert_eq!((p.added, p.removed), (0, 0));
+    }
+
+    #[test]
+    fn plain_identical_text_is_identical() {
+        let p = payload("l", "r", "same\ntext\n", "same\ntext\n");
+        assert!(p.identical);
+        assert!(!p.newline_normalized);
+    }
+
+    #[test]
+    fn change_pairs_deleted_with_inserted() {
+        let p = payload("l", "r", "one\ntwo\n", "one\nTWO\n");
+        assert!(!p.identical);
+        assert_eq!((p.added, p.removed), (1, 1));
+        let change = p.rows.iter().find(|r| r.kind == "change").expect("应有 change 行");
+        assert_eq!(change.left, "two");
+        assert_eq!(change.right, "TWO");
+        assert_eq!(p.hunks.len(), 1);
+        assert_eq!(p.hunks[0].old_start, 2);
+        assert_eq!(p.hunks[0].new_start, 2);
+    }
+
+    #[test]
+    fn pure_insertion_and_deletion() {
+        let ins = payload("l", "r", "a\n", "a\nb\nc\n");
+        assert_eq!((ins.added, ins.removed), (2, 0));
+        assert!(ins.rows.iter().any(|r| r.kind == "ins"));
+
+        let del = payload("l", "r", "a\nb\nc\n", "a\n");
+        assert_eq!((del.added, del.removed), (0, 2));
+        assert!(del.rows.iter().any(|r| r.kind == "del"));
+    }
+
+    #[test]
+    fn unchanged_lines_keep_both_line_numbers() {
+        let p = payload("l", "r", "a\nb\n", "a\nb\n");
+        for row in p.rows.iter().filter(|r| r.kind == "equal") {
+            assert_eq!(row.old_no, row.new_no);
+            assert_eq!(row.left, row.right);
+        }
+    }
+
+    #[test]
+    fn patch_carries_unified_header() {
+        let p = payload("left.txt", "right.txt", "a\n", "b\n");
+        assert!(p.patch.contains("--- left.txt"));
+        assert!(p.patch.contains("+++ right.txt"));
+    }
 }
