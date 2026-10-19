@@ -437,7 +437,23 @@ function renderTabs(): void {
     tabsBar.append(el);
   }
   tabsBar.classList.toggle("hidden", tabStore.list().length === 0);
+  // 标签过多溢出时，将激活标签滚入视野
+  tabsBar
+    .querySelector<HTMLElement>(".tab.active")
+    ?.scrollIntoView({ inline: "nearest", block: "nearest" });
 }
+
+// 标签过多时支持鼠标滚轮横向滚动
+tabsBar.addEventListener(
+  "wheel",
+  (e) => {
+    // 未溢出时不拦截滚动，交给默认行为
+    if (e.deltaY === 0 || tabsBar.scrollWidth <= tabsBar.clientWidth) return;
+    tabsBar.scrollLeft += e.deltaY;
+    e.preventDefault();
+  },
+  { passive: false },
+);
 
 async function closeTab(id: string): Promise<void> {
   const tab = tabStore.findById(id);
@@ -701,6 +717,154 @@ const previewHost = new PreviewHost($("preview-pane"), editorArea, (line) => {
 editorHandle.view.scrollDOM.addEventListener("scroll", () =>
   previewHost.syncFromEditor(editorHandle.view),
 );
+
+// ---- 当前文档查找 / 替换面板（菜单与右键菜单共用）----
+
+/** 打开当前文档的查找面板（只读文档也可用，仅查找） */
+function openFindInDoc(): void {
+  if (activeTab()?.kind !== "text") return;
+  editorHandle.view.focus();
+  openSearchPanel(editorHandle.view);
+}
+
+/** 打开当前文档的替换面板并聚焦替换框 */
+function openReplaceInDoc(): void {
+  if (activeTab()?.kind !== "text") return;
+  editorHandle.view.focus();
+  openSearchPanel(editorHandle.view);
+  editorHandle.view.dom.querySelector<HTMLInputElement>('input[name="replace"]')?.focus();
+}
+
+// ---- 剪贴板（编辑器右键菜单的剪切 / 复制 / 粘贴）----
+
+/** 将选区写入系统剪贴板；cut 为真时同时删除选区 */
+async function clipboardCopy(cut: boolean): Promise<void> {
+  const view = editorHandle.view;
+  const { ranges } = view.state.selection;
+  if (ranges.every((r) => r.empty)) return;
+  const text = ranges.map((r) => view.state.sliceDoc(r.from, r.to)).join("\n");
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    showMessage(`写入剪贴板失败：${String(e).split("\n")[0]}`);
+    return;
+  }
+  if (cut && !view.state.readOnly) {
+    const changes = ranges.map((r) => ({ from: r.from, to: r.to, insert: "" }));
+    view.dispatch({ changes, selection: { anchor: changes[0].from } });
+  }
+  view.focus();
+}
+
+/** 将系统剪贴板文本粘贴到当前选区 */
+async function clipboardPaste(): Promise<void> {
+  const view = editorHandle.view;
+  if (view.state.readOnly) return;
+  let text = "";
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (e) {
+    showMessage(`读取剪贴板失败：${String(e).split("\n")[0]}`);
+    return;
+  }
+  if (!text) return;
+  const { from, to } = view.state.selection.main;
+  view.dispatch({
+    changes: { from, to, insert: text },
+    selection: { anchor: from + text.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
+// ---- 编辑器右键菜单（对齐常用编辑器：编辑 + 剪贴板 + 查找 + 格式化）----
+
+let editorMenu: HTMLElement | null = null;
+
+function closeEditorMenu(): void {
+  editorMenu?.remove();
+  editorMenu = null;
+}
+
+function showEditorMenu(x: number, y: number): void {
+  closeEditorMenu();
+  const view = editorHandle.view;
+  const readonly = view.state.readOnly;
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+
+  type Entry = { label?: string; shortcut?: string; run?: () => void; separator?: boolean };
+  const items: Entry[] = [
+    { label: "撤销", shortcut: "Ctrl+Z", run: () => void undo(view) },
+    { label: "重做", shortcut: "Ctrl+Shift+Z", run: () => void redo(view) },
+    { separator: true },
+    { label: "剪切", shortcut: "Ctrl+X", run: () => void clipboardCopy(true) },
+    { label: "复制", shortcut: "Ctrl+C", run: () => void clipboardCopy(false) },
+    { label: "粘贴", shortcut: "Ctrl+V", run: () => void clipboardPaste() },
+    { separator: true },
+    {
+      label: "全选",
+      shortcut: "Ctrl+A",
+      run: () => view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }),
+    },
+    { separator: true },
+    { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
+    { label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() },
+    {
+      label: "全局查找…",
+      shortcut: "Ctrl+Shift+F",
+      run: () => showGlobalSearch(),
+    },
+  ];
+
+  // 只读文档隐藏所有会改动内容的项
+  if (!readonly) {
+    items.push(
+      { separator: true },
+      { label: "格式化文档", run: () => void formatCurrent() },
+      { label: "格式化选中内容", run: () => void formatSelectionCurrent() },
+      { label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) },
+    );
+  }
+
+  for (const item of items) {
+    if (item.separator) {
+      const sep = document.createElement("div");
+      sep.className = "context-menu-separator";
+      menu.append(sep);
+      continue;
+    }
+    const el = document.createElement("div");
+    el.className = "context-menu-item";
+    const label = document.createElement("span");
+    label.textContent = item.label ?? "";
+    el.append(label);
+    if (item.shortcut) {
+      const sc = document.createElement("span");
+      sc.className = "shortcut";
+      sc.textContent = item.shortcut;
+      el.append(sc);
+    }
+    el.addEventListener("click", () => {
+      closeEditorMenu();
+      item.run?.();
+    });
+    menu.append(el);
+  }
+
+  document.body.append(menu);
+  placeMenu(menu, x, y);
+  editorMenu = menu;
+}
+
+editorHandle.view.dom.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  showEditorMenu(e.clientX, e.clientY);
+});
+document.addEventListener("click", () => closeEditorMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeEditorMenu();
+});
 
 // ---- 侧栏搜索视图（文件树下方的 tab 区）----
 
@@ -1430,18 +1594,18 @@ if (import.meta.env.DEV) {
   devtoolsBtn.hidden = true;
 }
 
-// ---- 菜单栏（参考布局：文件/编辑/选择/查看/转到）----
+// ---- 菜单栏 ----
 new MenuBar($("menubar"), [
   {
     id: "file",
-    label: "文件(F)",
+    label: "文件",
     items: [
-      { label: "打开文件…", shortcut: "Ctrl+O", run: () => void openFileDialog() },
       { label: "新建", shortcut: "Ctrl+N", run: () => newUntitled() },
+      { label: "打开文件…", shortcut: "Ctrl+O", run: () => void openFileDialog() },
+      { label: "打开目录（工作区）…", run: () => void openWorkspaceDir() },
+      { separator: true },
       { label: "保存", shortcut: "Ctrl+S", run: () => void saveFile() },
       { label: "另存为…", shortcut: "Ctrl+Shift+S", run: () => void saveFileAs() },
-      { separator: true },
-      { label: "打开目录（工作区）…", run: () => void openWorkspaceDir() },
       { separator: true },
       {
         label: "关闭标签",
@@ -1456,23 +1620,30 @@ new MenuBar($("menubar"), [
   },
   {
     id: "edit",
-    label: "编辑(E)",
+    label: "编辑",
     items: [
       { label: "撤销", shortcut: "Ctrl+Z", run: () => void undo(editorHandle.view) },
       { label: "重做", shortcut: "Ctrl+Shift+Z", run: () => void redo(editorHandle.view) },
       { separator: true },
+      { label: "剪切", shortcut: "Ctrl+X", run: () => void clipboardCopy(true) },
+      { label: "复制", shortcut: "Ctrl+C", run: () => void clipboardCopy(false) },
+      { label: "粘贴", shortcut: "Ctrl+V", run: () => void clipboardPaste() },
+      { separator: true },
+      { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
+      { label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() },
+      { label: "全局查找…", shortcut: "Ctrl+Shift+F", run: () => showGlobalSearch() },
+      { label: "查找结果面板", run: () => toggleResultsPanel() },
+      { separator: true },
       { label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() },
       { label: "格式化选中内容", run: () => void formatSelectionCurrent() },
-      { separator: true },
-      { label: "全局查找…", shortcut: "Ctrl+Shift+F", run: () => showGlobalSearch() },
-      { separator: true },
       { label: "列编辑器", shortcut: "Alt+C", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
+      { separator: true },
       { label: "命令面板", shortcut: "Ctrl+Shift+P", run: () => palette.open() },
     ],
   },
   {
     id: "select",
-    label: "选择(S)",
+    label: "选择",
     items: [
       {
         label: "全选",
@@ -1485,25 +1656,9 @@ new MenuBar($("menubar"), [
     ],
   },
   {
-    id: "view",
-    label: "查看(V)",
-    items: [
-      {
-        label: "切换空白字符显示",
-        run: () => toggleWhitespacePersisted(),
-      },
-      { label: "查找结果面板", run: () => toggleResultsPanel() },
-      { separator: true },
-      { label: "切换侧栏", shortcut: "Ctrl+B", run: () => toggleSidebar() },
-    ],
-  },
-  {
     id: "go",
-    label: "转到(G)",
+    label: "转到",
     items: [
-      { label: "上一个标签", shortcut: "Ctrl+PageUp", run: () => switchTab(-1) },
-      { label: "下一个标签", shortcut: "Ctrl+PageDown", run: () => switchTab(1) },
-      { separator: true },
       { label: "下一个书签", shortcut: "F2", run: () => gotoBookmark(editorHandle.view, 1) },
       { label: "上一个书签", shortcut: "Shift+F2", run: () => gotoBookmark(editorHandle.view, -1) },
     ],
@@ -1523,7 +1678,7 @@ new MenuBar($("menubar"), [
     id: "settings",
     label: "设置",
     items: [
-      { label: "设置…", shortcut: "Ctrl+,", run: () => openSettings() },
+      { label: "设置中心…", shortcut: "Ctrl+,", run: () => openSettings() },
       { separator: true },
       { label: "配置说明", run: () => showSettingsHelp() },
       { label: "打开配置文件（config.json）", run: () => void openConfigFile() },
