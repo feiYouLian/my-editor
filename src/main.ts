@@ -58,6 +58,7 @@ import {
   setExtraReservedKeys,
 } from "./config/keybindings";
 import { SettingsPanel } from "./panels/settingsPanel";
+import { DiffPanel, type DiffPayload } from "./panels/diffPanel";
 import type { FileContent, SaveResult } from "./types/app";
 
 // ---------------------------------------------------------------------------
@@ -513,6 +514,7 @@ const btnOpenDir = $<HTMLButtonElement>("btn-open-dir");
 
 const fileTree = new FileTree(fileTreeEl, {
   onOpenFile: (path) => void openFilePath(path),
+  onCompareFile: (path) => void compareWithPath(path),
   onWorkspaceStateChange: (state) => {
     workspaceRoot = state.root;
     wsName.textContent = state.root
@@ -560,6 +562,7 @@ function showTabMenu(x: number, y: number, tabId: string): void {
   menu.className = "context-menu";
 
   const items: { label: string; run: () => void }[] = [
+    { label: "与当前标签比较", run: () => compareTabs(tabId) },
     { label: "关闭当前", run: () => void closeTab(tabId) },
     { label: "关闭左侧", run: () => void tabStore.closeLeft(tabId) },
     { label: "关闭右侧", run: () => void tabStore.closeRight(tabId) },
@@ -1069,6 +1072,126 @@ function toggleResultsPanel(): void {
   resultsPanel = new SearchResultsPanel(resultsContainer, editorHandle.view);
 }
 
+// ---- 差异比较（B8）：未保存改动 / 与另一文件 / 与 Git ----
+
+const diffPanel = new DiffPanel();
+
+/** 导出统一 diff 补丁到 <path>.patch */
+async function exportPatch(basePath: string, patch: string): Promise<void> {
+  try {
+    const written = await invoke<string>("export_patch", { path: basePath, content: patch });
+    showMessage(`补丁已导出：${written}`);
+  } catch (e) {
+    showMessage(`导出失败：${String(e).split("\n")[0]}`);
+  }
+}
+
+/** 以当前标签为左侧、给定路径为右侧做文件比较 */
+async function compareWithPath(rightPath: string): Promise<void> {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    showMessage("请先打开一个磁盘上的文本文件作为比较基准");
+    return;
+  }
+  if (tab.path === rightPath) {
+    showMessage("两侧是同一个文件，无需比较");
+    return;
+  }
+  const leftPath = tab.path;
+  try {
+    const payload = await invoke<DiffPayload>("diff_files", { leftPath, rightPath });
+    diffPanel.open(payload, [
+      { label: "导出补丁", run: () => void exportPatch(leftPath, payload.patch) },
+    ]);
+  } catch (e) {
+    showMessage(`比较失败：${String(e).split("\n")[0]}`);
+  }
+}
+
+/** 与系统文件选择器挑选的文件比较 */
+async function compareWithPickedFile(): Promise<void> {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "所有文件", extensions: ["*"] }],
+  });
+  if (typeof selected !== "string") return;
+  await compareWithPath(selected);
+}
+
+/** 以当前激活标签为左侧，与右键点击的标签比较 */
+function compareTabs(otherTabId: string): void {
+  if (otherTabId === activeTab()?.id) {
+    showMessage("请先切换到另一侧标签，或使用「比较 ▸ 与文件…比较」");
+    return;
+  }
+  const other = tabStore.findById(otherTabId);
+  if (!other?.path) {
+    showMessage("该标签不是磁盘上的文本文件");
+    return;
+  }
+  void compareWithPath(other.path);
+}
+
+/** 场景一：当前文件 磁盘内容 ⇄ 编辑中内容 */
+async function diffUnsaved(): Promise<void> {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text") {
+    showMessage("请先打开一个文本文件");
+    return;
+  }
+  if (!tab.dirty) {
+    showMessage("当前文件没有未保存改动");
+    return;
+  }
+  try {
+    const payload = await invoke<DiffPayload>("diff_texts", {
+      leftText: tab.savedContent,
+      rightText: tab.content,
+      leftLabel: `磁盘 · ${tab.name}`,
+      rightLabel: `编辑中 · ${tab.name}`,
+    });
+    diffPanel.open(payload, [
+      {
+        label: "还原改动",
+        title: "放弃编辑中的内容，回到磁盘版本",
+        run: async () => {
+          tabStore.setContent(tab.id, tab.savedContent);
+          await loadActiveTab();
+          diffPanel.close();
+          showMessage("已还原为磁盘内容");
+        },
+      },
+      { label: "导出补丁", run: () => void exportPatch(tab.path ?? tab.name, payload.patch) },
+    ]);
+  } catch (e) {
+    showMessage(`比较失败：${String(e).split("\n")[0]}`);
+  }
+}
+
+/** 场景三：与 Git 比较（scope = worktree 工作区 | index 暂存区） */
+async function diffWithGit(scope: "worktree" | "index"): Promise<void> {
+  const tab = activeTab();
+  if (!tab?.path || tab.kind !== "text") {
+    showMessage("请先打开一个磁盘上的文本文件");
+    return;
+  }
+  const path = tab.path;
+  try {
+    const available = await invoke<boolean>("git_available", { path });
+    if (!available) {
+      showMessage("当前文件不在 Git 仓库中，无法比较");
+      return;
+    }
+    const payload = await invoke<DiffPayload>("git_diff", { path, scope });
+    diffPanel.open(payload, [
+      { label: "导出补丁", run: () => void exportPatch(path, payload.patch) },
+    ]);
+  } catch (e) {
+    showMessage(`Git 比较失败：${String(e).split("\n")[0]}`);
+  }
+}
+
 // ---- 设置中心（B7，Ctrl+, / 菜单 / 命令面板）----
 const settingsPanel = new SettingsPanel({
   onSidebarVisible: (visible) => {
@@ -1250,6 +1373,17 @@ new MenuBar($("menubar"), [
     ],
   },
   {
+    id: "compare",
+    label: "比较",
+    items: [
+      { label: "与磁盘内容比较（未保存改动）", run: () => void diffUnsaved() },
+      { label: "与文件…比较", run: () => void compareWithPickedFile() },
+      { separator: true },
+      { label: "与 Git HEAD 比较", run: () => void diffWithGit("worktree") },
+      { label: "与 Git 暂存区比较", run: () => void diffWithGit("index") },
+    ],
+  },
+  {
     id: "settings",
     label: "设置",
     items: [
@@ -1274,6 +1408,10 @@ palette.registerAll([
       if (tab) void closeTab(tab.id);
     } },
   { id: "workspace.openDir", title: "打开目录（工作区）", section: "工作区", run: () => void openWorkspaceDir() },
+  { id: "diff.unsaved", title: "比较：与磁盘内容（未保存改动）", section: "比较", run: () => void diffUnsaved() },
+  { id: "diff.pickFile", title: "比较：与文件…", section: "比较", run: () => void compareWithPickedFile() },
+  { id: "diff.gitHead", title: "比较：与 Git HEAD", section: "比较", run: () => void diffWithGit("worktree") },
+  { id: "diff.gitIndex", title: "比较：与 Git 暂存区", section: "比较", run: () => void diffWithGit("index") },
   { id: "settings.open", title: "打开设置…", section: "设置", run: () => openSettings() },
   { id: "settings.openKeybindings", title: "设置：快捷键", section: "设置", run: () => openSettings("keybindings") },
   { id: "settings.openLayout", title: "设置：页面布局", section: "设置", run: () => openSettings("layout") },

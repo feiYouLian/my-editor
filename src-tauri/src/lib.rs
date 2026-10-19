@@ -28,6 +28,11 @@ pub fn run() {
             commands::search::replace_in_files,
             commands::search::restore_backups,
             commands::format::run_cli_formatter,
+            commands::diff::diff_texts,
+            commands::diff::diff_files,
+            commands::diff::git_available,
+            commands::diff::git_diff,
+            commands::diff::export_patch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

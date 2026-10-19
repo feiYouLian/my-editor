@@ -1447,6 +1447,212 @@ button.danger:hover {
   display: none;
 }
 
+/* ---------- 差异比较视图 ---------- */
+.diff-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.diff-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 96vw);
+  height: min(86vh, 900px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.diff-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.diff-stats {
+  display: flex;
+  gap: 8px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+}
+
+.df-add {
+  color: #6cc07a;
+}
+
+.df-del {
+  color: #d9736b;
+}
+
+.df-nav-info {
+  min-width: 78px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.df-btn {
+  height: 22px;
+  min-width: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.df-btn:hover:not(:disabled) {
+  color: inherit;
+  border-color: var(--accent);
+}
+
+.df-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.df-btn.df-btn-wide {
+  padding: 0 9px;
+}
+
+.df-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.diff-action-bar {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.diff-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.df-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 46px minmax(0, 1fr);
+}
+
+.df-no {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
+
+.df-cell {
+  padding: 0 8px;
+  white-space: pre;
+  overflow: hidden;
+}
+
+.diff-body.df-wrap .df-cell {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.df-right {
+  border-left: 1px solid var(--border);
+}
+
+.df-del .df-left,
+.df-change .df-left {
+  background: rgba(217, 115, 107, 0.18);
+}
+
+.df-ins .df-right,
+.df-change .df-right {
+  background: rgba(108, 192, 122, 0.18);
+}
+
+.df-del .df-right,
+.df-ins .df-left {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.df-gap {
+  padding: 2px 12px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.df-gap:hover {
+  color: var(--accent);
+}
+
+.diff-note {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.diff-hint {
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.diff-picker {
+  display: flex;
+  flex-direction: column;
+  max-height: 44vh;
+  overflow: auto;
+  margin: 6px 0;
+}
+
+.diff-picker-item {
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-picker-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .hidden {
   visibility: hidden;
 }

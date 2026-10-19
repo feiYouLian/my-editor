@@ -39,6 +39,8 @@ function fileIcon(name: string): string {
 
 export interface FileTreeCallbacks {
   onOpenFile: (path: string) => void;
+  /** 右键文件时「与当前文件比较」 */
+  onCompareFile?: (path: string) => void;
   onWorkspaceStateChange: (state: WorkspaceState) => void;
 }
 
@@ -259,6 +261,10 @@ export class FileTree {
       const dir = entry.path.split(/[\\/]/).slice(0, -1).join("\\");
       items.push({ label: "新建文件", action: () => void this.createIn(dir, false) });
       items.push({ label: "新建文件夹", action: () => void this.createIn(dir, true) });
+    }
+    const compare = this.callbacks.onCompareFile;
+    if (!entry.is_dir && compare) {
+      items.push({ label: "与当前文件比较", action: () => compare(entry.path) });
     }
     items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
     items.push({ label: "删除", action: () => void this.deleteEntry(entry) });

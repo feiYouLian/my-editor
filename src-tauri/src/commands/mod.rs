@@ -1,4 +1,5 @@
 pub mod config;
+pub mod diff;
 pub mod encoding;
 pub mod file;
 pub mod format;
