@@ -15,15 +15,18 @@ type ResizeDirection =
 import { createEditor, type EditorHandle } from "./editor/setup";
 import { SearchResultsPanel } from "./editor/searchPanel";
 import { languageDisplayNames, languageKeyFromPath } from "./editor/languages";
-import { formatDocument, formatSelection } from "./editor/format";
+import {
+  formatDocument,
+  formatSelection,
+  supportsFormatting,
+} from "./editor/format";
 import { openColumnEditor } from "./editor/columnEditor";
 import { toggleBookmark, gotoBookmark } from "./editor/bookmarks";
 import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
-import { FileTree } from "./panels/fileTree";
+import { FileTree, createEntryIcon } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
 import { MenuBar } from "./panels/menubar";
-import { GlobalSearchPanel } from "./panels/globalSearch";
 import {
   PreviewHost,
   buildStandaloneHtml,
@@ -77,7 +80,6 @@ import {
   type HunkAdopt,
 } from "./panels/diffPanel";
 import { LargeView, type LargeFileInfo } from "./panels/largeView";
-import { TodoPanel } from "./panels/todoPanel";
 import { CronPanel } from "./panels/cronPanel";
 import { BatchEncodingPanel } from "./panels/batchEncoding";
 import { RegexTesterPanel } from "./panels/regexTester";
@@ -101,6 +103,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const tabsBar = $<HTMLDivElement>("tabs");
+const breadcrumbEl = $<HTMLDivElement>("breadcrumb");
 const runBtn = $<HTMLButtonElement>("btn-run");
 const modeBar = $<HTMLDivElement>("preview-modes");
 const resultsContainer = $<HTMLDivElement>("search-results");
@@ -640,6 +643,188 @@ function renderTabs(): void {
     ?.scrollIntoView({ inline: "nearest", block: "nearest" });
 }
 
+// ---- 路径面包屑 ----
+
+/** 磁盘根（如 "D:"）与根之后的各级 */
+function splitAbsolutePath(path: string): { base: string; parts: string[] } {
+  const p = path.replace(/\//g, "\\");
+  const drive = /^([A-Za-z]:)(?:\\(.*))?$/.exec(p);
+  if (drive) {
+    return { base: drive[1], parts: drive[2] ? drive[2].split("\\").filter(Boolean) : [] };
+  }
+  if (p.startsWith("\\\\")) {
+    const segs = p.slice(2).split("\\").filter(Boolean);
+    return { base: `\\\\${segs.slice(0, 2).join("\\")}`, parts: segs.slice(2) };
+  }
+  return { base: "", parts: p.split("\\").filter(Boolean) };
+}
+
+/** 相对工作区根目录的层级；文件不在工作区内时返回 null */
+function workspaceRelativeParts(path: string): string[] | null {
+  if (!workspaceRoot) return null;
+  const norm = (s: string) => s.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  const root = norm(workspaceRoot);
+  const target = norm(path);
+  if (target === root) return [];
+  if (!target.startsWith(`${root}\\`)) return null;
+  const rootLen = workspaceRoot.replace(/[\\/]+$/, "").length;
+  return path.slice(rootLen + 1).split(/[\\/]/).filter(Boolean);
+}
+
+/** 面包屑条目：dir 有值可下拉；无值为当前文件 */
+interface Crumb {
+  label: string;
+  dir?: string;
+}
+
+function breadcrumbCrumbs(tab: Tab): Crumb[] {
+  if (!tab.path) return [{ label: tab.name }];
+  const rel = workspaceRelativeParts(tab.path);
+  if (rel && rel.length > 0) {
+    const root = workspaceRoot!.replace(/[\\/]+$/, "");
+    const crumbs: Crumb[] = [];
+    let acc = root;
+    rel.forEach((label, i) => {
+      acc = `${acc}\\${label}`;
+      crumbs.push(i === rel.length - 1 ? { label } : { label, dir: acc });
+    });
+    return crumbs;
+  }
+  const { base, parts } = splitAbsolutePath(tab.path);
+  const crumbs: Crumb[] = base ? [{ label: base, dir: base }] : [];
+  let acc = base;
+  parts.forEach((label, i) => {
+    acc = acc ? `${acc}\\${label}` : label;
+    crumbs.push(i === parts.length - 1 ? { label } : { label, dir: acc });
+  });
+  return crumbs;
+}
+
+let breadcrumbMenu: HTMLElement | null = null;
+let breadcrumbMenuDir: string | null = null;
+
+function closeBreadcrumbMenu(): void {
+  breadcrumbMenu?.remove();
+  breadcrumbMenu = null;
+  breadcrumbMenuDir = null;
+}
+
+/** 展开目录内容预览；点击子目录继续下钻，点击文件快速打开 */
+async function fillBreadcrumbMenu(
+  menu: HTMLElement,
+  dir: string,
+  anchor: HTMLElement,
+): Promise<void> {
+  breadcrumbMenuDir = dir;
+  menu.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "bc-title";
+  title.textContent = dir;
+  title.title = dir;
+  menu.append(title);
+
+  const place = (): void => {
+    const rect = anchor.getBoundingClientRect();
+    placeMenu(menu, rect.left, rect.bottom + 2);
+  };
+  place();
+
+  let entries: { name: string; path: string; is_dir: boolean }[];
+  try {
+    entries = await invoke("list_dir", { path: dir });
+  } catch (e) {
+    const err = document.createElement("div");
+    err.className = "bc-empty";
+    err.textContent = `读取失败：${String(e).split("\n")[0]}`;
+    menu.append(err);
+    place();
+    return;
+  }
+
+  if (entries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "bc-empty";
+    empty.textContent = "（空目录）";
+    menu.append(empty);
+    place();
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "bc-entry";
+    const icon = document.createElement("span");
+    icon.className = "bc-icon";
+    icon.append(createEntryIcon(entry.name, entry.is_dir));
+    const name = document.createElement("span");
+    name.className = "bc-name";
+    name.textContent = entry.name;
+    row.append(icon, name);
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (entry.is_dir) {
+        void fillBreadcrumbMenu(menu, entry.path, anchor);
+      } else {
+        closeBreadcrumbMenu();
+        void openFilePath(entry.path);
+      }
+    });
+    menu.append(row);
+  }
+  place();
+}
+
+async function showBreadcrumbMenu(dir: string, anchor: HTMLElement): Promise<void> {
+  // 再次点击同一层级＝收起
+  if (breadcrumbMenu && breadcrumbMenuDir === dir) {
+    closeBreadcrumbMenu();
+    return;
+  }
+  closeBreadcrumbMenu();
+  const menu = document.createElement("div");
+  menu.className = "context-menu breadcrumb-menu";
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  document.body.append(menu);
+  breadcrumbMenu = menu;
+  await fillBreadcrumbMenu(menu, dir, anchor);
+}
+
+/** 渲染当前标签的面包屑：工作区内从子目录开始，工作区外用绝对路径 */
+function renderBreadcrumb(): void {
+  closeBreadcrumbMenu();
+  breadcrumbEl.innerHTML = "";
+  const tab = activeTab();
+  breadcrumbEl.classList.toggle("hidden", !tab);
+  if (!tab) return;
+
+  const crumbs = breadcrumbCrumbs(tab);
+  crumbs.forEach((crumb, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "breadcrumb-sep";
+      sep.textContent = ">";
+      breadcrumbEl.append(sep);
+    }
+    const el = document.createElement("span");
+    el.className = crumb.dir ? "breadcrumb-item" : "breadcrumb-item current";
+    el.textContent = crumb.label;
+    el.title = crumb.dir ?? tab.path ?? tab.name;
+    if (crumb.dir) {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void showBreadcrumbMenu(crumb.dir!, el);
+      });
+    }
+    breadcrumbEl.append(el);
+  });
+}
+
+document.addEventListener("click", () => closeBreadcrumbMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeBreadcrumbMenu();
+});
+
 // 标签过多时支持鼠标滚轮横向滚动
 tabsBar.addEventListener(
   "wheel",
@@ -692,6 +877,7 @@ async function closeTab(id: string): Promise<void> {
 tabStore.subscribe(() => {
   const prevActiveId = currentLoadedTabId;
   renderTabs();
+  renderBreadcrumb();
   refreshStatus();
   refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
@@ -962,6 +1148,7 @@ const fileTree = new FileTree(fileTreeEl, {
       : "工作区";
     wsName.title = state.root ?? "";
     persistWorkspaceWithExpanded(state.expanded);
+    renderBreadcrumb();
   },
 });
 fileTree.mountGlobalListeners();
@@ -1177,58 +1364,52 @@ async function clipboardPaste(): Promise<void> {
 // ---- 编辑器右键菜单（对齐常用编辑器：编辑 + 剪贴板 + 查找 + 格式化）----
 
 let editorMenu: HTMLElement | null = null;
+let editorSubmenu: HTMLElement | null = null;
+let submenuTimer: number | null = null;
+
+interface MenuEntry {
+  label?: string;
+  shortcut?: string;
+  run?: () => void;
+  separator?: boolean;
+  submenu?: MenuEntry[];
+}
+
+function closeEditorSubmenu(): void {
+  if (submenuTimer !== null) {
+    window.clearTimeout(submenuTimer);
+    submenuTimer = null;
+  }
+  editorSubmenu?.remove();
+  editorSubmenu = null;
+}
+
+/** 鼠标离开菜单区域时延迟关闭；指针仍停在任一层菜单上则不关闭 */
+function scheduleSubmenuClose(): void {
+  if (submenuTimer !== null) window.clearTimeout(submenuTimer);
+  submenuTimer = window.setTimeout(() => {
+    submenuTimer = null;
+    if (editorSubmenu?.matches(":hover") || editorMenu?.matches(":hover")) return;
+    closeEditorSubmenu();
+  }, 300);
+}
 
 function closeEditorMenu(): void {
+  closeEditorSubmenu();
   editorMenu?.remove();
   editorMenu = null;
 }
 
-function showEditorMenu(x: number, y: number): void {
-  closeEditorMenu();
-  const view = editorHandle.view;
-  const readonly = view.state.readOnly;
-  const menu = document.createElement("div");
-  menu.className = "context-menu";
-
-  type Entry = { label?: string; shortcut?: string; run?: () => void; separator?: boolean };
-  const items: Entry[] = [
-    { label: "撤销", shortcut: "Ctrl+Z", run: () => void undo(view) },
-    { label: "重做", shortcut: "Ctrl+Shift+Z", run: () => void redo(view) },
-    { separator: true },
-    { label: "剪切", shortcut: "Ctrl+X", run: () => void clipboardCopy(true) },
-    { label: "复制", shortcut: "Ctrl+C", run: () => void clipboardCopy(false) },
-    { label: "粘贴", shortcut: "Ctrl+V", run: () => void clipboardPaste() },
-    { separator: true },
-    {
-      label: "全选",
-      shortcut: "Ctrl+A",
-      run: () => view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }),
-    },
-    { separator: true },
-    { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
-    { label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() },
-    {
-      label: "全局查找…",
-      shortcut: "Ctrl+Shift+F",
-      run: () => showGlobalSearch(),
-    },
-  ];
-
-  // 只读文档隐藏所有会改动内容的项
-  if (!readonly) {
-    items.push(
-      { separator: true },
-      { label: "格式化文档", run: () => void formatCurrent() },
-      { label: "格式化选中内容", run: () => void formatSelectionCurrent() },
-      { label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) },
-    );
-  }
-
-  for (const item of items) {
+/**
+ * 渲染菜单项。nested=true 表示正在渲染二级菜单：
+ * 此时条目自身的悬停不能再关闭所在子菜单。
+ */
+function appendMenuEntries(container: HTMLElement, entries: MenuEntry[], nested = false): void {
+  for (const item of entries) {
     if (item.separator) {
       const sep = document.createElement("div");
       sep.className = "context-menu-separator";
-      menu.append(sep);
+      container.append(sep);
       continue;
     }
     const el = document.createElement("div");
@@ -1236,19 +1417,186 @@ function showEditorMenu(x: number, y: number): void {
     const label = document.createElement("span");
     label.textContent = item.label ?? "";
     el.append(label);
-    if (item.shortcut) {
-      const sc = document.createElement("span");
-      sc.className = "shortcut";
-      sc.textContent = item.shortcut;
-      el.append(sc);
+
+    if (item.submenu) {
+      el.classList.add("has-submenu");
+      const arrow = document.createElement("span");
+      arrow.className = "arrow";
+      arrow.textContent = "›";
+      el.append(arrow);
+      el.addEventListener("mouseenter", () => {
+        if (submenuTimer !== null) {
+          window.clearTimeout(submenuTimer);
+          submenuTimer = null;
+        }
+        openEditorSubmenu(el, item.submenu!);
+      });
+    } else {
+      if (item.shortcut) {
+        const sc = document.createElement("span");
+        sc.className = "shortcut";
+        sc.textContent = item.shortcut;
+        el.append(sc);
+      }
+      if (!nested) {
+        // 主菜单内悬停到普通条目时收起已展开的子菜单
+        el.addEventListener("mouseenter", () => closeEditorSubmenu());
+      }
+      el.addEventListener("click", () => {
+        closeEditorMenu();
+        item.run?.();
+      });
     }
-    el.addEventListener("click", () => {
-      closeEditorMenu();
-      item.run?.();
+    container.append(el);
+  }
+}
+
+function openEditorSubmenu(parent: HTMLElement, entries: MenuEntry[]): void {
+  closeEditorSubmenu();
+  const sub = document.createElement("div");
+  sub.className = "context-menu editor-submenu";
+  appendMenuEntries(sub, entries, true);
+  sub.addEventListener("mouseenter", () => {
+    if (submenuTimer !== null) {
+      window.clearTimeout(submenuTimer);
+      submenuTimer = null;
+    }
+  });
+  sub.addEventListener("mouseleave", () => scheduleSubmenuClose());
+  document.body.append(sub);
+  // 紧贴父项定位：与父项重叠 4px，保证指针移动时没有可落空的缝隙；
+  // 右侧空间不足时翻到父项左侧
+  const rect = parent.getBoundingClientRect();
+  const overlap = 4;
+  let left = rect.right - overlap;
+  if (left + sub.offsetWidth > window.innerWidth - 4) {
+    left = rect.left - sub.offsetWidth + overlap;
+  }
+  left = Math.max(4, Math.min(left, window.innerWidth - sub.offsetWidth - 4));
+  const top = Math.max(4, Math.min(rect.top - 4, window.innerHeight - sub.offsetHeight - 4));
+  sub.style.left = `${left}px`;
+  sub.style.top = `${top}px`;
+  editorSubmenu = sub;
+}
+
+function showEditorMenu(x: number, y: number): void {
+  closeEditorMenu();
+  const view = editorHandle.view;
+  const readonly = view.state.readOnly;
+  const tab = activeTab();
+  const lang = tab ? effectiveLanguage(tab) : null;
+  const hasSelection = !view.state.selection.main.empty;
+  const canFormat = supportsFormatting(lang);
+  const canRun =
+    tab !== null && tab.kind === "text" && Boolean(tab.path) && runnerFor(tab) !== null;
+
+  // 顶层保持短小：常用编辑命令平铺，其余收进二级菜单
+  const top: MenuEntry[] = [];
+  if (!readonly) {
+    top.push({ label: "撤销", shortcut: "Ctrl+Z", run: () => void undo(view) });
+    top.push({ label: "重做", shortcut: "Ctrl+Shift+Z", run: () => void redo(view) });
+    top.push({ separator: true });
+    top.push({ label: "剪切", shortcut: "Ctrl+X", run: () => void clipboardCopy(true) });
+  }
+  top.push({ label: "复制", shortcut: "Ctrl+C", run: () => void clipboardCopy(false) });
+  if (!readonly) top.push({ label: "粘贴", shortcut: "Ctrl+V", run: () => void clipboardPaste() });
+  top.push({
+    label: "全选",
+    shortcut: "Ctrl+A",
+    run: () => view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }),
+  });
+
+  // 查找与书签（二级菜单）
+  const find: MenuEntry[] = [
+    { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
+  ];
+  if (!readonly) find.push({ label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() });
+  find.push({ label: "查找结果面板", run: () => toggleResultsPanel() });
+  if (!readonly) {
+    find.push({ separator: true });
+    find.push({ label: "切换书签", shortcut: "Ctrl+F2", run: () => toggleBookmark(view) });
+    find.push({ label: "下一个书签", shortcut: "F2", run: () => gotoBookmark(view, 1) });
+  }
+  top.push({ separator: true });
+  top.push({ label: "查找与书签", submenu: find });
+
+  // 代码：格式化 / 运行 / 列编辑
+  const code: MenuEntry[] = [];
+  if (!readonly && canFormat) {
+    code.push({ label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() });
+    if (hasSelection) {
+      code.push({ label: "格式化选中内容", run: () => void formatSelectionCurrent() });
+    }
+  }
+  if (canRun) code.push({ label: "运行当前文件", shortcut: "F5", run: () => runCurrentFile() });
+  if (runActive) code.push({ label: "停止运行", run: () => runPanel.stop() });
+  if (!readonly) {
+    if (code.length > 0) code.push({ separator: true });
+    code.push({ label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) });
+  }
+  if (code.length > 0) top.push({ label: "代码", submenu: code });
+  // 语言专属：仅 JSON / Markdown
+  if (!readonly && lang === "json") {
+    top.push({
+      label: "JSON",
+      submenu: [
+        { label: "JSON 美化", run: () => runJson(false) },
+        { label: "JSON 压缩", run: () => runJson(true) },
+      ],
     });
-    menu.append(el);
+  } else if (!readonly && lang === "markdown") {
+    top.push({
+      label: "Markdown",
+      submenu: [
+        { label: "加粗", run: () => runWrap("**", "加粗：") },
+        { label: "斜体", run: () => runWrap("*", "斜体：") },
+        { label: "高亮", run: () => runWrap("==", "高亮：") },
+        { label: "插入表格…", run: () => tableDialog.toggle() },
+      ],
+    });
   }
 
+  // 文本转换（子菜单，需选中文本）
+  if (!readonly && hasSelection) {
+    top.push({
+      label: "文本转换",
+      submenu: (Object.keys(CASE_LABELS) as CaseMode[]).map((mode) => ({
+        label: CASE_LABELS[mode],
+        run: () => runCase(mode),
+      })),
+    });
+  }
+
+  // 插入（二级菜单）
+  if (!readonly) {
+    const insert: MenuEntry[] = [
+      { label: "本地时间", run: () => insertAtCursor(localStamps().local) },
+      { label: "ISO 时间戳", run: () => insertAtCursor(localStamps().iso) },
+      { label: "Unix 时间戳", run: () => insertAtCursor(localStamps().unix) },
+      { label: "日期", run: () => insertAtCursor(localStamps().date) },
+      { label: "时间", run: () => insertAtCursor(localStamps().time) },
+      { label: "UUID（v4）", run: () => insertAtCursor(newUuid()) },
+    ];
+    if (tab?.path) {
+      insert.push({ separator: true });
+      insert.push({ label: "剪贴板图片", run: () => void insertClipboardImage() });
+    }
+    top.push({ label: "插入", submenu: insert });
+  }
+
+  // 比较：仅有未保存改动时提供
+  if (tab?.path && tab.dirty && !tab.virtual) {
+    top.push({ separator: true });
+    top.push({ label: "与磁盘内容比较（未保存改动）", run: () => void diffUnsaved() });
+  }
+
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  // 指针离开整个主菜单后才开始收起子菜单；移入子菜单会取消该计时
+  menu.addEventListener("mouseleave", () => {
+    if (editorSubmenu) scheduleSubmenuClose();
+  });
+  appendMenuEntries(menu, top);
   document.body.append(menu);
   placeMenu(menu, x, y);
   editorMenu = menu;
@@ -1262,76 +1610,6 @@ document.addEventListener("click", () => closeEditorMenu());
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeEditorMenu();
 });
-
-// ---- 侧栏视图（文件树下方的 tab 区：搜索 / TODO）----
-
-const sidebarPanel = document.querySelector<HTMLElement>(".sidebar-panel")!;
-const searchTab = $<HTMLButtonElement>("sp-tab-search");
-const todoTab = $<HTMLButtonElement>("sp-tab-todo");
-
-type SidebarView = "search" | "todo";
-
-const globalSearch = new GlobalSearchPanel($("sidebar-search"), {
-  getRoot: () => workspaceRoot,
-  onOpenHit: (path, line) => void openHit(path, line),
-  onMessage: showMessage,
-});
-globalSearch.mount();
-
-const todoPanel = new TodoPanel($("sidebar-todo"), {
-  getRoot: () => workspaceRoot,
-  onOpenHit: (path, line) => void openHit(path, line),
-});
-todoPanel.mount();
-
-/** 切换侧栏视图；传 null 收起 */
-function setSidebarView(view: SidebarView | null): void {
-  sidebarPanel.classList.toggle("open", view !== null);
-  searchTab.classList.toggle("active", view === "search");
-  todoTab.classList.toggle("active", view === "todo");
-  if (view === "search") globalSearch.show();
-  else globalSearch.hide();
-  if (view === "todo") todoPanel.show();
-  else todoPanel.hide();
-}
-
-/** 点击 tab：再次点击同一 tab 收起 */
-function toggleSidebarView(view: SidebarView): void {
-  const current = view === "search"
-    ? searchTab.classList.contains("active")
-    : todoTab.classList.contains("active");
-  setSidebarView(current ? null : view);
-}
-
-searchTab.addEventListener("click", () => toggleSidebarView("search"));
-todoTab.addEventListener("click", () => toggleSidebarView("todo"));
-
-/** 显示全局搜索（并确保侧栏可见） */
-function showGlobalSearch(): void {
-  revealSidebar();
-  setSidebarView("search");
-}
-
-/** 显示 TODO 列表（并确保侧栏可见） */
-function showTodoPanel(): void {
-  revealSidebar();
-  setSidebarView("todo");
-}
-
-function revealSidebar(): void {
-  sidebarVisible = true;
-  document.querySelector(".main")?.classList.toggle("no-sidebar", false);
-}
-
-/** 打开全局搜索命中项并跳转到对应行 */
-async function openHit(path: string, line: number): Promise<void> {
-  await openFilePath(path, { silent: true });
-  const tab = tabStore.findByPath(path);
-  if (!tab) return;
-  if (tabStore.active()?.id !== tab.id) tabStore.activate(tab.id);
-  await loadActiveTab();
-  editorHandle.gotoLine(line);
-}
 
 // ---- 外部修改检测（Rust 侧监听，前端仅提示、不自动重载）----
 
@@ -1785,8 +2063,21 @@ async function writeTo(tab: Tab, path: string, encodingOverride?: string): Promi
   refreshStatus();
 }
 
+/** 未命名文档编号：取当前最小的空闲序号，保证同名标签可并存 */
+function nextUntitledName(): string {
+  const used = new Set<number>();
+  for (const tab of tabStore.list()) {
+    if (tab.path) continue;
+    const m = /^未命名(?:-(\d+))?$/.exec(tab.name);
+    if (m) used.add(m[1] ? Number(m[1]) : 1);
+  }
+  let n = 1;
+  while (used.has(n)) n++;
+  return `未命名-${n}`;
+}
+
 /** 新建未命名文档（可指定初始名称，用于草稿恢复） */
-function newUntitled(name = "未命名"): Tab {
+function newUntitled(name = nextUntitledName()): Tab {
   const content: FileContent = {
     path: "",
     name,
@@ -2408,7 +2699,6 @@ new MenuBar($("menubar"), [
       { separator: true },
       { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
       { label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() },
-      { label: "全局查找…", shortcut: "Ctrl+Shift+F", run: () => showGlobalSearch() },
       { label: "查找结果面板", run: () => toggleResultsPanel() },
       { separator: true },
       { label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() },
@@ -2605,8 +2895,6 @@ palette.registerAll([
   { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
   { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", run: () => toggleWhitespacePersisted() },
   { id: "search.results", title: "查找结果面板", section: "查找", run: () => toggleResultsPanel() },
-  { id: "search.global", title: "全局查找…（Ctrl+Shift+F）", section: "查找", run: () => showGlobalSearch() },
-  { id: "search.todo", title: "TODO 列表（扫描工作区）", section: "查找", run: () => showTodoPanel() },
   { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", run: () => cronPanel.toggle() },
   { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", run: () => batchEncodingPanel.toggle() },
   { id: "tools.regex", title: "正则测试器", section: "工具", run: () => regexTester.toggle() },
@@ -2643,9 +2931,8 @@ palette.registerAll([
 async function openWorkspaceDir(): Promise<void> {
   const dir = await pickDirectory();
   if (!dir) return;
-  workspaceRoot = dir;
+  // setRoot 会经 onWorkspaceStateChange 同步 workspaceRoot、侧栏标题与持久化
   fileTree.setRoot(dir);
-  persistWorkspaceWithExpanded([]);
 }
 
 // ---- 快捷键（注册表驱动；设置中心可重绑定，见 config/keybindings.ts）----
@@ -2684,7 +2971,6 @@ registerKeyCommands([
       // 面板内替换框（只读文档不渲染替换框，退化为仅查找）
       editorHandle.view.dom.querySelector<HTMLInputElement>('input[name="replace"]')?.focus();
     } },
-  { id: "search.global", title: "全局查找…", section: "查找", defaultKey: "Mod-Shift-F", run: () => showGlobalSearch() },
   { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", run: () => toggleResultsPanel() },
   // 视图
   { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", run: () => palette.toggle() },

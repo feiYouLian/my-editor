@@ -5,7 +5,6 @@ mod commands;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(commands::search::SearchState::default())
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
         .manage(commands::run::RunState::default())
@@ -34,17 +33,11 @@ pub fn run() {
             commands::session::read_draft,
             commands::session::delete_draft,
             commands::session::cleanup_drafts,
-            commands::todo::scan_todos,
             commands::batch::batch_save_encoding,
             commands::watch::watch_files,
             commands::config::load_config,
             commands::config::save_config,
             commands::config::config_path,
-            commands::search::search_in_files,
-            commands::search::cancel_search,
-            commands::search::preview_replace,
-            commands::search::replace_in_files,
-            commands::search::restore_backups,
             commands::format::run_cli_formatter,
             commands::diff::diff_texts,
             commands::diff::diff_files,

@@ -15,26 +15,63 @@ interface DirEntry {
   is_dir: boolean;
 }
 
-/** 文件图标（按扩展名，未命中回退 📄） */
-const fileIcons: Record<string, string> = {
-  md: "📝", markdown: "📝",
-  json: "⚙️", jsonc: "⚙️", yaml: "⚙️", yml: "⚙️", toml: "⚙️", ini: "⚙️", conf: "⚙️", env: "⚙️",
-  html: "🌐", htm: "🌐", xml: "🌐",
-  css: "🎨", less: "🎨", scss: "🎨",
-  png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", ico: "🖼️", webp: "🖼️",
-  log: "📃", txt: "📃",
-  zip: "📦", tar: "📦", gz: "📦", rar: "📦", "7z": "📦",
-  pdf: "📕",
-  rs: "🦀", go: "🐹", py: "🐍", java: "☕",
-  js: "📜", ts: "📜", tsx: "📜", jsx: "📜", mjs: "📜", cjs: "📜",
-  c: "📜", cpp: "📜", h: "📜", hpp: "📜", sql: "🗃️",
+/** 文件图标：内联 SVG（按类别着色），文件树与面包屑下拉共用 */
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+const EXT_CATEGORY: Record<string, "code" | "config" | "image" | "archive"> = {
+  js: "code", mjs: "code", cjs: "code", ts: "code", tsx: "code", jsx: "code",
+  c: "code", cpp: "code", h: "code", hpp: "code", cs: "code", rs: "code",
+  go: "code", py: "code", java: "code", kt: "code", swift: "code", rb: "code",
+  php: "code", sh: "code", bash: "code", ps1: "code", sql: "code",
+  html: "code", htm: "code", xml: "code", css: "code", less: "code", scss: "code", vue: "code",
+  json: "config", jsonc: "config", yaml: "config", yml: "config", toml: "config",
+  ini: "config", conf: "config", env: "config", properties: "config",
+  png: "image", jpg: "image", jpeg: "image", gif: "image", ico: "image", webp: "image", svg: "image", bmp: "image",
+  zip: "archive", tar: "archive", gz: "archive", rar: "archive", "7z": "archive", pdf: "archive",
 };
 
-function fileIcon(name: string): string {
+function iconCategory(name: string): "file" | "code" | "config" | "image" | "archive" {
   const dot = name.lastIndexOf(".");
-  if (dot < 0) return "📄";
-  const ext = name.slice(dot + 1).toLowerCase();
-  return fileIcons[ext] ?? "📄";
+  if (dot < 0) return "file";
+  return EXT_CATEGORY[name.slice(dot + 1).toLowerCase()] ?? "file";
+}
+
+/**
+ * 生成条目图标：目录（闭合 / 展开）与文件（普通 / 代码 / 配置 / 图片 / 压缩包）。
+ * 线条图标统一 16 网格，颜色由 CSS 类别类决定。
+ */
+export function createEntryIcon(name: string, isDir: boolean, expanded = false): SVGSVGElement {
+  const category = isDir ? (expanded ? "folder-open" : "folder") : iconCategory(name);
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.2");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("tree-svg", `cat-${category}`);
+
+  const add = (d: string): void => {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  };
+
+  if (category === "folder") {
+    add("M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.95a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z");
+  } else if (category === "folder-open") {
+    add("M2.75 3.25h3.1l1.4 1.5h5.95a1 1 0 0 1 1 1v1.1");
+    add("M1.9 12.4l1.25-4.9a1 1 0 0 1 .97-.75h10.05a.75.75 0 0 1 .73.93l-1.15 4.4a1 1 0 0 1-.97.75H2.62a.75.75 0 0 1-.72-.93z");
+  } else if (category === "image") {
+    add("M2.75 3.25h10.5v9.5H2.75z");
+    add("M2.9 10.9l3-3.15 2.2 2.3 1.7-1.75 3.15 3.1");
+    add("M5.85 5.4a.95.95 0 1 1 0 1.9.95.95 0 0 1 0-1.9z");
+  } else {
+    add("M3.9 1.75h5l3.2 3.2v9.3H3.9z");
+    add("M8.85 1.95v3.05h3.1");
+  }
+  return svg;
 }
 
 export interface FileTreeCallbacks {
@@ -62,6 +99,8 @@ export class FileTree {
     this.root = root;
     this.expanded = new Set(expanded);
     this.render();
+    // 根目录变化也要通知宿主（侧栏标题、workspaceRoot 与持久化都依赖该回调）
+    this.persist();
   }
 
   getRoot(): string | null {
@@ -74,25 +113,16 @@ export class FileTree {
     if (!this.root) {
       const hint = document.createElement("div");
       hint.className = "tree-empty";
-      hint.textContent = "未打开工作区——点击上方 📁 或命令面板「打开目录」开始";
+      hint.textContent = "未打开工作区——点击上方文件夹按钮或命令面板「打开目录」开始";
       this.container.append(hint);
       return;
     }
 
-    const rootEl = document.createElement("div");
-    rootEl.className = "tree-node tree-root";
-    const label = document.createElement("span");
-    label.className = "tree-label";
-    label.textContent = this.root.split(/[\\/]/).pop() || this.root;
-    label.title = this.root;
-    label.addEventListener("click", () => this.toggleExpand(this.root!));
-    rootEl.append(label);
-    this.container.append(rootEl);
-
+    // 根目录名已由侧栏标题展示，树内不再重复一行，直接从子项开始
     const children = document.createElement("div");
     children.className = "tree-children";
     this.container.append(children);
-    void this.loadChildren(this.root!, children, 0);
+    void this.loadChildren(this.root, children, 0);
   }
 
   private async loadChildren(dir: string, container: HTMLElement, depth: number): Promise<void> {
@@ -119,11 +149,7 @@ export class FileTree {
 
     const icon = document.createElement("span");
     icon.className = "tree-icon";
-    icon.textContent = entry.is_dir
-      ? this.expanded.has(entry.path)
-        ? "📂"
-        : "📁"
-      : fileIcon(entry.name);
+    icon.append(createEntryIcon(entry.name, entry.is_dir, this.expanded.has(entry.path)));
     row.append(icon);
 
     const label = document.createElement("span");
@@ -184,7 +210,7 @@ export class FileTree {
       const path = node.dataset.path;
       if (!path || !this.nodes.has(path)) return;
       const icon = node.querySelector<HTMLElement>(":scope > .tree-row > .tree-icon");
-      if (icon) icon.textContent = this.expanded.has(path) ? "📂" : "📁";
+      if (icon) icon.replaceChildren(createEntryIcon("", true, this.expanded.has(path)));
     });
   }
 

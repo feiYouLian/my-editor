@@ -83,10 +83,16 @@ pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
 
     #[cfg(target_os = "windows")]
-    let result = Command::new("explorer")
-        .arg(format!("/select,\"{}\"", p.to_string_lossy()))
-        .spawn()
-        .map(|_| ());
+    let result = {
+        use std::os::windows::process::CommandExt;
+        // /select 与路径必须拼成同一个参数；raw_arg 跳过标准参数转义，
+        // 否则含空格的路径会被改写成 \"...\"，explorer 解析失败后落到默认目录
+        let target = p.to_string_lossy().replace('/', "\\");
+        Command::new("explorer")
+            .raw_arg(format!("/select,\"{target}\""))
+            .spawn()
+            .map(|_| ())
+    };
 
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg("-R").arg(&p).spawn().map(|_| ());

@@ -75,9 +75,11 @@ class TabStore {
     return this.tabs.find((t) => t.id === this.activeId) ?? null;
   }
 
-  /** 打开文本文件：已打开则激活，否则新开标签 */
+  /** 打开文本文件：已打开则激活，否则新开标签（未命名文档 path 为空，每次新建独立标签） */
   open(content: FileContent): Tab {
-    const existing = this.tabs.find((t) => t.path === content.path);
+    const existing = content.path
+      ? this.tabs.find((t) => t.path === content.path)
+      : undefined;
     if (existing) {
       this.activeId = existing.id;
       this.emit();

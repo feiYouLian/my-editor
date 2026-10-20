@@ -7,8 +7,6 @@ pub mod format;
 pub mod fs;
 pub mod large;
 pub mod run;
-pub mod search;
 pub mod session;
-pub mod todo;
 pub mod watch;
 pub mod workspace;
