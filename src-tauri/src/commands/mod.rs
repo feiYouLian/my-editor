@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod config;
 pub mod diff;
 pub mod encoding;
@@ -7,4 +8,6 @@ pub mod fs;
 pub mod large;
 pub mod search;
 pub mod session;
+pub mod todo;
+pub mod watch;
 pub mod workspace;

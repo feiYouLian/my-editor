@@ -122,6 +122,162 @@ pub fn encode(text: &str, name: &str, bom: bool) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// 乱码检测（只诊断、不改文件）
+// ---------------------------------------------------------------------------
+
+/// 硬标记：出现即判疑似乱码（UTF-8 被按 GBK 解读的典型产物 / BOM 被当 Latin-1）
+const HARSH_MARKERS: [&str; 2] = ["锟斤拷", "ï»¿"];
+/// 软标记：仅参与评分（UTF-8 多字节被按单字节解读的典型产物）
+const SOFT_MARKERS: [&str; 2] = ["Ã", "Â"];
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MojibakeReport {
+    /// 是否疑似乱码
+    pub suspicious: bool,
+    /// 建议的「重新打开为」编码（无建议时为空串）
+    pub suggested: String,
+    /// 异常字符占比（0-1），供提示文案使用
+    pub severity: f64,
+    /// 面向用户的说明
+    pub reason: String,
+}
+
+/// 去掉前置 BOM（比较无损回编码时两侧统一处理）
+fn strip_bom(bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        &bytes[2..]
+    } else {
+        bytes
+    }
+}
+
+/// 解码后重新编码能否还原原字节（证明该解码无损）
+fn is_lossless(bytes: &[u8], decoded: &str, name: &str) -> bool {
+    let Some(enc) = lookup(name) else {
+        return false;
+    };
+    let (re, _, _) = enc.encode(decoded);
+    strip_bom(&re) == strip_bom(bytes)
+}
+
+/// 异常字符占比：C1 控制符与替换字符各计 1，硬标记额外计 3
+fn badness(text: &str) -> f64 {
+    let total = text.chars().count().max(1) as f64;
+    let mut bad = 0.0f64;
+    for ch in text.chars() {
+        let c = ch as u32;
+        if (0x0080..=0x009F).contains(&c) || c == 0xFFFD {
+            bad += 1.0;
+        }
+    }
+    let harsh = HARSH_MARKERS
+        .iter()
+        .map(|m| text.matches(m).count() as f64)
+        .sum::<f64>();
+    (bad + harsh * 3.0) / total
+}
+
+/// 「像正常文本」的评分：CJK 加分，异常字符与乱码标记扣分
+fn score(text: &str) -> i32 {
+    let mut value = 0i32;
+    for ch in text.chars() {
+        let c = ch as u32;
+        if (0x4E00..=0x9FFF).contains(&c) {
+            value += 2;
+        } else if (0x0080..=0x009F).contains(&c) || c == 0xFFFD {
+            value -= 6;
+        }
+    }
+    let harsh = HARSH_MARKERS
+        .iter()
+        .map(|m| text.matches(m).count() as i32)
+        .sum::<i32>();
+    let soft = SOFT_MARKERS
+        .iter()
+        .map(|m| text.matches(m).count() as i32)
+        .sum::<i32>();
+    value - (40 * harsh + 6 * soft)
+}
+
+/// 纯函数：按字节、当前解读结果与当前编码判定乱码
+pub fn analyze_mojibake(bytes: &[u8], text: &str, current: &str) -> MojibakeReport {
+    let not_suspicious = MojibakeReport {
+        suspicious: false,
+        suggested: String::new(),
+        severity: badness(text),
+        reason: String::new(),
+    };
+
+    // 规则一（强信号）：字节是合法 UTF-8，却按非 UTF-8 编码解读。
+    // 这类乱码产出的仍是「中文样子」的字符，靠字符统计无法识别，故直接以字节形态判定。
+    let is_utf16 = current.eq_ignore_ascii_case("UTF-16 LE") || current.eq_ignore_ascii_case("UTF-16 BE");
+    if !current.eq_ignore_ascii_case("UTF-8") && !is_utf16 && std::str::from_utf8(bytes).is_ok() {
+        return MojibakeReport {
+            suspicious: true,
+            suggested: "UTF-8".to_string(),
+            severity: 1.0,
+            reason: format!("字节是合法 UTF-8，但当前按 {current} 解读"),
+        };
+    }
+
+    // 规则二：异常字符占比过高或命中乱码标记 → 逐个候选编码做「无损回编码 + 可读性」比较
+    let severity = badness(text);
+    let harsh_hit = HARSH_MARKERS.iter().any(|m| text.contains(m));
+    if !harsh_hit && severity < 0.03 {
+        return not_suspicious;
+    }
+
+    let base = score(text);
+    let mut suggested = String::new();
+    let mut best = base;
+    for name in CANDIDATES {
+        if name.eq_ignore_ascii_case(current) {
+            continue;
+        }
+        let Ok(decoded) = decode(bytes, name) else {
+            continue;
+        };
+        if !is_lossless(bytes, &decoded, name) {
+            continue;
+        }
+        let value = score(&decoded);
+        if value > best + 4 {
+            best = value;
+            suggested = name.to_string();
+        }
+    }
+
+    let reason = if suggested.is_empty() {
+        format!(
+            "疑似乱码（当前按 {current} 解读，异常字符约 {:.0}%），未找到更优编码，可在状态栏手动切换",
+            severity * 100.0
+        )
+    } else {
+        format!("疑似乱码（当前按 {current} 解读），建议重新打开为 {suggested}")
+    };
+    MojibakeReport {
+        suspicious: true,
+        suggested,
+        severity,
+        reason,
+    }
+}
+
+/// 检测文件是否存在乱码：读取字节后调用 `analyze_mojibake`（不修改磁盘，仅诊断）
+#[tauri::command]
+pub fn detect_mojibake(
+    path: String,
+    text: String,
+    current: String,
+) -> Result<MojibakeReport, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+    Ok(analyze_mojibake(&bytes, &text, &current))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +338,49 @@ mod tests {
         assert!(lookup("NO-SUCH-ENCODING").is_none());
         assert!(decode(b"x", "NO-SUCH-ENCODING").is_err());
         assert!(encode("x", "NO-SUCH-ENCODING", false).is_err());
+    }
+
+    #[test]
+    fn utf8_bytes_read_as_gbk_is_flagged_with_suggestion() {
+        let text = "中文测试内容";
+        let bytes = text.as_bytes(); // 合法 UTF-8 字节
+        let wrong = decode(bytes, "GBK").unwrap(); // 按 GBK 解读产生的乱码
+        let report = analyze_mojibake(bytes, &wrong, "GBK");
+        assert!(report.suspicious);
+        assert_eq!(report.suggested, "UTF-8");
+        assert!(report.reason.contains("GBK"));
+    }
+
+    #[test]
+    fn correctly_decoded_text_is_not_flagged() {
+        let text = "中文测试内容 plain text";
+        let report = analyze_mojibake(text.as_bytes(), text, "UTF-8");
+        assert!(!report.suspicious);
+        assert!(report.suggested.is_empty());
+    }
+
+    #[test]
+    fn genuine_gbk_file_is_not_flagged() {
+        let text = "中文测试";
+        let bytes = encode(text, "GBK", false).unwrap();
+        let decoded = decode(&bytes, "GBK").unwrap();
+        let report = analyze_mojibake(&bytes, &decoded, "GBK");
+        assert!(!report.suspicious);
+    }
+
+    #[test]
+    fn harsh_marker_triggers_detection() {
+        let report = analyze_mojibake(b"x", "前锟斤拷后", "GBK");
+        assert!(report.suspicious);
+    }
+
+    #[test]
+    fn utf8_bytes_read_as_big5_is_flagged() {
+        let text = "简体中文内容测试";
+        let bytes = text.as_bytes();
+        let wrong = decode(bytes, "Big5").unwrap();
+        let report = analyze_mojibake(bytes, &wrong, "Big5");
+        assert!(report.suspicious);
+        assert_eq!(report.suggested, "UTF-8");
     }
 }

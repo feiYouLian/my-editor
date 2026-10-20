@@ -44,7 +44,7 @@ fn has_bom(bytes: &[u8]) -> bool {
 }
 
 /// 主导换行符判定：分别统计 CRLF / LF / CR，取占比最高者
-fn detect_newline(text: &str) -> &'static str {
+pub(crate) fn detect_newline(text: &str) -> &'static str {
     let crlf = text.matches("\r\n").count();
     let lf = text.matches('\n').count() - crlf; // 纯 LF
     let cr = text.matches('\r').count() - crlf; // 纯 CR
@@ -287,7 +287,7 @@ pub fn probe_file(path: String) -> Result<FileProbe, String> {
 }
 
 /// 按目标风格改写换行符（先把内容统一为 \n，避免 \r\n 被当作两个字符）
-fn apply_eol(text: &str, newline: &str) -> String {
+pub(crate) fn apply_eol(text: &str, newline: &str) -> String {
     let unified = normalize_eol(text);
     match newline {
         "CRLF" => unified.replace('\n', "\r\n"),
@@ -299,6 +299,7 @@ fn apply_eol(text: &str, newline: &str) -> String {
 /// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换
 #[tauri::command]
 pub fn save_file(
+    state: tauri::State<crate::commands::watch::WatchState>,
     path: String,
     content: String,
     newline: String,
@@ -306,10 +307,31 @@ pub fn save_file(
     encoding: String,
 ) -> Result<SaveResult, String> {
     let target = PathBuf::from(&path);
+    // 自身写盘：写前先开静默窗口、写后刷新指纹，避免 notify 把本次保存误判为外部修改
+    crate::commands::watch::mark_writing(&state, &target);
     let text = apply_eol(&content, &newline);
     let bytes = encoding::encode(&text, &encoding, has_bom)?;
     let size = atomic_write(&target, &bytes)?;
+    crate::commands::watch::note_written(&state, &target);
     Ok(SaveResult { path, size })
+}
+
+/// 写入二进制文件（内容为 base64），自动创建父目录；返回写入字节数。
+/// 供「插入剪贴板图片」等需要落盘二进制的场景使用。
+#[tauri::command]
+pub fn write_binary_file(path: String, base64_data: String) -> Result<u64, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let bytes = STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("base64 解码失败: {e}"))?;
+    let target = PathBuf::from(&path);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+    }
+    atomic_write(&target, &bytes)
 }
 
 #[cfg(test)]

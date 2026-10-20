@@ -11,6 +11,7 @@ use std::time::Instant;
 use tauri::Emitter;
 
 use crate::commands::file::atomic_write;
+use crate::commands::watch::{mark_writing, note_written, WatchState};
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -330,6 +331,7 @@ fn replace_one(
     replacement: &str,
     use_regex: bool,
     backup: bool,
+    watch: &WatchState,
 ) -> Result<(usize, Option<String>), String> {
     let bytes = fs::read(path).map_err(|e| format!("读取失败: {e}"))?;
     if bytes[..bytes.len().min(8192)].contains(&0) {
@@ -356,13 +358,17 @@ fn replace_one(
         None
     };
 
+    // 自身写盘：写前开静默窗口、写后刷新指纹（替换也可能命中已打开的文件）
+    mark_writing(watch, path);
     atomic_write(path, new_text.as_bytes())?;
+    note_written(watch, path);
     Ok((count, backup_path))
 }
 
 /// 批量替换：逐文件替换并做错误隔离（单文件失败不影响其余）
 #[tauri::command]
 pub fn replace_in_files(
+    state: tauri::State<WatchState>,
     files: Vec<String>,
     query: String,
     replacement: String,
@@ -382,6 +388,7 @@ pub fn replace_in_files(
             &replacement,
             options.use_regex,
             backup,
+            &state,
         ) {
             Ok((count, bak)) => {
                 if let Some(b) = bak {
@@ -400,7 +407,10 @@ pub fn replace_in_files(
 
 /// 从 .bak 还原文件（还原成功后删除备份）
 #[tauri::command]
-pub fn restore_backups(files: Vec<String>) -> Result<usize, String> {
+pub fn restore_backups(
+    state: tauri::State<WatchState>,
+    files: Vec<String>,
+) -> Result<usize, String> {
     let mut restored = 0usize;
     for file in files {
         let bak = PathBuf::from(format!("{file}.bak"));
@@ -408,7 +418,10 @@ pub fn restore_backups(files: Vec<String>) -> Result<usize, String> {
             continue;
         }
         let content = fs::read(&bak).map_err(|e| format!("读取备份失败: {e}"))?;
+        // 自身写盘：写前开静默窗口、写后刷新指纹
+        mark_writing(&state, Path::new(&file));
         atomic_write(Path::new(&file), &content)?;
+        note_written(&state, Path::new(&file));
         let _ = fs::remove_file(&bak);
         restored += 1;
     }

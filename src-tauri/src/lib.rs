@@ -7,12 +7,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::search::SearchState::default())
         .manage(commands::large::LargeState::default())
+        .manage(commands::watch::WatchState::default())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
             commands::file::probe_file,
             commands::file::reopen_with_encoding,
             commands::file::read_image_file,
             commands::file::save_file,
+            commands::file::write_binary_file,
+            commands::encoding::detect_mojibake,
             commands::fs::list_dir,
             commands::fs::create_entry,
             commands::fs::rename_path,
@@ -28,6 +31,9 @@ pub fn run() {
             commands::session::read_draft,
             commands::session::delete_draft,
             commands::session::cleanup_drafts,
+            commands::todo::scan_todos,
+            commands::batch::batch_save_encoding,
+            commands::watch::watch_files,
             commands::config::load_config,
             commands::config::save_config,
             commands::config::config_path,

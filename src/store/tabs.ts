@@ -41,6 +41,14 @@ export interface Tab {
   largeId?: string;
   /** 会话恢复的占位标签：仅登记路径，内容待首次激活时才载入 */
   pending?: boolean;
+  /** 磁盘文件被外部修改（状态栏提示，可点击重新载入） */
+  externallyChanged?: boolean;
+  /** 语言模式覆盖：undefined = 按扩展名自动，null = 纯文本，字符串 = 指定语言键 */
+  languageOverride?: string | null;
+  /** 乱码检测建议的编码（无建议 / 未检出时为空串或 undefined） */
+  mojibakeSuggested?: string;
+  /** 乱码检测说明（非空即表示疑似乱码，状态栏加 ⚠） */
+  mojibakeReason?: string;
 }
 
 let seq = 0;
@@ -173,6 +181,42 @@ class TabStore {
     this.applyContent(tab, content);
     this.emit();
     return tab;
+  }
+
+  /** 标记 / 清除「外部修改」状态 */
+  markExternal(id: string, changed: boolean): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab && tab.externallyChanged !== changed) {
+      tab.externallyChanged = changed;
+      this.emit();
+    }
+  }
+
+  /**
+   * 设置语言模式覆盖（纯改状态、不重渲染，避免重载文档）：
+   * 由调用方同步编辑器高亮与状态栏。
+   */
+  setLanguageOverride(id: string, override: string | null | undefined): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (tab) tab.languageOverride = override;
+  }
+
+  /** 「另存为指定编码」落盘后同步标签编码（编码与基线一并更新，避免残留脏标记） */
+  applySavedEncoding(id: string, encoding: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.encoding = encoding;
+    tab.savedEncoding = encoding;
+    tab.encodingConfidence = "user";
+  }
+
+  /** 记录乱码检测结论（suggested 与 reason 均为空串表示无问题） */
+  setMojibake(id: string, suggested: string, reason: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.mojibakeSuggested = suggested;
+    tab.mojibakeReason = reason;
+    this.emit();
   }
 
   /** 会话恢复的占位标签：仅登记路径，首次激活时才载入内容 */

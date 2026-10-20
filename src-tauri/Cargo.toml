@@ -24,6 +24,7 @@ ignore = "0.4"
 regex = "1"
 similar = "2.7.0"
 memchr = "2.8.3"
+notify = "8"
 
 # 发布体积优化：strip 符号 + LTO + 体积优先优化 + 单代码单元
 [profile.release]

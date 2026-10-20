@@ -1142,6 +1142,234 @@ button:disabled:hover {
   margin-bottom: 4px;
 }
 
+/* 宽版对话框（Cron 解析 / 生成、批量另存为编码） */
+.dialog.dialog-wide {
+  width: 460px;
+  max-height: 88vh;
+  overflow: auto;
+}
+
+.cron-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+
+.cron-next-row {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  padding: 2px 0;
+}
+
+/* Cron 表达式说明（details 折叠块） */
+.cron-help {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.cron-help summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cron-legend {
+  margin: 6px 0 2px;
+  padding: 6px 8px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-x: auto;
+}
+
+.cron-help-line {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.cron-help code {
+  padding: 0 3px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.batch-files {
+  max-height: 160px;
+  margin-bottom: 6px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+.batch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.batch-row-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.batch-row-remove {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.batch-row-remove:hover {
+  color: var(--danger);
+}
+
+.batch-result {
+  max-height: 120px;
+  margin: 8px 0 0;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.batch-result.batch-error {
+  color: var(--danger);
+}
+
+/* ---------- 正则测试器 ---------- */
+.regex-flags {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.regex-text {
+  height: 120px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+
+.regex-list {
+  max-height: 160px;
+  margin-top: 4px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.regex-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.regex-index {
+  min-width: 36px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.regex-group {
+  color: var(--accent);
+}
+
+.regex-replace {
+  max-height: 120px;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+}
+
+/* ---------- Markdown 表格预览 ---------- */
+.table-preview {
+  max-height: 180px;
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  overflow: auto;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ---------- 最近打开列表 ---------- */
+.recent-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.recent-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-row:last-child {
+  border-bottom: none;
+}
+
+.recent-row:hover {
+  background: var(--bg-app);
+}
+
+.recent-name {
+  flex-shrink: 0;
+}
+
+.recent-path {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 button.danger {
   background: transparent;
   border-color: var(--danger);
@@ -1217,6 +1445,12 @@ button.danger:hover {
   color: var(--text-secondary);
 }
 
+/* 外部修改标记：可点击重新载入 */
+.status-external {
+  color: var(--danger);
+  cursor: pointer;
+}
+
 .status-message {
   color: var(--accent);
   max-width: 40vw;
@@ -1279,6 +1513,19 @@ button.danger:hover {
 }
 
 .global-search.hidden {
+  display: none;
+}
+
+/* 侧栏下方 tab 视图通用容器（搜索 / TODO 共用观感） */
+.sidebar-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.sidebar-view.hidden {
   display: none;
 }
 
@@ -1874,6 +2121,93 @@ button.danger:hover {
 .rbk-3 { color: var(--rb-3); }
 .rbk-4 { color: var(--rb-4); }
 .rbk-5 { color: var(--rb-5); }
+
+/* ---------- 编辑器内查找替换面板（@codemirror/search） ---------- */
+/* 文案已在 editor/search.ts 中文化；此处用应用主题变量覆盖 CM6 默认外观，
+   使其与侧栏搜索视图、差异面板等模块一致（选择器加 .cm-editor/.cm-panel 前缀以覆盖库内默认样式）。 */
+.cm-editor .cm-panel.cm-search {
+  padding: 6px 10px 7px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+}
+
+/* 面板容器（.cm-panels-bottom）在库内按浅/深色自带底色，这里一并盖掉 */
+.cm-editor .cm-panels.cm-panels-bottom {
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
+
+.cm-editor .cm-panel.cm-search .cm-textfield {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+
+.cm-editor .cm-panel.cm-search .cm-textfield:focus {
+  border-color: var(--accent);
+}
+
+.cm-editor .cm-panel.cm-search .cm-button {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  /* 覆盖 CM6 的浅/深色渐变底 */
+  background-image: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cm-editor .cm-panel.cm-search .cm-button:hover {
+  color: inherit;
+  border-color: var(--accent);
+}
+
+.cm-editor .cm-panel.cm-search .cm-button:active {
+  background: var(--bg-app);
+  background-image: none;
+}
+
+.cm-editor .cm-panel.cm-search label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.cm-editor .cm-panel.cm-search input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.cm-editor .cm-panel.cm-search [name="close"] {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.cm-editor .cm-panel.cm-search [name="close"]:hover {
+  color: var(--danger);
+}
+
+/* 查找命中高亮：覆盖 CM6 默认亮黄 / 品红，改用低饱和强调色 */
+.cm-editor .cm-content .cm-searchMatch {
+  background: rgba(255, 200, 0, 0.2);
+  border-radius: 2px;
+  box-shadow: inset 0 -1px 0 rgba(255, 200, 0, 0.5);
+}
+
+.cm-editor .cm-content .cm-searchMatch-selected {
+  background: rgba(255, 150, 0, 0.4);
+  box-shadow: inset 0 -1px 0 rgba(255, 150, 0, 0.85);
+}
 
 /* ---------- 设置中心 ---------- */
 .settings-backdrop {

@@ -56,9 +56,19 @@ export interface EditorCallbacks {
 
 export interface EditorHandle {
   view: EditorView;
-  /** 加载文档内容并切换语言；重置 dirty 状态。readonly 为 true 时禁用编辑 */
-  loadDocument: (path: string, content: string, readonly?: boolean) => Promise<void>;
+  /**
+   * 加载文档内容并切换语言；重置 dirty 状态。readonly 为 true 时禁用编辑。
+   * languageOverride：undefined = 按扩展名自动，null = 纯文本，字符串 = 指定语言键。
+   */
+  loadDocument: (
+    path: string,
+    content: string,
+    readonly?: boolean,
+    languageOverride?: string | null,
+  ) => Promise<void>;
   getContent: () => string;
+  /** 切换高亮语言（不重载内容）：undefined = 自动，null = 纯文本，字符串 = 指定语言键 */
+  setLanguage: (override: string | null | undefined) => Promise<void>;
   toggleWhitespace: () => void;
   /** 空白字符当前是否显示（状态栏体现用） */
   isWhitespaceOn: () => boolean;
@@ -191,6 +201,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** loadDocument 期间抑制 dirty 回调 */
   let loading = false;
   let languageKey: string | null = null;
+  let currentPath = "";
   let whitespaceOn = settings.showWhitespace;
 
   const view = new EditorView({
@@ -237,10 +248,32 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     }),
   });
 
+  /**
+   * 应用高亮语言。
+   * override：undefined = 按当前文件扩展名自动；null = 纯文本；字符串 = 指定语言键。
+   * 性能保护（行数超限 / 超长行）优先于语言加载，命中时整篇降级纯文本。
+   */
+  async function applyLanguage(override: string | null | undefined): Promise<void> {
+    const key = override === undefined ? languageKeyFromPath(currentPath) : override;
+    languageKey = key;
+
+    const tooManyLines = view.state.doc.lines > settings.highlighterDisabledOver;
+    const longLine = hasLongLine(view.state);
+    if (tooManyLines || longLine) {
+      languageKey = null; // 高亮被性能保护禁用，状态栏按纯文本展示
+      view.dispatch({ effects: languageCompartment.reconfigure([]) });
+      callbacks.onHighlightDisabled?.(tooManyLines ? "lines" : "longLine");
+      return;
+    }
+    const support = key ? await loadLanguage(key) : null;
+    view.dispatch({ effects: languageCompartment.reconfigure(support ? [support] : []) });
+  }
+
   async function loadDocument(
     path: string,
     content: string,
     readonly = false,
+    languageOverride?: string | null,
   ): Promise<void> {
     loading = true;
     try {
@@ -254,21 +287,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         selection: { anchor: 0 },
       });
 
-      // 语言切换（按扩展名；内置同步、懒加载异步）
-      languageKey = languageKeyFromPath(path);
-      const support = languageKey ? await loadLanguage(languageKey) : null;
-
-      // 性能保护：行数超限或存在超长行 → 降级纯文本
-      const tooManyLines = view.state.doc.lines > settings.highlighterDisabledOver;
-      const longLine = hasLongLine(view.state);
-      if (tooManyLines || longLine) {
-        view.dispatch({ effects: languageCompartment.reconfigure([]) });
-        callbacks.onHighlightDisabled?.(tooManyLines ? "lines" : "longLine");
-        return;
-      }
-      view.dispatch({
-        effects: languageCompartment.reconfigure(support ? [support] : []),
-      });
+      currentPath = path;
+      await applyLanguage(languageOverride);
     } finally {
       loading = false;
     }
@@ -302,6 +322,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   return {
     view,
     loadDocument,
+    setLanguage: applyLanguage,
     getContent: () => view.state.doc.toString(),
     toggleWhitespace: () => {
       whitespaceOn = !whitespaceOn;
