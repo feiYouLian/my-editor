@@ -8,6 +8,7 @@ pub fn run() {
         .manage(commands::search::SearchState::default())
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
+        .manage(commands::run::RunState::default())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
             commands::file::probe_file,
@@ -16,6 +17,8 @@ pub fn run() {
             commands::file::save_file,
             commands::file::write_binary_file,
             commands::encoding::detect_mojibake,
+            commands::run::run_code,
+            commands::run::stop_run,
             commands::fs::list_dir,
             commands::fs::create_entry,
             commands::fs::rename_path,

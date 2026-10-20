@@ -6,6 +6,7 @@
   --text-primary: #e6e8ee;
   --text-secondary: #a6aebd;
   --accent: #4c8dff;
+  --success: #3fb950;
   --accent-hover: #6ba0ff;
   --danger: #ff6b6b;
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -30,6 +31,7 @@
   --text-secondary: #57606a;
   --accent: #0969da;
   --accent-hover: #0550ae;
+  --success: #1a7f37;
   --danger: #cf222e;
   /* 彩虹括号色板（浅色纸底：加深保对比度，同样暖冷交替排序） */
   --rb-0: #cf222e; /* 红 */
@@ -59,6 +61,7 @@
   --text-secondary: #e8e8e8;
   --accent: #ffd60a;
   --accent-hover: #ffe666;
+  --success: #00ff88;
   --danger: #ff6b6b;
   /* 彩虹括号色板（高饱和，黑底上保证辨识；同暖冷交替排序） */
   --rb-0: #ff5f56; /* 红 */
@@ -495,6 +498,35 @@ body.dragging-split {
   border-color: transparent;
 }
 
+/* 标题栏运行按钮（Code Run）：绿色强调；运行中切换为「停止」用警示色 */
+.run-btn {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--success);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--success);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.run-btn:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.16);
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+}
+
+.run-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.run-btn.running {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 /* ---------- 无边框窗口缩放热区 ---------- */
 .resize-zone {
   position: fixed;
@@ -835,7 +867,8 @@ button:disabled:hover {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   padding: 4px 8px 0;
-  height: 32px;
+  /* 预留横向滚动条高度（6px），避免出现滚动条时把标签压扁 / 裁切 */
+  height: 36px;
 }
 
 /* 标签容器（右侧是预览模式切换按钮） */
@@ -847,16 +880,18 @@ button:disabled:hover {
   overflow-y: hidden;
   min-width: 0;
   flex: 1;
-  scrollbar-width: thin;
 }
 
-/* 标签栏横向滚动条收窄，避免挤压 32px 高的标签行 */
+/* 标签栏横向滚动条：沿用全局配色 / 圆角 / 内边距（见上方滚动条段），仅按 32px 标签行收窄高度。
+   注意：这里不能设 scrollbar-width —— Chromium 一旦启用标准属性会停用下面的 ::-webkit-* 自定义样式，
+   于是回退成系统默认滚动条，造成与其它位置不一致。 */
 .tabs-tabs::-webkit-scrollbar {
-  height: 4px;
+  height: 6px;
 }
 
 .tabs-tabs::-webkit-scrollbar-thumb {
-  border: none;
+  border-width: 1px;
+  border-radius: 3px;
 }
 
 .tabsbar.hidden {
@@ -870,7 +905,7 @@ button:disabled:hover {
   max-width: 200px;
   /* 标签过多时保持原始宽度并横向溢出，交给容器滚动，不压缩 */
   flex: 0 0 auto;
-  padding: 5px 10px;
+  padding: 4px 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-bottom: none;
@@ -966,6 +1001,70 @@ button:disabled:hover {
   display: flex;
   /* 水平左右分栏：编辑器 | 分割线 | 预览（search-results 已移至 editor-column） */
   flex-direction: row;
+}
+
+/* ---------- Code Run 输出面板 ---------- */
+.run-panel {
+  height: 34%;
+  min-height: 140px;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.run-panel.hidden {
+  display: none;
+}
+
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  flex-shrink: 0;
+}
+
+.run-title {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.run-status.running {
+  color: var(--accent);
+}
+
+.run-status.error {
+  color: var(--danger);
+}
+
+.run-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 8px 8px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.run-stderr {
+  color: var(--danger);
 }
 
 /* ---------- 搜索结果面板 ---------- */

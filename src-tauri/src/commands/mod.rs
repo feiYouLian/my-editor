@@ -6,6 +6,7 @@ pub mod file;
 pub mod format;
 pub mod fs;
 pub mod large;
+pub mod run;
 pub mod search;
 pub mod session;
 pub mod todo;

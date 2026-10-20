@@ -84,6 +84,7 @@ import { RegexTesterPanel } from "./panels/regexTester";
 import { MarkdownTableDialog } from "./panels/tableDialog";
 import { RecentFilesDialog, pushRecentFile } from "./panels/recentFiles";
 import { SaveEncodingDialog } from "./panels/saveEncoding";
+import { RunPanel } from "./panels/runPanel";
 import { applyCase, applyJson, CASE_LABELS, type CaseMode } from "./editor/transforms";
 import { insertTable, toggleWrap } from "./editor/markdownTools";
 import { onFileChanged, watchFiles } from "./services/fsWatch";
@@ -100,6 +101,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const tabsBar = $<HTMLDivElement>("tabs");
+const runBtn = $<HTMLButtonElement>("btn-run");
 const modeBar = $<HTMLDivElement>("preview-modes");
 const resultsContainer = $<HTMLDivElement>("search-results");
 const fileTreeEl = $<HTMLDivElement>("file-tree");
@@ -557,6 +559,7 @@ function refreshStatus(): void {
   statusReadonly.classList.toggle("hidden", tab?.readonly !== true);
   statusReadonly.title = tab?.readonly ? tab.readonlyReason : "";
   refreshWhitespace();
+  refreshRunButton();
 }
 
 // ---- 应用主题：CSS 变量切换，system 跟随系统偏好 ----
@@ -2480,6 +2483,79 @@ const recentFiles = new RecentFilesDialog((path) => void openFilePath(path));
 /** 另存为指定编码对话框 */
 const saveEncodingDialog = new SaveEncodingDialog();
 
+/** Code Run 输出面板 */
+let runActive = false;
+const runPanel = new RunPanel($("run-output"), () => {
+  runActive = runPanel.isRunning;
+  refreshRunButton();
+});
+runPanel.mount();
+
+/** 标签栏右侧的运行快捷按钮状态 */
+function refreshRunButton(): void {
+  if (runActive) {
+    runBtn.disabled = false;
+    runBtn.classList.add("running");
+    runBtn.textContent = "■ 停止";
+    runBtn.title = "停止运行（F5）";
+    return;
+  }
+  const tab = activeTab();
+  const canRun =
+    tab !== null &&
+    tab.kind === "text" &&
+    !!tab.path &&
+    !tab.virtual &&
+    runnerFor(tab) !== null;
+  runBtn.classList.remove("running");
+  runBtn.textContent = "▶ 运行";
+  runBtn.disabled = !canRun || tab?.dirty === true;
+  runBtn.title = !canRun
+    ? "当前文件不支持运行（支持 Python / JS / Java / cURL，且需已保存为磁盘文件）"
+    : tab?.dirty
+      ? "有未保存改动：运行时执行的是磁盘内容，请先保存（Ctrl+S）"
+      : `运行 ${tab?.name ?? ""}（F5）`;
+}
+
+runBtn.addEventListener("click", () => {
+  if (runActive) runPanel.stop();
+  else runCurrentFile();
+});
+
+/** 按生效语言选择 Code Run 运行器（仅 Python / Node / Java / cURL） */
+function runnerFor(tab: Tab): string | null {
+  const lang = effectiveLanguage(tab);
+  if (lang === "python") return "python";
+  if (lang === "javascript" || lang === "jsx") return "node";
+  if (lang === "java") return "java";
+  // 内容以 curl 开头即按 cURL 参数脚本处理
+  if (/^\s*curl\b/m.test(tab.content)) return "curl";
+  return null;
+}
+
+/** 运行当前文件（执行的是磁盘内容，故要求无未保存改动） */
+function runCurrentFile(): void {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    showMessage("请先保存为磁盘文件再运行");
+    return;
+  }
+  if (tab.virtual) {
+    showMessage("大文件只读视图不支持运行");
+    return;
+  }
+  if (tab.dirty) {
+    showMessage("有未保存改动：运行时执行的是磁盘内容，请先保存（Ctrl+S）");
+    return;
+  }
+  const runner = runnerFor(tab);
+  if (!runner) {
+    showMessage("当前语言不支持运行（支持 Python / JS / Java / cURL）");
+    return;
+  }
+  void runPanel.start(tab.path, runner);
+}
+
 /** Markdown 选中包裹切换（加粗 / 斜体 / 高亮） */
 function runWrap(marker: string, label: string): void {
   if (!activeTab() || blockIfReadonly()) return;
@@ -2552,6 +2628,8 @@ palette.registerAll([
   { id: "file.saveAsEncoding", title: "另存为指定编码…", section: "文件", run: () => saveAsWithEncoding() },
   { id: "insert.clipboardImage", title: "插入剪贴板图片（存为 .assets 并插入引用）", section: "插入", run: () => void insertClipboardImage() },
   { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", run: () => detectMojibakeManually() },
+  { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", run: () => runCurrentFile() },
+  { id: "code.stop", title: "停止运行", section: "运行", run: () => runPanel.stop() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", run: () => gotoBookmark(editorHandle.view, 1) },
   { id: "insert.localTime", title: "插入本地时间（YYYY-MM-DD HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().local) },
@@ -2586,6 +2664,8 @@ registerKeyCommands([
       if (tab) void closeTab(tab.id);
     } },
   { id: "file.quit", title: "退出", section: "文件", defaultKey: "Mod-Q", run: () => void appWindow.close() },
+  // 运行
+  { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", run: () => runCurrentFile() },
   // 编辑
   { id: "edit.format", title: "格式化文档", section: "编辑", defaultKey: "Shift-Alt-F",
     // 备用键：中文 Windows 下 Alt+Shift 常被输入法/系统热键吞掉
