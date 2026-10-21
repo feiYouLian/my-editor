@@ -4,7 +4,9 @@ use encoding_rs::Encoding;
 use serde::Serialize;
 
 /// 「重新打开为」菜单的候选编码
-pub const CANDIDATES: [&str; 6] = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
+pub const CANDIDATES: [&str; 7] = [
+    "UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5", "Windows-1252",
+];
 
 /// 检测结果
 #[derive(Serialize)]
@@ -26,6 +28,7 @@ pub fn lookup(name: &str) -> Option<&'static Encoding> {
         "UTF-16 LE" => "utf-16le",
         "UTF-16 BE" => "utf-16be",
         "BIG5" => "big5",
+        "WINDOWS-1252" | "CP1252" => "windows-1252",
         _ => return None,
     };
     Encoding::for_label(label.as_bytes())
@@ -45,6 +48,8 @@ fn display_name(enc: &'static Encoding) -> String {
         "UTF-16 LE".into()
     } else if enc == encoding_rs::UTF_16BE {
         "UTF-16 BE".into()
+    } else if enc == encoding_rs::WINDOWS_1252 {
+        "Windows-1252".into()
     } else {
         enc.name().to_string()
     }
@@ -59,9 +64,36 @@ fn candidate_list() -> Vec<String> {
     CANDIDATES.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// UTF-8 合法性抽样的安全长度。
+/// 截断处若落在多字节序列中间（序列起点在边界前 1-3 字节），
+/// 采样会包含不完整序列而使合法 UTF-8 被误判——回退到序列起点之前。
+/// 实例：某 264KB 全 UTF-8 文件，「模型」的 e6 a8 a1 起点正好在 64KB-2 处，
+/// 采样截断后误入 chardetng 被判为 windows-1252 导致打开失败。
+fn utf8_prefix_len(bytes: &[u8], max: usize) -> usize {
+    let mut end = bytes.len().min(max);
+    if end == bytes.len() {
+        return end;
+    }
+    // UTF-8 序列最长 4 字节：最多回退 3 个连续字节（continuation bytes）
+    let mut i = end;
+    let mut back = 0;
+    while i > 0 && back < 3 && (bytes[i - 1] & 0xC0) == 0x80 {
+        i -= 1;
+        back += 1;
+    }
+    // i-1 是被截断序列的首字节（高位字节）：整段剔除
+    if i > 0 && (bytes[i - 1] & 0x80) != 0 {
+        end = i - 1;
+    }
+    end
+}
+
 /// 三段式检测：① BOM → ② 合法 UTF-8 → ③ chardetng
 ///
-/// ② 优先判 UTF-8 是为了避免「无 BOM 的 UTF-8 被误判成 GBK」这一经典误判。
+/// ② 优先判 UTF-8 是为了避免「无 BOM 的 UTF-8 被误判成 GBK」这一经典误判；
+/// 抽样回退到字符边界（见 `utf8_prefix_len`）。
+/// ③ 的检测结果若不在已注册编码表内（chardetng 可能返回各种 Latin 家族编码名），
+/// 降级为 UTF-8 宽松解码并标记低置信度，保证打开链路不会因编码名无法解析而失败。
 pub fn guess(bytes: &[u8]) -> EncodingGuess {
     // ① BOM
     let bom_hit = |name: &str| EncodingGuess {
@@ -79,8 +111,8 @@ pub fn guess(bytes: &[u8]) -> EncodingGuess {
         return bom_hit("UTF-16 BE");
     }
 
-    // ② 合法 UTF-8（抽样前 64KB）
-    let sample = &bytes[..bytes.len().min(64 * 1024)];
+    // ② 合法 UTF-8（抽样前 64KB，回退到字符边界）
+    let sample = &bytes[..utf8_prefix_len(bytes, 64 * 1024)];
     if std::str::from_utf8(sample).is_ok() {
         return EncodingGuess {
             encoding: "UTF-8".to_string(),
@@ -93,8 +125,16 @@ pub fn guess(bytes: &[u8]) -> EncodingGuess {
     let mut detector = chardetng::EncodingDetector::new();
     detector.feed(sample, true);
     let enc = detector.guess(None, true);
+    let name = display_name(enc);
+    if lookup(&name).is_none() {
+        return EncodingGuess {
+            encoding: "UTF-8".to_string(),
+            confidence: "low".to_string(),
+            candidates: candidate_list(),
+        };
+    }
     EncodingGuess {
-        encoding: display_name(enc),
+        encoding: name,
         confidence: if is_high_confusion(enc) { "low" } else { "high" }.to_string(),
         candidates: candidate_list(),
     }
@@ -303,6 +343,78 @@ mod tests {
         let g = guess("你好，世界 hello".as_bytes());
         assert_eq!(g.encoding, "UTF-8");
         assert_eq!(g.confidence, "high");
+    }
+
+    /// 回归：多字节序列横跨 64KB 采样边界时，合法 UTF-8 不得被误判
+    /// （AML_MODEL_EVENT.sql：「模型」的 e6 a8 a1 起点在 64KB-2 处，
+    ///  旧实现采样截断 → 误入 chardetng → windows-1252 → 打开失败）
+    #[test]
+    fn utf8_sequence_split_at_sample_boundary_still_utf8() {
+        let mut bytes = vec![b'A'; 65534]; // 「模型」的 e6 正好落在 64KB-2
+        bytes.extend_from_slice("模型".as_bytes());
+        bytes.extend_from_slice(b"INSERT INTO t VALUES (1);");
+        let g = guess(&bytes);
+        assert_eq!(g.encoding, "UTF-8");
+        assert_eq!(g.confidence, "high");
+        // 全量解码后中文完好
+        let text = decode(&bytes, "UTF-8").unwrap();
+        assert!(text.contains("模型"));
+        assert!(text.contains("INSERT INTO"));
+    }
+
+    #[test]
+    fn utf8_prefix_len_handles_boundaries() {
+        // 全量：不截断
+        assert_eq!(utf8_prefix_len(b"abc", 64), 3);
+        // 边界落在 ASCII：不动
+        let mut ascii = vec![b'A'; 70000];
+        assert_eq!(utf8_prefix_len(&ascii, 65536), 65536);
+        // 边界落在 3 字节序列中间（e6 a8 a1 @65534-65536）
+        ascii.truncate(65534);
+        ascii.extend_from_slice("模".as_bytes());
+        assert_eq!(utf8_prefix_len(&ascii, 65536), 65534);
+        // 边界正好落在序列首字节
+        let mut lead = vec![b'A'; 65535];
+        lead.extend_from_slice("模".as_bytes());
+        assert_eq!(utf8_prefix_len(&lead, 65536), 65535);
+        // 边界落在 4 字节序列中间（f0 9f 98 80，序列起点在 65534）
+        let mut four = vec![b'A'; 65534];
+        four.extend_from_slice("😀".as_bytes());
+        four.extend_from_slice(b"tail");
+        assert_eq!(utf8_prefix_len(&four, 65536), 65534);
+    }
+
+    #[test]
+    fn windows_1252_registered_and_decodes() {
+        assert!(lookup("Windows-1252").is_some());
+        assert!(lookup("cp1252").is_some());
+        // 0x93/0x94 是 Windows-1252 特有的智能引号（Latin-1 中无定义）
+        let text = decode(&[0x93, b'h', b'i', 0x94], "Windows-1252").unwrap();
+        assert!(text.contains('\u{201C}'));
+        assert!(text.contains('\u{201D}'));
+        // 展示名闭环：lookup(display_name) 必须可解析
+        assert_eq!(display_name(encoding_rs::WINDOWS_1252), "Windows-1252");
+        assert!(lookup(&display_name(encoding_rs::WINDOWS_1252)).is_some());
+    }
+
+    /// guess() 的返回值必须始终可被 lookup 解析，否则打开链路会断
+    #[test]
+    fn guess_never_returns_unregistered_encoding() {
+        let cases: [&[u8]; 5] = [
+            b"plain ascii text",
+            &GBK_CJK,
+            &[0x93, 0x94, 0x85, b'h', b'i'],
+            &[0xFF, 0xFE, 0x41, 0x00],
+            &[0x80, 0x81, 0x82, 0x83, 0x84, 0x85],
+        ];
+        for bytes in cases {
+            let g = guess(bytes);
+            assert!(
+                lookup(&g.encoding).is_some(),
+                "guess 返回未注册编码: {}",
+                g.encoding
+            );
+        }
     }
 
     #[test]

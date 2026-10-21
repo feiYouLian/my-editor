@@ -37,11 +37,14 @@
     "markdown-it": "^14.3.3",
     "prettier": "^3.9.10",
     "sql-formatter": "^15.9.0",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
     "xml-formatter": "^3.7.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/markdown-it": "^14.2.0",
+    "@types/turndown": "^5.0.6",
     "typescript": "^5.6",
     "vite": "^6"
   }

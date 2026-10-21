@@ -31,6 +31,7 @@ import {
   PreviewHost,
   buildStandaloneHtml,
   buildWordHtml,
+  htmlToMarkdown,
   openPrintDialog,
   pathKindOf,
   type PreviewMode,
@@ -328,7 +329,7 @@ document.addEventListener("click", () => closeLanguageMenu());
 
 // ---- 状态栏编码菜单（「重新打开为」，只改解读方式、不写盘）----
 
-const FALLBACK_ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
+const FALLBACK_ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5", "Windows-1252"];
 let encodingMenu: HTMLElement | null = null;
 
 function closeEncodingMenu(): void {
@@ -1255,6 +1256,7 @@ const btnOpenDir = $<HTMLButtonElement>("btn-open-dir");
 const fileTree = new FileTree(fileTreeEl, {
   onOpenFile: (path) => void openFilePath(path),
   onCompareFile: (path) => void compareWithPath(path),
+  onNotify: (message) => showMessage(message),
   onWorkspaceStateChange: (state) => {
     workspaceRoot = state.root;
     wsName.textContent = state.root
@@ -1403,14 +1405,25 @@ function refreshPreview(): void {
   previewHost.apply(tab ? toPreviewTab(tab) : null, mode);
 }
 
-const previewHost = new PreviewHost($("preview-pane"), editorArea, (line) => {
-  // 预览滚动 → 编辑器滚动（双栏 Markdown）
-  const view = editorHandle.view;
-  const lineInfo = view.state.doc.line(Math.min(line, view.state.doc.lines));
-  const coords = view.coordsAtPos(lineInfo.from);
-  const rect = view.scrollDOM.getBoundingClientRect();
-  if (coords) view.scrollDOM.scrollTop += coords.top - (rect.top + 8);
-});
+const previewHost = new PreviewHost(
+  $("preview-pane"),
+  editorArea,
+  (line) => {
+    // 预览滚动 → 编辑器滚动（双栏 Markdown）
+    const view = editorHandle.view;
+    const lineInfo = view.state.doc.line(Math.min(line, view.state.doc.lines));
+    const coords = view.coordsAtPos(lineInfo.from);
+    const rect = view.scrollDOM.getBoundingClientRect();
+    if (coords) view.scrollDOM.scrollTop += coords.top - (rect.top + 8);
+  },
+  (x, y) => {
+    // HTML 预览在 iframe 内，右键经同源转发到这里
+    const tab = activeTab();
+    if (tab && tab.kind === "text" && pathKindOf(tab.path)) {
+      showPreviewMenu(x, y, tab);
+    }
+  },
+);
 
 // 编辑器滚动 → 预览联动
 editorHandle.view.scrollDOM.addEventListener("scroll", () =>
@@ -1861,7 +1874,11 @@ function showPreviewMenu(x: number, y: number, tab: Tab): void {
   const menu = document.createElement("div");
   menu.className = "context-menu";
 
+  const isHtml = pathKindOf(tab.path) === "html";
   const items: { label: string; run: () => void }[] = [
+    ...(isHtml
+      ? [{ label: "导出 Markdown…（.md）", run: () => void exportPreview(tab, "md") }]
+      : []),
     { label: "导出 HTML…", run: () => void exportPreview(tab, "html") },
     { label: "导出 Word…（.doc）", run: () => void exportPreview(tab, "word") },
     { label: "导出 PDF…（系统打印对话框）", run: () => void exportPreview(tab, "pdf") },
@@ -1885,20 +1902,94 @@ function previewPaneTitle(tab: Tab): string {
   return tab.name.replace(/\.(md|markdown|html?)$/i, "");
 }
 
+/**
+ * 把 HTML 内嵌的 data:image 落盘为「<md 文件名>.assets/」，
+ * 并把 src 改为相对路径，避免导出 Markdown 出现单行几十万字符。
+ * 基于 DOM 遍历（不依赖属性引号写法），srcset 场景已由预览侧归一化。
+ */
+async function exportHtmlImagesToAssets(
+  html: string,
+  mdPath: string,
+): Promise<{ html: string; count: number }> {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const images = Array.from(doc.images).filter((img) =>
+    /^data:image\//i.test(img.getAttribute("src") ?? ""),
+  );
+  if (images.length === 0) return { html, count: 0 };
+
+  const folder = `${mdPath.replace(/\.md$/i, "")}.assets`;
+  const folderName = folder.replace(/^.*[\\/]/, "");
+  const replaced = new Map<string, string>();
+  let index = 0;
+  for (const img of images) {
+    const dataUri = img.getAttribute("src") ?? "";
+    const hit = replaced.get(dataUri);
+    if (hit) {
+      img.setAttribute("src", hit);
+      continue;
+    }
+    const match = /^data:image\/(png|jpe?g|gif|webp|bmp);base64,(.+)$/i.exec(dataUri);
+    if (!match) continue;
+    const extMap: Record<string, string> = {
+      png: "png",
+      jpg: "jpg",
+      jpeg: "jpg",
+      gif: "gif",
+      webp: "webp",
+      bmp: "bmp",
+    };
+    const ext = extMap[match[1].toLowerCase()] ?? "png";
+    const fileName = `image-${++index}.${ext}`;
+    try {
+      await invoke("write_binary_file", {
+        path: `${folder}\\${fileName}`,
+        base64Data: match[2],
+      });
+      const rel = `${folderName}/${fileName}`;
+      img.setAttribute("src", rel);
+      replaced.set(dataUri, rel);
+    } catch {
+      // 单张失败不影响其余图片与正文导出（该图由转换器降级为纯 alt）
+    }
+  }
+  return { html: doc.body?.innerHTML ?? html, count: replaced.size };
+}
+
 async function exportPreview(
   tab: Tab,
-  format: "html" | "word" | "pdf",
+  format: "html" | "word" | "pdf" | "md",
 ): Promise<void> {
   try {
-    const body = await previewHost.getExportBody(toPreviewTab(tab));
     const title = previewPaneTitle(tab);
 
     if (format === "pdf") {
       // 经系统打印对话框另存为 PDF
+      const body = await previewHost.getExportBody(toPreviewTab(tab));
       openPrintDialog(buildStandaloneHtml(title, body));
       return;
     }
 
+    if (format === "md") {
+      const target = await save({ defaultPath: `${title}.md` });
+      if (typeof target !== "string") return;
+      const prepared = await exportHtmlImagesToAssets(tab.content, target);
+      const content = await htmlToMarkdown(prepared.html);
+      const result = await invoke<SaveResult>("save_file", {
+        path: target,
+        content,
+        newline: "LF",
+        hasBom: false,
+        encoding: "UTF-8",
+      });
+      showMessage(
+        prepared.count > 0
+          ? `已导出: ${result.path}（${prepared.count} 张内嵌图片已存入 ${title}.assets）`
+          : `已导出: ${result.path}`,
+      );
+      return;
+    }
+
+    const body = await previewHost.getExportBody(toPreviewTab(tab));
     const ext = format === "html" ? "html" : "doc";
     const target = await save({ defaultPath: `${title}.${ext}` });
     if (typeof target !== "string") return;
@@ -3054,6 +3145,14 @@ palette.registerAll([
   { id: "md.table", title: "Markdown：插入表格…", section: "Markdown", run: () => tableDialog.toggle() },
   { id: "file.recent", title: "最近打开的文件…", section: "文件", run: () => recentFiles.toggle() },
   { id: "file.saveAsEncoding", title: "另存为指定编码…", section: "文件", run: () => saveAsWithEncoding() },
+  { id: "file.exportMarkdown", title: "导出 Markdown（当前 HTML 文件）", section: "文件", run: () => {
+      const tab = activeTab();
+      if (!tab || pathKindOf(tab.path) !== "html") {
+        showMessage("当前文件不是 HTML，无法导出 Markdown");
+        return;
+      }
+      void exportPreview(tab, "md");
+    } },
   { id: "insert.clipboardImage", title: "插入剪贴板图片（存为 .assets 并插入引用）", section: "插入", run: () => void insertClipboardImage() },
   { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", run: () => detectMojibakeManually() },
   { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", run: () => runCurrentFile() },

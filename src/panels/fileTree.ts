@@ -78,6 +78,8 @@ export interface FileTreeCallbacks {
   onOpenFile: (path: string) => void;
   /** 右键文件时「与当前文件比较」 */
   onCompareFile?: (path: string) => void;
+  /** 状态栏瞬时消息（复制文件路径成功提示等） */
+  onNotify?: (message: string) => void;
   onWorkspaceStateChange: (state: WorkspaceState) => void;
 }
 
@@ -290,6 +292,7 @@ export class FileTree {
     if (!entry.is_dir && compare) {
       items.push({ label: "与当前文件比较", action: () => compare(entry.path) });
     }
+    items.push({ label: "复制文件路径", action: () => void this.copyPath(entry.path) });
     items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
     items.push({ label: "删除", action: () => void this.deleteEntry(entry) });
     items.push({
@@ -316,6 +319,16 @@ export class FileTree {
   private closeContextMenu(): void {
     this.menu?.remove();
     this.menu = null;
+  }
+
+  /** 复制文件/目录的完整路径到剪贴板 */
+  private async copyPath(path: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(path);
+      this.callbacks.onNotify?.("已复制文件路径");
+    } catch (e) {
+      window.alert(`复制地址失败: ${e}`);
+    }
   }
 
   /** 全局监听挂载点：应用启动时调用一次 */
