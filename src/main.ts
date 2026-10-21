@@ -48,7 +48,7 @@ import {
 } from "./services/workspace";
 import {
   loadSession,
-  saveSessionDebounced,
+  saveSession,
   writeDraft,
   deleteDraft,
   listDrafts,
@@ -56,6 +56,7 @@ import {
   cleanupDrafts,
   type DraftInfo,
   type SessionFile,
+  type SessionState,
 } from "./services/session";
 import {
   settings,
@@ -71,13 +72,13 @@ import {
   matchKeyCommand,
   setExtraReservedKeys,
 } from "./config/keybindings";
-import { SettingsPanel } from "./panels/settingsPanel";
-import {
+import type { SettingsPanel } from "./panels/settingsPanel";
+import type {
   DiffPanel,
-  type DiffAction,
-  type DiffPayload,
-  type DiffRow,
-  type HunkAdopt,
+  DiffAction,
+  DiffPayload,
+  DiffRow,
+  HunkAdopt,
 } from "./panels/diffPanel";
 import { LargeView, type LargeFileInfo } from "./panels/largeView";
 import { CronPanel } from "./panels/cronPanel";
@@ -118,6 +119,7 @@ const statusLines = $<HTMLSpanElement>("status-lines");
 const statusDirty = $<HTMLSpanElement>("status-dirty");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
+const statusWrap = $<HTMLSpanElement>("status-wrap");
 const statusReadonly = $<HTMLSpanElement>("status-readonly");
 const statusDraft = $<HTMLSpanElement>("status-draft");
 const statusExternal = $<HTMLSpanElement>("status-external");
@@ -127,6 +129,13 @@ function refreshWhitespace(): void {
   const on = editorHandle.isWhitespaceOn();
   statusWhitespace.textContent = `空白: ${on ? "显" : "隐"}`;
   statusWhitespace.classList.toggle("on", on);
+}
+
+/** 状态栏自动换行指示 */
+function refreshWordWrap(): void {
+  const on = getConfig().editorEnhancements.wordWrap;
+  statusWrap.textContent = `换行: ${on ? "开" : "关"}`;
+  statusWrap.classList.toggle("on", on);
 }
 
 /** 防抖写回 config.json（界面开关与配置文件保持联动） */
@@ -152,6 +161,19 @@ function toggleWhitespacePersisted(): void {
 }
 
 statusWhitespace.addEventListener("click", () => toggleWhitespacePersisted());
+
+/** 切换自动换行并写回配置 */
+function toggleWordWrapPersisted(): void {
+  const next = !getConfig().editorEnhancements.wordWrap;
+  editorHandle.setWordWrap(next);
+  persistConfig({
+    editorEnhancements: { ...getConfig().editorEnhancements, wordWrap: next },
+  });
+  refreshWordWrap();
+  showMessage(`自动换行已${next ? "开启" : "关闭"}`);
+}
+
+statusWrap.addEventListener("click", () => toggleWordWrapPersisted());
 
 // ---- 状态栏换行符菜单（与编码菜单一致的「弹出列表 → 选择」交互）----
 
@@ -562,6 +584,7 @@ function refreshStatus(): void {
   statusReadonly.classList.toggle("hidden", tab?.readonly !== true);
   statusReadonly.title = tab?.readonly ? tab.readonlyReason : "";
   refreshWhitespace();
+  refreshWordWrap();
   refreshRunButton();
 }
 
@@ -608,7 +631,23 @@ function applySplitRatio(ratio: number): void {
 
 // ---- 标签栏渲染 ----
 
+/** 上次渲染的标签签名：输入时标签集未变则跳过整栏重建 */
+let tabsSignature = "";
+
+function tabsRenderSignature(): string {
+  const activeId = tabStore.active()?.id ?? "";
+  const list = tabStore
+    .list()
+    .map((t) => `${t.id}\u0001${t.name}\u0001${t.dirty ? 1 : 0}`)
+    .join("\u0002");
+  return `${activeId}\u0003${list}`;
+}
+
 function renderTabs(): void {
+  const signature = tabsRenderSignature();
+  if (signature === tabsSignature) return;
+  tabsSignature = signature;
+
   tabsBar.innerHTML = "";
   for (const tab of tabStore.list()) {
     const el = document.createElement("div");
@@ -790,8 +829,16 @@ async function showBreadcrumbMenu(dir: string, anchor: HTMLElement): Promise<voi
   await fillBreadcrumbMenu(menu, dir, anchor);
 }
 
+/** 上次渲染的面包屑签名：仅路径 / 工作区变化时重建 */
+let breadcrumbSignature = "";
+
 /** 渲染当前标签的面包屑：工作区内从子目录开始，工作区外用绝对路径 */
 function renderBreadcrumb(): void {
+  const active = activeTab();
+  const signature = `${workspaceRoot ?? ""}\u0001${active?.id ?? ""}\u0001${active?.path ?? ""}\u0001${active?.name ?? ""}`;
+  if (signature === breadcrumbSignature) return;
+  breadcrumbSignature = signature;
+
   closeBreadcrumbMenu();
   breadcrumbEl.innerHTML = "";
   const tab = activeTab();
@@ -837,6 +884,13 @@ tabsBar.addEventListener(
   { passive: false },
 );
 
+// 双击标签栏空白处新建标签（点在标签或按钮上不触发）
+document.querySelector<HTMLElement>(".tabsbar")?.addEventListener("dblclick", (e) => {
+  const target = e.target as HTMLElement;
+  if (target.closest(".tab") || target.closest("button")) return;
+  newUntitled();
+});
+
 async function closeTab(id: string): Promise<void> {
   const tab = tabStore.findById(id);
   if (!tab) return;
@@ -862,6 +916,7 @@ async function closeTab(id: string): Promise<void> {
   // 关闭前把未保存内容落草稿，避免静默丢弃（已保存则顺带清除草稿）
   if (tab.dirty) await persistDraft(id);
   tabStore.close(id);
+  editorHandle.forgetDocument(id);
   previewModes.delete(id);
   cursorPos.delete(id);
   draftKeys.delete(id);
@@ -883,7 +938,11 @@ tabStore.subscribe(() => {
   if (tabStore.active()?.id !== prevActiveId) {
     void loadActiveTab();
   }
-  persistSession();
+  const sig = sessionStructureSignature();
+  if (sig !== sessionStructureSig) {
+    sessionStructureSig = sig;
+    persistSession();
+  }
   syncWatchedFilesDebounced();
 });
 
@@ -922,7 +981,13 @@ async function loadActiveTab(): Promise<void> {
   }
   editorColumn()?.classList.remove("virtual");
   largeView().close();
-  await editorHandle.loadDocument(tab.path ?? "", tab.content, tab.readonly, tab.languageOverride);
+  await editorHandle.loadDocument(
+    tab.path ?? "",
+    tab.content,
+    tab.readonly,
+    tab.languageOverride,
+    tab.id,
+  );
   applyRestoredCursor(tab);
   // 文件树联动：展开祖先目录并高亮当前文件
   if (tab.path) fileTree.revealPath(tab.path);
@@ -974,19 +1039,68 @@ function currentSplitRatio(): number | null {
 }
 
 /** 落 session.json：打开文件列表（含光标）+ 激活文件 + 分栏比例 */
-function persistSession(): void {
+function buildSessionState(): SessionState {
   const openFiles: SessionFile[] = [];
   for (const tab of tabStore.list()) {
     if (tab.kind !== "text" || !tab.path) continue;
     const pos = cursorPos.get(tab.id);
     openFiles.push({ path: tab.path, line: pos?.line ?? 1, col: pos?.col ?? 1 });
   }
-  saveSessionDebounced({
+  return {
     openFiles,
     activeFile: activeTab()?.path ?? null,
     splitRatio: currentSplitRatio(),
-  });
+  };
 }
+
+/** 会话是否有未落盘的光标变化 */
+let sessionDirty = false;
+/** 结构变化的合并写盘定时器 */
+let sessionTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 立即写盘（页面隐藏 / 关闭 / 定时兜底） */
+function saveSessionNow(): void {
+  if (sessionTimer) {
+    clearTimeout(sessionTimer);
+    sessionTimer = null;
+  }
+  sessionDirty = false;
+  void saveSession(buildSessionState()).catch(() => {});
+}
+
+/** 结构变化合并写盘：启动恢复多个标签时只落一次 */
+function persistSession(): void {
+  sessionDirty = false;
+  if (sessionTimer) clearTimeout(sessionTimer);
+  sessionTimer = setTimeout(() => {
+    sessionTimer = null;
+    sessionDirty = false;
+    void saveSession(buildSessionState()).catch(() => {});
+  }, 400);
+}
+
+/** 结构签名：标签集 / 路径 / 激活项变化才算需要写会话（输入与光标移动不写） */
+function sessionStructureSignature(): string {
+  const active = activeTab();
+  const list = tabStore
+    .list()
+    .map((t) => `${t.id}\u0001${t.path ?? ""}\u0001${t.kind}`)
+    .join("\u0002");
+  return `${active?.id ?? ""}\u0003${list}`;
+}
+
+let sessionStructureSig = "";
+
+// 光标位置只在空闲时兜底写盘，避免每次移动 / 输入都触发 IPC 与磁盘写入
+setInterval(() => {
+  if (sessionDirty) saveSessionNow();
+}, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && (sessionDirty || sessionTimer)) saveSessionNow();
+});
+window.addEventListener("beforeunload", () => {
+  if (sessionDirty || sessionTimer) saveSessionNow();
+});
 
 /** 草稿只针对可编辑的普通文本标签（大文件虚拟视图 / 只读 / 占位标签不写） */
 function draftable(tab: Tab): boolean {
@@ -1233,7 +1347,8 @@ editorHandle = createEditor($("editor"), {
     const tab = activeTab();
     if (tab) {
       cursorPos.set(tab.id, { line, col });
-      persistSession();
+      // 只标记，不写盘：切标签 / 隐藏 / 定时器兜底时再落会话
+      sessionDirty = true;
     }
   },
   onHighlightDisabled: (reason) => {
@@ -2295,7 +2410,19 @@ async function openLargeInEditor(info: LargeFileInfo): Promise<void> {
 
 // ---- 差异比较：未保存改动 / 与另一文件 / 与 Git ----
 
-const diffPanel = new DiffPanel();
+/** 差异面板按需加载：只在真正发起比较时引入 */
+let diffPanelInstance: DiffPanel | null = null;
+let diffPanelPromise: Promise<DiffPanel> | null = null;
+
+function ensureDiffPanel(): Promise<DiffPanel> {
+  if (!diffPanelPromise) {
+    diffPanelPromise = import("./panels/diffPanel").then(({ DiffPanel }) => {
+      diffPanelInstance = new DiffPanel();
+      return diffPanelInstance;
+    });
+  }
+  return diffPanelPromise;
+}
 
 /** 一次差异会话：采用差异块后可重新计算并刷新面板 */
 interface DiffSession {
@@ -2314,7 +2441,7 @@ async function openDiff(session: DiffSession, hunkIndex?: number): Promise<void>
   diffSession = session;
   try {
     const payload = await session.load();
-    diffPanel.open(payload, session.actions, session.adopt() ?? undefined, hunkIndex);
+    (await ensureDiffPanel()).open(payload, session.actions, session.adopt() ?? undefined, hunkIndex);
   } catch (e) {
     showMessage(`比较失败：${String(e).split("\n")[0]}`);
   }
@@ -2356,7 +2483,7 @@ function mergeHunk(
 /** 采用当前差异块：写回编辑器并重新计算差异，保持所在差异块位置 */
 async function adoptHunk(hunkIndex: number): Promise<void> {
   const session = diffSession;
-  const payload = diffPanel.getPayload();
+  const payload = diffPanelInstance?.getPayload() ?? null;
   const adopt = session?.adopt();
   if (!session || !payload || !adopt || !adopt.enabled()) return;
   const tab = activeTab();
@@ -2411,7 +2538,7 @@ async function compareWithPath(rightPath: string): Promise<void> {
       {
         label: "导出补丁",
         run: () => {
-          const p = diffPanel.getPayload();
+          const p = diffPanelInstance?.getPayload();
           if (p) void exportPatch(leftPath, p.patch);
         },
       },
@@ -2487,14 +2614,14 @@ async function diffUnsaved(): Promise<void> {
           if (!t) return;
           tabStore.setContent(tabId, t.savedContent);
           await loadActiveTab();
-          diffPanel.close();
+          diffPanelInstance?.close();
           showMessage("已还原为磁盘内容");
         },
       },
       {
         label: "导出补丁",
         run: () => {
-          const p = diffPanel.getPayload();
+          const p = diffPanelInstance?.getPayload();
           if (p) void exportPatch(tabStore.findById(tabId)?.path ?? name, p.patch);
         },
       },
@@ -2536,7 +2663,7 @@ async function diffWithGit(scope: "worktree" | "index"): Promise<void> {
       {
         label: "导出补丁",
         run: () => {
-          const p = diffPanel.getPayload();
+          const p = diffPanelInstance?.getPayload();
           if (p) void exportPatch(path, p.patch);
         },
       },
@@ -2560,25 +2687,38 @@ async function diffWithGit(scope: "worktree" | "index"): Promise<void> {
 }
 
 // ---- 设置中心（Ctrl+, / 菜单 / 命令面板）----
-const settingsPanel = new SettingsPanel({
-  onSidebarVisible: (visible) => {
-    // 仅应用到界面；持久化由 updateSettings 完成
-    sidebarVisible = visible;
-    document.querySelector(".main")?.classList.toggle("no-sidebar", !visible);
-  },
-  onSplitRatio: (ratio) => applySplitRatio(ratio),
-  onViewMode: (mode) => {
-    const tab = activeTab();
-    if (tab && pathKindOf(tab.path)) {
-      previewModes.set(tab.id, mode);
-      refreshPreview();
-    }
-  },
-  onMessage: showMessage,
-});
+
+/** 设置面板按需加载：只在打开设置时引入 */
+let settingsPanelInstance: SettingsPanel | null = null;
+let settingsPanelPromise: Promise<SettingsPanel> | null = null;
+
+function ensureSettingsPanel(): Promise<SettingsPanel> {
+  if (!settingsPanelPromise) {
+    settingsPanelPromise = import("./panels/settingsPanel").then(({ SettingsPanel }) => {
+      settingsPanelInstance = new SettingsPanel({
+        onSidebarVisible: (visible) => {
+          // 仅应用到界面；持久化由 updateSettings 完成
+          sidebarVisible = visible;
+          document.querySelector(".main")?.classList.toggle("no-sidebar", !visible);
+        },
+        onSplitRatio: (ratio) => applySplitRatio(ratio),
+        onViewMode: (mode) => {
+          const tab = activeTab();
+          if (tab && pathKindOf(tab.path)) {
+            previewModes.set(tab.id, mode);
+            refreshPreview();
+          }
+        },
+        onMessage: showMessage,
+      });
+      return settingsPanelInstance;
+    });
+  }
+  return settingsPanelPromise;
+}
 
 function openSettings(category: "theme" | "keybindings" | "layout" = "theme"): void {
-  settingsPanel.open(category);
+  void ensureSettingsPanel().then((panel) => panel.open(category));
 }
 
 // ---- 侧栏显隐 ----

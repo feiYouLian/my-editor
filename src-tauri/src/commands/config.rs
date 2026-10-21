@@ -31,6 +31,8 @@ pub struct EditorEnhancements {
     pub indent_guides: bool,
     /// 彩虹括号：括号对按嵌套深度循环着色
     pub rainbow_brackets: bool,
+    /// 自动换行：长行按编辑区宽度折行
+    pub word_wrap: bool,
 }
 
 impl Default for EditorEnhancements {
@@ -44,6 +46,7 @@ impl Default for EditorEnhancements {
             bracket_matching: true,
             indent_guides: true,
             rainbow_brackets: true,
+            word_wrap: false,
         }
     }
 }
@@ -90,6 +93,7 @@ fn default_status_bar_fields() -> Vec<StatusBarFieldEntry> {
         "newline",
         "language",
         "whitespace",
+        "wrap",
         "cursor",
         "lines",
         "dirty",

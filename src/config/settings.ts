@@ -28,6 +28,8 @@ export interface EditorEnhancements {
   indentGuides: boolean;
   /** 彩虹括号：括号对按嵌套深度循环着色，便于区分配对 */
   rainbowBrackets: boolean;
+  /** 自动换行：长行按编辑区宽度折行显示 */
+  wordWrap: boolean;
 }
 
 export interface KeybindingEntry {
@@ -145,6 +147,7 @@ export interface EditorSettings {
   columnEditorKey: string;
   showLineNumbers: boolean;
   showActiveLine: boolean;
+  wordWrap: boolean;
 }
 
 /** 状态栏字段默认显隐顺序（与 index.html data-field 对应） */
@@ -157,6 +160,7 @@ export function defaultStatusBarFields(): StatusBarFieldEntry[] {
     { id: "newline", visible: true },
     { id: "language", visible: true },
     { id: "whitespace", visible: true },
+    { id: "wrap", visible: true },
     { id: "cursor", visible: true },
     { id: "lines", visible: true },
     { id: "dirty", visible: true },
@@ -193,6 +197,7 @@ export function defaultConfig(): AppConfig {
       bracketMatching: true,
       indentGuides: true,
       rainbowBrackets: true,
+      wordWrap: false,
     },
     keybindings: [],
     layout: {
@@ -259,6 +264,7 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     columnEditorKey: e.columnEditorKey,
     showLineNumbers: cfg.layout.showLineNumbers,
     showActiveLine: cfg.layout.showActiveLine,
+    wordWrap: e.wordWrap,
   };
 }
 

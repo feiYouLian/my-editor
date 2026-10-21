@@ -24,6 +24,8 @@ const CHUNK: usize = 4 * 1024 * 1024;
 const MAX_WINDOW_LINES: usize = 4000;
 /// 过滤命中上限
 const MAX_FILTER_MATCHES: usize = 50000;
+/// 流式过滤单批最大命中数
+const FILTER_BATCH_MAX: usize = 1000;
 /// 单行展示裁剪阈值
 const MAX_LINE_CHARS: usize = 4000;
 /// 进度事件节流间隔
@@ -85,6 +87,20 @@ pub struct FilterResult {
     pub truncated: bool,
     pub cancelled: bool,
     pub scanned: u64,
+}
+
+/// 流式过滤批次：命中行按批推给前端，首批到达即可先渲染
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterBatch {
+    pub id: String,
+    pub request_id: u64,
+    pub matches: Vec<usize>,
+    pub scanned: u64,
+    pub total: u64,
+    pub truncated: bool,
+    pub done: bool,
+    pub cancelled: bool,
 }
 
 struct LargeFile {
@@ -439,7 +455,8 @@ pub fn read_large_lines(
     })
 }
 
-/// 整文件过滤：返回命中行的原始行号（0-based）
+/// 整文件过滤：返回命中行的原始行号（0-based）。
+/// 命中行按批通过 `large://filter-batch` 先行推送，命令返回值作为最终权威结果。
 #[tauri::command]
 pub fn filter_large_file(
     app: tauri::AppHandle,
@@ -448,6 +465,7 @@ pub fn filter_large_file(
     query: String,
     case_sensitive: bool,
     use_regex: bool,
+    request_id: u64,
 ) -> Result<FilterResult, String> {
     let (path, size, encoding_name) = {
         let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
@@ -475,6 +493,10 @@ pub fn filter_large_file(
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
+        // 新过滤开始前中止上一次仍在扫描的任务，避免两份全文件遍历并发
+        if let Some(prev) = slot.take() {
+            prev.store(true, Ordering::Relaxed);
+        }
         *slot = Some(cancel.clone());
     }
 
@@ -483,6 +505,7 @@ pub fn filter_large_file(
     let mut carry: Vec<u8> = Vec::new();
     let mut line_no = 0usize;
     let mut matches: Vec<usize> = Vec::new();
+    let mut pending: Vec<usize> = Vec::new();
     let mut scanned = 0u64;
     let mut truncated = false;
     let mut cancelled = false;
@@ -512,7 +535,9 @@ pub fn filter_large_file(
             let line_count = parts.len().saturating_sub(1);
             for (i, line) in parts.iter().take(line_count).enumerate() {
                 if re.is_match(line) {
-                    matches.push(line_no + i);
+                    let line_idx = line_no + i;
+                    matches.push(line_idx);
+                    pending.push(line_idx);
                     if matches.len() >= MAX_FILTER_MATCHES {
                         truncated = true;
                         break;
@@ -524,7 +549,7 @@ pub fn filter_large_file(
         if truncated {
             break;
         }
-        if last_emit.elapsed() >= PROGRESS_EVERY {
+        if last_emit.elapsed() >= PROGRESS_EVERY || pending.len() >= FILTER_BATCH_MAX {
             last_emit = Instant::now();
             let _ = app.emit(
                 "large://filter-progress",
@@ -535,6 +560,21 @@ pub fn filter_large_file(
                     matches: matches.len(),
                 },
             );
+            if !pending.is_empty() {
+                let _ = app.emit(
+                    "large://filter-batch",
+                    FilterBatch {
+                        id: id.clone(),
+                        request_id,
+                        matches: std::mem::take(&mut pending),
+                        scanned,
+                        total: size,
+                        truncated: false,
+                        done: false,
+                        cancelled: false,
+                    },
+                );
+            }
         }
     }
 
@@ -545,8 +585,9 @@ pub fn filter_large_file(
         };
         let text = encoding::decode(body, &encoding_name)
             .unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned());
-        if re.is_match(&text) {
+        if re.is_match(&text) && matches.len() < MAX_FILTER_MATCHES {
             matches.push(line_no);
+            pending.push(line_no);
         }
     }
 
@@ -554,6 +595,30 @@ pub fn filter_large_file(
         let mut slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
         *slot = None;
     }
+
+    let _ = app.emit(
+        "large://filter-progress",
+        FilterProgress {
+            id: id.clone(),
+            scanned,
+            total: size,
+            matches: matches.len(),
+        },
+    );
+    // 末批带 done 标记：前端据此收尾（含取消 / 截断状态）
+    let _ = app.emit(
+        "large://filter-batch",
+        FilterBatch {
+            id,
+            request_id,
+            matches: pending,
+            scanned,
+            total: size,
+            truncated,
+            done: true,
+            cancelled,
+        },
+    );
 
     Ok(FilterResult {
         matches,

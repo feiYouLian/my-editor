@@ -27,6 +27,18 @@ interface FilterResult {
   scanned: number;
 }
 
+/** 流式过滤批次（后端按 200ms / 1000 条分批推送） */
+interface FilterBatch {
+  id: string;
+  requestId: number;
+  matches: number[];
+  scanned: number;
+  total: number;
+  truncated: boolean;
+  done: boolean;
+  cancelled: boolean;
+}
+
 interface IndexReady {
   id: string;
   totalLines: number;
@@ -83,6 +95,13 @@ export class LargeView {
   private regexBtn!: HTMLButtonElement;
   private encodingSelect!: HTMLSelectElement;
   private editorBtn!: HTMLButtonElement;
+
+  /** 当前过滤请求号：用于丢弃上一次过滤迟到的批次 */
+  private filterRequestId = 0;
+  /** 已收尾的请求号：批次末条与命令返回都可能先到 */
+  private filterFinishedId = -1;
+  /** 流式刷新节流时间戳 */
+  private lastStreamRefresh = 0;
 
   constructor(private host: HTMLElement, private deps: LargeViewDeps) {
     this.mount();
@@ -213,7 +232,10 @@ export class LargeView {
   // ---- 生命周期 ----
 
   async open(info: LargeFileInfo, paddingLines = DEFAULT_PADDING_LINES): Promise<void> {
+    void this.cancel();
     this.info = info;
+    this.filterRequestId++;
+    this.filterFinishedId = -1;
     this.paddingLines = Math.max(0, paddingLines);
     this.matches = null;
     this.density = [];
@@ -232,6 +254,8 @@ export class LargeView {
 
   close(): void {
     this.info = null;
+    this.filterRequestId++;
+    this.filterFinishedId = -1;
     this.matches = null;
     this.cache.clear();
     this.host.classList.add("hidden");
@@ -273,6 +297,46 @@ export class LargeView {
         },
       ),
     );
+    this.unlisteners.push(
+      await listen<FilterBatch>("large://filter-batch", (e) => {
+        const p = e.payload;
+        if (!this.info || p.id !== this.info.id) return;
+        if (p.requestId !== this.filterRequestId) return;
+        this.applyFilterBatch(p);
+      }),
+    );
+  }
+
+  /** 流式批次：追加命中行，首批到达即先渲染；末批收尾 */
+  private applyFilterBatch(p: FilterBatch): void {
+    if (p.matches.length > 0) {
+      if (!this.matches) this.matches = [];
+      this.matches.push(...p.matches);
+      if (this.matches.length > 50000) this.matches.length = 50000;
+    }
+    if (!p.done) {
+      this.statusEl.textContent = `过滤中…（已命中 ${this.matches?.length ?? 0} 行）`;
+      // 用户停在顶部时优先刷新首批结果，节流避免每批都读盘
+      const now = performance.now();
+      if (p.matches.length > 0 && this.scrollEl.scrollTop <= 1 && now - this.lastStreamRefresh > 200) {
+        this.lastStreamRefresh = now;
+        void this.loadWindow();
+      }
+      return;
+    }
+    if (this.filterFinishedId === p.requestId) return;
+    this.filterFinishedId = p.requestId;
+    if (p.cancelled) {
+      this.statusEl.textContent = "过滤已中止";
+      return;
+    }
+    this.deps.onMessage(
+      p.truncated
+        ? `过滤命中已达上限，仅保留前 ${this.matches?.length ?? 0} 行`
+        : `过滤命中 ${this.matches?.length ?? 0} 行`,
+    );
+    void this.loadWindow();
+    this.drawMinimap();
   }
 
   private updateMeta(): void {
@@ -429,6 +493,14 @@ export class LargeView {
       await this.clearFilter();
       return;
     }
+    const requestId = ++this.filterRequestId;
+    this.filterFinishedId = -1;
+    this.lastStreamRefresh = 0;
+    // 先切到空结果集：批次到达即可增量渲染，不用等整文件扫完
+    this.matches = [];
+    this.cache.clear();
+    this.scrollEl.scrollTop = 0;
+    this.resizeSpacer();
     this.statusEl.textContent = "过滤中…";
     try {
       const res = await invoke<FilterResult>("filter_large_file", {
@@ -436,14 +508,17 @@ export class LargeView {
         query,
         caseSensitive: this.caseOn,
         useRegex: this.regexOn,
+        requestId,
       });
+      if (requestId !== this.filterRequestId) return;
+      this.matches = res.matches;
+      // 末批事件可能先到并已完成收尾
+      if (this.filterFinishedId === requestId) return;
+      this.filterFinishedId = requestId;
       if (res.cancelled) {
         this.statusEl.textContent = "过滤已中止";
         return;
       }
-      this.matches = res.matches;
-      this.cache.clear();
-      this.scrollEl.scrollTop = 0;
       this.deps.onMessage(
         res.truncated
           ? `过滤命中已达上限，仅保留前 ${res.matches.length} 行`
@@ -452,11 +527,16 @@ export class LargeView {
       await this.loadWindow();
       this.drawMinimap();
     } catch (e) {
+      if (requestId !== this.filterRequestId) return;
       this.statusEl.textContent = `过滤失败：${String(e).split("\n")[0]}`;
     }
   }
 
   private async clearFilter(): Promise<void> {
+    // 丢弃仍在推送的批次，并中止后端仍在校验的扫描
+    this.filterRequestId++;
+    this.filterFinishedId = -1;
+    void this.cancel();
     this.matches = null;
     this.cache.clear();
     this.scrollEl.scrollTop = 0;

@@ -692,6 +692,11 @@ export class SettingsPanel {
           editorEnhancements: { ...getConfig().editorEnhancements, rainbowBrackets: value },
         });
       }),
+      checkRow("自动换行（长行按编辑区宽度折行）", cfg.editorEnhancements.wordWrap, (value) => {
+        void updateSettings({
+          editorEnhancements: { ...getConfig().editorEnhancements, wordWrap: value },
+        });
+      }),
       checkRow("启用列选择", cfg.editorEnhancements.columnSelection, (value) => {
         void updateSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, columnSelection: value },
