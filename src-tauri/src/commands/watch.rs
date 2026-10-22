@@ -78,10 +78,12 @@ fn now_ms() -> u64 {
 
 /// 登记需要监听的文件（打开 / 保存 / 关闭标签后调用）。
 /// 每次都重建指纹表；目录集合未变时不重建 watcher。
+/// 同时把监听路径登记进路径守卫（应用已知路径）。
 #[tauri::command]
 pub fn watch_files(
     app: AppHandle,
     state: tauri::State<WatchState>,
+    guard: tauri::State<crate::commands::paths::PathGuard>,
     paths: Vec<String>,
 ) -> Result<(), String> {
     let mut inner = state.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -94,6 +96,7 @@ pub fn watch_files(
         let Some((mtime, size)) = fingerprint(&path) else {
             continue;
         };
+        guard.add_path(&raw);
         if let Some(parent) = path.parent() {
             dirs.insert(parent.to_path_buf());
         }

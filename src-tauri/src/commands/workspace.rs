@@ -7,6 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
+use super::paths::PathGuard;
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct WorkspaceState {
     /// 工作区根目录
@@ -29,21 +31,36 @@ fn workspace_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(config_dir(app)?.join("workspace.json"))
 }
 
-/// 读取工作区状态（不存在则返回默认值）
+/// 读取工作区状态（不存在则返回默认值）。
+/// 同时把根目录登记进路径守卫（文件树的新建/删除等操作由此获得作用域）。
 #[tauri::command]
-pub fn load_workspace(app: tauri::AppHandle) -> WorkspaceState {
+pub fn load_workspace(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, PathGuard>,
+) -> WorkspaceState {
     let Ok(path) = workspace_file(&app) else {
         return WorkspaceState::default();
     };
-    match fs::read_to_string(&path) {
+    let state = match fs::read_to_string(&path) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(_) => WorkspaceState::default(),
+    };
+    if let Some(root) = &state.root {
+        guard.add_root(root);
     }
+    state
 }
 
 /// 保存工作区状态（临时文件 + 原子替换，同 4.2）
 #[tauri::command]
-pub fn save_workspace(app: tauri::AppHandle, state: WorkspaceState) -> Result<(), String> {
+pub fn save_workspace(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, PathGuard>,
+    state: WorkspaceState,
+) -> Result<(), String> {
+    if let Some(root) = &state.root {
+        guard.add_root(root);
+    }
     let path = workspace_file(&app)?;
     let json = serde_json::to_string_pretty(&state).map_err(|e| format!("序列化失败: {e}"))?;
     let tmp = path.with_extension("json.tmp");

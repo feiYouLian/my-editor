@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -31,12 +31,17 @@ pub const EXIT_EVENT: &str = "run://exit";
 #[derive(Default, Clone)]
 pub struct RunState {
     slot: Arc<Mutex<Option<Running>>>,
+    /// 单调递增的运行代号：reaper 只处理自己那一代的进程，
+    /// 防止旧 reaper 超时后误杀新一轮 run 启动的进程
+    generation: Arc<AtomicU64>,
 }
 
 struct Running {
     child: Child,
     /// 是否由「停止」或超时终止
     stopped: Arc<AtomicBool>,
+    /// 本次运行的代号
+    generation: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -152,6 +157,26 @@ fn kill_tree(slot: &Arc<Mutex<Option<Running>>>) {
     let _ = running.child.kill();
 }
 
+/// 仅当 slot 中仍是指定代际的进程时才结束它。
+/// 旧 reaper 的超时兜底必须用这个：否则会杀掉新一轮 run 的进程。
+fn kill_tree_if_generation(slot: &Arc<Mutex<Option<Running>>>, generation: u64) {
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(running) = guard.as_mut() else {
+        return;
+    };
+    if running.generation != generation {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let pid = running.child.id();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+    let _ = running.child.kill();
+}
+
 /// 读取线程：按体积 / 时间批量回传，超过总量上限后只标记截断
 fn spawn_reader<R: Read + Send + 'static>(
     app: AppHandle,
@@ -202,10 +227,13 @@ fn flush(app: &AppHandle, stream: &str, pending: &mut Vec<u8>) {
     );
 }
 
-/// 守望线程：轮询退出状态，处理超时并在结束时推送 `run://exit`
+/// 守望线程：轮询退出状态，处理超时并在结束时推送 `run://exit`。
+/// 只处理自己这一代（generation）的进程：slot 已被新一轮 run 替换时
+/// 立即退出，绝不误杀新进程，也不会重复/矛盾地推送退出事件。
 fn spawn_reaper(
     app: AppHandle,
     slot: Arc<Mutex<Option<Running>>>,
+    generation: u64,
     started: Instant,
     truncated: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
@@ -220,6 +248,9 @@ fn spawn_reaper(
                 let Some(running) = guard.as_mut() else {
                     return; // 已被其它路径清理
                 };
+                if running.generation != generation {
+                    return; // slot 已是新一轮 run 的进程：不碰它
+                }
                 match running.child.try_wait() {
                     Ok(Some(status)) => {
                         code = status.code();
@@ -237,7 +268,7 @@ fn spawn_reaper(
             if started.elapsed() >= timeout {
                 timed_out = true;
                 stopped.store(true, Ordering::Relaxed);
-                kill_tree(&slot);
+                kill_tree_if_generation(&slot, generation);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -254,14 +285,18 @@ fn spawn_reaper(
     });
 }
 
-/// 运行当前文件：先停掉上一个任务，再启动新进程并流式回传
+/// 运行当前文件：先停掉上一个任务，再启动新进程并流式回传。
+/// 安全：目标文件必须是应用已知路径（当前打开的标签），runner 仅接受
+/// 内置白名单（python / node / java / curl）。
 #[tauri::command]
 pub fn run_code(
     app: AppHandle,
     state: tauri::State<RunState>,
+    guard: tauri::State<crate::commands::paths::PathGuard>,
     path: String,
     runner: String,
 ) -> Result<(), String> {
+    guard.ensure_file_scope(&path)?;
     kill_tree(&state.slot);
 
     let file = PathBuf::from(&path);
@@ -282,13 +317,21 @@ pub fn run_code(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动失败（{runner} 是否已安装并在 PATH 中？）: {e}"))?;
-    let stdout = child.stdout.take().ok_or("无法读取标准输出")?;
-    let stderr = child.stderr.take().ok_or("无法读取标准错误")?;
+    // 取管道失败时必须终止已启动的进程，否则留下孤儿进程
+    let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
+        (Some(out), Some(err)) => (out, err),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("无法读取进程输出管道".to_string());
+        }
+    };
 
     let counter = Arc::new(AtomicUsize::new(0));
     let truncated = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     let started = Instant::now();
+    let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
 
     spawn_reader(
         app.clone(),
@@ -308,8 +351,16 @@ pub fn run_code(
     *state.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
         child,
         stopped: Arc::clone(&stopped),
+        generation,
     });
-    spawn_reaper(app, Arc::clone(&state.slot), started, truncated, stopped);
+    spawn_reaper(
+        app,
+        Arc::clone(&state.slot),
+        generation,
+        started,
+        truncated,
+        stopped,
+    );
     Ok(())
 }
 

@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::commands::encoding;
+use crate::commands::paths::PathGuard;
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -147,39 +148,53 @@ fn apply_readonly_guard(
     }
 }
 
-/// 打开文本文件：自动检测编码 + 大文件 / .log 只读守卫
+/// 打开文本文件：自动检测编码 + 大文件 / .log 只读守卫。
+/// 读取后自动登记该路径，供后续保存 / 运行 / 导出等操作通过作用域校验。
+/// 整文件读取放 spawn_blocking 执行，避免大文件阻塞事件循环。
 #[tauri::command]
-pub fn open_text_file(
+pub async fn open_text_file(
+    state: tauri::State<'_, PathGuard>,
     path: String,
     large_file_threshold: u64,
     log_extensions: Vec<String>,
 ) -> Result<FileContent, String> {
-    let mut content = read_with_encoding(&path, None)?;
-    apply_readonly_guard(
-        &mut content,
-        Path::new(&path),
-        large_file_threshold,
-        &log_extensions,
-    );
-    Ok(content)
+    state.add_path(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut content = read_with_encoding(&path, None)?;
+        apply_readonly_guard(
+            &mut content,
+            Path::new(&path),
+            large_file_threshold,
+            &log_extensions,
+        );
+        Ok(content)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 「重新打开为」：按指定编码重新解读磁盘字节（不写盘），并重算只读守卫
 #[tauri::command]
-pub fn reopen_with_encoding(
+pub async fn reopen_with_encoding(
+    state: tauri::State<'_, PathGuard>,
     path: String,
     encoding: String,
     large_file_threshold: u64,
     log_extensions: Vec<String>,
 ) -> Result<FileContent, String> {
-    let mut content = read_with_encoding(&path, Some(&encoding))?;
-    apply_readonly_guard(
-        &mut content,
-        Path::new(&path),
-        large_file_threshold,
-        &log_extensions,
-    );
-    Ok(content)
+    state.add_path(&path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut content = read_with_encoding(&path, Some(&encoding))?;
+        apply_readonly_guard(
+            &mut content,
+            Path::new(&path),
+            large_file_threshold,
+            &log_extensions,
+        );
+        Ok(content)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 图片文件读取：返回 data URL（前端 <img> 直接展示）
@@ -206,9 +221,13 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
 }
 
 #[tauri::command]
-pub fn read_image_file(path: String) -> Result<ImageFile, String> {
+pub fn read_image_file(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+) -> Result<ImageFile, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
+    state.add_path(&path);
     let p = PathBuf::from(&path);
     let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
     let ext = p
@@ -273,7 +292,8 @@ pub struct FileProbe {
 }
 
 #[tauri::command]
-pub fn probe_file(path: String) -> Result<FileProbe, String> {
+pub fn probe_file(state: tauri::State<'_, PathGuard>, path: String) -> Result<FileProbe, String> {
+    state.add_path(&path);
     let p = PathBuf::from(&path);
     let meta = fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?;
     let extension = p
@@ -296,10 +316,12 @@ pub(crate) fn apply_eol(text: &str, newline: &str) -> String {
     }
 }
 
-/// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换
+/// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换。
+/// 保存成功后登记该路径（后续同目录写入 / 导出素材等操作由此获得作用域）。
 #[tauri::command]
 pub fn save_file(
-    state: tauri::State<crate::commands::watch::WatchState>,
+    watch: tauri::State<'_, crate::commands::watch::WatchState>,
+    guard: tauri::State<'_, PathGuard>,
     path: String,
     content: String,
     newline: String,
@@ -308,24 +330,30 @@ pub fn save_file(
 ) -> Result<SaveResult, String> {
     let target = PathBuf::from(&path);
     // 自身写盘：写前先开静默窗口、写后刷新指纹，避免 notify 把本次保存误判为外部修改
-    crate::commands::watch::mark_writing(&state, &target);
+    crate::commands::watch::mark_writing(&watch, &target);
     let text = apply_eol(&content, &newline);
     let bytes = encoding::encode(&text, &encoding, has_bom)?;
     let size = atomic_write(&target, &bytes)?;
-    crate::commands::watch::note_written(&state, &target);
+    crate::commands::watch::note_written(&watch, &target);
+    guard.add_path(&path);
     Ok(SaveResult { path, size })
 }
 
 /// 写入二进制文件（内容为 base64），自动创建父目录；返回写入字节数。
 /// 供「插入剪贴板图片」等需要落盘二进制的场景使用。
+/// 安全：目标必须位于应用已知路径范围内（已打开/保存文件的同目录等）。
 #[tauri::command]
-pub fn write_binary_file(path: String, base64_data: String) -> Result<u64, String> {
+pub fn write_binary_file(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+    base64_data: String,
+) -> Result<u64, String> {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
     let bytes = STANDARD
         .decode(base64_data.as_bytes())
         .map_err(|e| format!("base64 解码失败: {e}"))?;
-    let target = PathBuf::from(&path);
+    let target = state.ensure_file_scope(&path)?;
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;

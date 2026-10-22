@@ -18,12 +18,15 @@ interface MatchInfo {
 
 const MAX_MATCHES = 10000;
 const MAX_PREVIEW = 200;
+/** 列表一次最多渲染的条数（超出显示提示，避免万级结果卡死渲染） */
+const MAX_RENDERED = 300;
 
 export class SearchResultsPanel {
   private matches: MatchInfo[] = [];
   private listEl!: HTMLElement;
   private countEl!: HTMLElement;
   private filterInput!: HTMLInputElement;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -94,6 +97,19 @@ export class SearchResultsPanel {
     this.renderList();
   }
 
+  /**
+   * 文档变化后的防抖重枚举。
+   * matches 存的是绝对偏移：编辑不刷新的话，双击会把光标送到无关位置
+   * （越界则被 clamp，表现为「点了没反应/跳到别处」）。
+   */
+  scheduleRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      this.refresh();
+    }, 150);
+  }
+
   private renderList(): void {
     const filter = this.filterInput.value.trim().toLowerCase();
     const visible = filter
@@ -115,7 +131,8 @@ export class SearchResultsPanel {
     }
 
     const frag = document.createDocumentFragment();
-    for (const m of visible) {
+    const shown = visible.slice(0, MAX_RENDERED);
+    for (const m of shown) {
       const item = document.createElement("div");
       item.className = "search-results-item";
       const ln = document.createElement("span");
@@ -135,9 +152,19 @@ export class SearchResultsPanel {
       frag.append(item);
     }
     this.listEl.append(frag);
+    if (visible.length > shown.length) {
+      const more = document.createElement("div");
+      more.className = "search-results-empty";
+      more.textContent = `仅显示前 ${MAX_RENDERED} 条，共 ${visible.length} 条（可用过滤缩小范围）`;
+      this.listEl.append(more);
+    }
   }
 
   destroy(): void {
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     this.container.innerHTML = "";
     this.container.classList.add("hidden");
   }

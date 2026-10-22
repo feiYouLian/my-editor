@@ -256,6 +256,8 @@ export class DiffPanel {
   }
 
   close(): void {
+    // 作废未完成的分帧渲染，避免关闭后仍往旧 body 里 append
+    this.renderToken++;
     this.backdrop?.remove();
     this.backdrop = null;
     this.payload = null;
@@ -278,19 +280,36 @@ export class DiffPanel {
     return starts;
   }
 
+  /** 渲染代际：新渲染开始后旧的分帧任务立即作废 */
+  private renderToken = 0;
+  /** 单帧最多构建的行数（保持界面响应，避免大差异一次性冻结主线程） */
+  private static readonly RENDER_CHUNK = 600;
+
   private renderRows(): void {
     const payload = this.payload;
     if (!payload) return;
-    const frag = document.createDocumentFragment();
+    const token = ++this.renderToken;
     const rows = payload.rows;
     const hunkOf = new Map<number, number>();
     payload.hunks.forEach((h, idx) => hunkOf.set(h.row, idx));
 
+    this.body.replaceChildren();
+    if (rows.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "diff-hint";
+      empty.textContent = "无可比较内容";
+      this.body.append(empty);
+      return;
+    }
+
+    // 先展开成完整的条目序列（行 / 折叠占位），再分帧构建 DOM。
+    // 屏幕外的行由 CSS content-visibility 跳过渲染，控制布局与绘制成本。
+    const items: HTMLElement[] = [];
     const push = (index: number) => {
       const el = this.rowEl(rows[index]);
       const hunkIndex = hunkOf.get(index);
       if (hunkIndex !== undefined) el.dataset.hunk = `${hunkIndex}`;
-      frag.append(el);
+      items.push(el);
     };
 
     let i = 0;
@@ -301,7 +320,7 @@ export class DiffPanel {
         const run = j - i;
         if (run > COLLAPSE_OVER && !this.expandedGaps.has(i)) {
           for (let k = i; k < i + COLLAPSE_KEEP && k < j; k += 1) push(k);
-          frag.append(this.gapEl(i, run - COLLAPSE_KEEP * 2));
+          items.push(this.gapEl(i, run - COLLAPSE_KEEP * 2));
           for (let k = j - COLLAPSE_KEEP; k < j; k += 1) push(k);
         } else {
           for (let k = i; k < j; k += 1) push(k);
@@ -313,15 +332,16 @@ export class DiffPanel {
       i += 1;
     }
 
-    this.body.innerHTML = "";
-    if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "diff-hint";
-      empty.textContent = "无可比较内容";
-      this.body.append(empty);
-      return;
-    }
-    this.body.append(frag);
+    // 分帧 append：每帧至多 RENDER_CHUNK 个节点，帧间让出主线程
+    const chunk = DiffPanel.RENDER_CHUNK;
+    const step = (): void => {
+      if (token !== this.renderToken) return; // 已开始新一轮渲染
+      const batch = items.splice(0, chunk);
+      if (batch.length === 0) return;
+      this.body.append(...batch);
+      if (items.length > 0) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   private gapEl(start: number, hidden: number): HTMLElement {

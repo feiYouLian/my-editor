@@ -1872,6 +1872,9 @@ button.danger:hover {
 .df-row {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr) 46px minmax(0, 1fr);
+  /* 大差异时跳过屏幕外行的布局与绘制，避免数万行一次性渲染冻结界面 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 22px;
 }
 
 .df-no {

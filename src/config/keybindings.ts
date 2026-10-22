@@ -217,7 +217,8 @@ const RESERVED_KEYS = new Set([
   "Mod-/",
   "Mod-G",
   "Mod-Alt-G",
-  "Mod-Shift-L", // CM6 selectSelectionMatches（当前借道为格式化备用键）
+  // 注意：Mod-Shift-L 不在此列——它被特意借用为「格式化文档」的备用键
+  // （中文 Windows 下 Alt+Shift 常被输入法吞掉），加入保留集会令其失效。
   "Alt-Up",
   "Alt-Down",
   "F3",
@@ -250,6 +251,8 @@ export function suspendKeyDispatch(v: boolean): void {
  * 全局派发：捕获阶段匹配可重绑命令。
  * 表单输入框内不派发（避免录制/搜索框输入触发快捷键）；
  * CM6 编辑器为 contenteditable div，不在此列，保持既有行为。
+ * 保留键（剪贴板 / 撤销 / CM6 内置）即使被手改配置占用也不派发，
+ * 否则会连 preventDefault 一起吞掉系统行为。
  */
 export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): KeyCommand | null {
   if (suspended) return null;
@@ -261,7 +264,17 @@ export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): KeyCommand | 
   for (const cmd of commands) {
     if (cmd.fixed) continue;
     const keys = [resolveKey(cmd, cfg), ...(cmd.altKeys ?? [])];
-    if (keys.some((k) => k && notationMatches(normalizeNotation(k), e))) return cmd;
+    if (
+      keys.some((k) => {
+        if (!k) return false;
+        const notation = normalizeNotation(k);
+        // 保留键优先：设置面板只在校验时用它，分发器这里同样要放过
+        if (isReservedKey(notation, cfg)) return false;
+        return notationMatches(notation, e);
+      })
+    ) {
+      return cmd;
+    }
   }
   return null;
 }

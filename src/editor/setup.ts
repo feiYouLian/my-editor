@@ -70,6 +70,14 @@ export interface EditorHandle {
   ) => Promise<void>;
   /** 关闭标签后丢弃其缓存状态 */
   forgetDocument: (docId: string) => void;
+  /** 当前编辑器承载的文档标识（标签 id）；无文档时为 null。
+   *  回调方用它校验编辑器内容是否仍与自己负责的标签一致 */
+  docId: () => string | null;
+  /** 标签切换外层窗口（探测 / 大文件视图等异步步骤）开始：
+   *  期间抑制编辑器回调，避免把上一个文档的内容/光标写到新标签上 */
+  beginSwitch: () => void;
+  /** 标签切换外层窗口结束（loadDocument 完成后调用） */
+  endSwitch: () => void;
   getContent: () => string;
   /** 切换高亮语言（不重载内容）：undefined = 自动，null = 纯文本，字符串 = 指定语言键 */
   setLanguage: (override: string | null | undefined) => Promise<void>;
@@ -216,8 +224,11 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   const chromeCompartment = new Compartment();
   const wrapCompartment = new Compartment();
 
-  /** loadDocument 期间抑制 dirty 回调 */
-  let loading = false;
+  /** loadDocument 重入计数：并发加载期间抑制 dirty 回调（替代单布尔量，
+   *  避免快速连点标签时先到的 finally 提前释放抑制状态） */
+  let loadingDepth = 0;
+  /** 标签切换外层窗口（loadActiveTab 中 loadDocument 之前的异步步骤） */
+  let switching = false;
   let languageKey: string | null = null;
   let currentPath = "";
   let whitespaceOn = settings.showWhitespace;
@@ -264,10 +275,10 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       ...searchExtensions(),
       placeholder("打开文件开始编辑（Ctrl+S 保存）"),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && !loading) {
+        if (update.docChanged && loadingDepth === 0 && !switching) {
           callbacks.onDocChange?.();
         }
-        if (update.selectionSet || update.docChanged) {
+        if ((update.selectionSet || update.docChanged) && !switching) {
           const head = update.state.selection.main.head;
           const line = update.state.doc.lineAt(head);
           callbacks.onCursorChange?.({
@@ -370,7 +381,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     const key = docId ?? null;
     const sameDoc =
       key !== null && activeDocKey === key && view.state.doc.toString() === content;
-    loading = true;
+    loadingDepth++;
     try {
       currentPath = path;
       currentReadonly = readonly;
@@ -387,14 +398,16 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
             { y: "nearest" },
           );
           if (cached.generation === configGeneration) {
-            // 快速路径：配置未变，仅补齐只读态（同一标签通常一致），无需重建扩展开关
-            if (cached.readonly !== readonly) {
-              view.dispatch({
-                effects: [readOnlyCompartment.reconfigure(readOnlyExtensions(readonly)), scroll],
-              });
-            } else {
-              view.dispatch({ effects: scroll });
-            }
+            // 快速路径：配置未变，无需重建扩展开关。
+            // 只读态必须按目标标签重配：视图当前只读态属于上一个标签，
+            // 若因 cached.readonly === readonly 跳过，上一个标签的只读态
+            // 会残留到当前标签（如只读日志切到可写文件后仍无法输入）。
+            view.dispatch({
+              effects: [
+                readOnlyCompartment.reconfigure(readOnlyExtensions(readonly)),
+                scroll,
+              ],
+            });
           } else {
             view.dispatch({ effects: [...dynamicEffects(), scroll] });
             await applyLanguage(languageOverride);
@@ -413,14 +426,21 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       // 快速连点标签时，晚到的载入不要覆盖当前标签的状态栏光标
       if (activeDocKey === key) notifyCursor(view.state);
     } finally {
-      loading = false;
+      loadingDepth--;
     }
   }
 
   /** 关闭标签时丢弃其缓存状态；若关闭的是当前标签，避免下次切换再把它写回缓存 */
   function forgetDocument(docId: string): void {
     stateCache.delete(docId);
-    if (activeDocKey === docId) activeDocKey = null;
+    if (activeDocKey === docId) {
+      activeDocKey = null;
+      // 同时清空视图与语言高亮：否则已关闭文档的内容/语言会残留显示，
+      // 且在飞的 applyLanguage 早已被守卫拦截，languageCompartment 不会自愈
+      currentReadonly = false;
+      view.setState(createState(""));
+      languageKey = null;
+    }
   }
 
   /** 配置热更新：将当前 settings 应用到编辑器各 Compartment */
@@ -435,6 +455,13 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     view,
     loadDocument,
     forgetDocument,
+    docId: () => activeDocKey,
+    beginSwitch: () => {
+      switching = true;
+    },
+    endSwitch: () => {
+      switching = false;
+    },
     setLanguage: applyLanguage,
     getContent: () => view.state.doc.toString(),
     toggleWhitespace: () => {

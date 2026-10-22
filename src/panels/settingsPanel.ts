@@ -41,6 +41,23 @@ export interface SettingsPanelCallbacks {
 
 type Category = "theme" | "keybindings" | "layout";
 
+/** 配置保存失败时的通知通道（面板打开时注册） */
+let settingsNotify: ((text: string) => void) | null = null;
+
+/**
+ * 保存配置并兜底错误。
+ * 原实现用 `void updateSettings(...)` 丢弃 Promise：写盘失败时静默，
+ * UI 却提示「已切换」，重启后丢失。这里统一 catch 并明确告知用户。
+ */
+function saveSettings(patch: Parameters<typeof updateSettings>[0]): void {
+  void updateSettings(patch).catch((e: unknown) => {
+    console.error("[settings] 保存配置失败", e);
+    settingsNotify?.(
+      `配置保存失败: ${String(e instanceof Error ? e.message : e).split("\n")[0]}`,
+    );
+  });
+}
+
 const CATEGORY_LABELS: { id: Category; label: string }[] = [
   { id: "theme", label: "主题" },
   { id: "keybindings", label: "快捷键" },
@@ -232,7 +249,9 @@ export class SettingsPanel {
   /** 录制中的清理函数（快捷键重绑定） */
   private stopRecording: (() => void) | null = null;
 
-  constructor(private readonly callbacks: SettingsPanelCallbacks) {}
+  constructor(private readonly callbacks: SettingsPanelCallbacks) {
+    settingsNotify = callbacks.onMessage;
+  }
 
   get isOpen(): boolean {
     return this.backdrop !== null;
@@ -360,7 +379,7 @@ export class SettingsPanel {
     );
     uiSection.body.append(
       radioGroup<ThemeSetting>("界面主题", THEME_OPTIONS, cfg.theme, (value) => {
-        void updateSettings({ theme: value });
+        saveSettings({ theme: value });
         this.callbacks.onMessage(`界面主题已切换为 ${THEME_OPTIONS.find((o) => o.value === value)?.label}`);
       }),
     );
@@ -376,7 +395,7 @@ export class SettingsPanel {
         EDITOR_THEME_OPTIONS,
         cfg.editorTheme,
         (value) => {
-          void updateSettings({ editorTheme: value });
+          saveSettings({ editorTheme: value });
           this.callbacks.onMessage("编辑器主题已切换");
         },
       ),
@@ -405,7 +424,7 @@ export class SettingsPanel {
       void confirmAction("确定要将所有快捷键恢复为默认值吗？自定义绑定将丢失。", "恢复默认").then(
         (ok) => {
           if (!ok) return;
-          void updateSettings({
+          saveSettings({
             keybindings: [],
             // 列编辑器键走 editorEnhancements，一并复位
             editorEnhancements: {
@@ -507,14 +526,14 @@ export class SettingsPanel {
       reset.textContent = "恢复默认";
       reset.addEventListener("click", () => {
         if (special) {
-          void updateSettings({
+          saveSettings({
             editorEnhancements: {
               ...cfg.editorEnhancements,
               columnEditorKey: DEFAULT_COLUMN_EDITOR_KEY,
             },
           });
         } else {
-          void updateSettings({ keybindings: setKeyOverride(cfg, cmd.id, "") });
+          saveSettings({ keybindings: setKeyOverride(cfg, cmd.id, "") });
         }
         this.renderCategory(main);
       });
@@ -553,14 +572,14 @@ export class SettingsPanel {
       if (e.key === "Escape" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         finish();
         if (cmd.id === "edit.columnEditor") {
-          void updateSettings({
+          saveSettings({
             editorEnhancements: {
               ...getConfig().editorEnhancements,
               columnEditorKey: DEFAULT_COLUMN_EDITOR_KEY,
             },
           });
         } else {
-          void updateSettings({ keybindings: setKeyOverride(getConfig(), cmd.id, "") });
+          saveSettings({ keybindings: setKeyOverride(getConfig(), cmd.id, "") });
         }
         this.renderCategory(main);
         this.callbacks.onMessage(`「${cmd.title}」绑定已清除`);
@@ -582,14 +601,14 @@ export class SettingsPanel {
           const parts = notation.split("-");
           const key = parts.pop()!;
           const cm6Key = /^[A-Z]$/.test(key) ? key.toLowerCase() : key;
-          void updateSettings({
+          saveSettings({
             editorEnhancements: {
               ...getConfig().editorEnhancements,
               columnEditorKey: [...parts, cm6Key].join("-"),
             },
           });
         } else {
-          void updateSettings({ keybindings: setKeyOverride(getConfig(), cmd.id, notation) });
+          saveSettings({ keybindings: setKeyOverride(getConfig(), cmd.id, notation) });
         }
         this.renderCategory(main);
         this.callbacks.onMessage(`「${cmd.title}」已绑定到 ${formatKey(notation)}`);
@@ -621,7 +640,7 @@ export class SettingsPanel {
     sidebarSection.body.append(
       checkRow("显示侧栏（文件树 / 搜索）", cfg.layout.sidebarVisible, (value) => {
         this.callbacks.onSidebarVisible(value);
-        void updateSettings({ layout: { ...cfg.layout, sidebarVisible: value } });
+        saveSettings({ layout: { ...cfg.layout, sidebarVisible: value } });
       }),
     );
     main.append(sidebarSection.el);
@@ -634,7 +653,7 @@ export class SettingsPanel {
         cfg.layout.defaultViewMode,
         (value) => {
           this.callbacks.onViewMode(value);
-          void updateSettings({ layout: { ...getConfig().layout, defaultViewMode: value } });
+          saveSettings({ layout: { ...getConfig().layout, defaultViewMode: value } });
         },
       ),
     );
@@ -658,7 +677,7 @@ export class SettingsPanel {
       this.callbacks.onSplitRatio(ratio);
     });
     slider.addEventListener("change", () => {
-      void updateSettings({ layout: { ...getConfig().layout, splitRatio: Number(slider.value) / 100 } });
+      saveSettings({ layout: { ...getConfig().layout, splitRatio: Number(slider.value) / 100 } });
     });
     ratioRow.append(ratioLabel, slider, ratioValue);
     previewSection.body.append(ratioRow);
@@ -667,38 +686,38 @@ export class SettingsPanel {
     const editorSection = section("编辑器", "显示项与缩进行为，即时生效。");
     editorSection.body.append(
       checkRow("显示行号", cfg.layout.showLineNumbers, (value) => {
-        void updateSettings({ layout: { ...getConfig().layout, showLineNumbers: value } });
+        saveSettings({ layout: { ...getConfig().layout, showLineNumbers: value } });
       }),
       checkRow("高亮当前行", cfg.layout.showActiveLine, (value) => {
-        void updateSettings({ layout: { ...getConfig().layout, showActiveLine: value } });
+        saveSettings({ layout: { ...getConfig().layout, showActiveLine: value } });
       }),
       checkRow("缩进参考线", cfg.editorEnhancements.indentGuides, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, indentGuides: value },
         });
       }),
       checkRow("显示空白字符", cfg.editorEnhancements.showWhitespace, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, showWhitespace: value },
         });
       }),
       checkRow("括号匹配高亮", cfg.editorEnhancements.bracketMatching, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, bracketMatching: value },
         });
       }),
       checkRow("彩虹括号（括号对按嵌套深度着色区分）", cfg.editorEnhancements.rainbowBrackets, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, rainbowBrackets: value },
         });
       }),
       checkRow("自动换行（长行按编辑区宽度折行）", cfg.editorEnhancements.wordWrap, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, wordWrap: value },
         });
       }),
       checkRow("启用列选择", cfg.editorEnhancements.columnSelection, (value) => {
-        void updateSettings({
+        saveSettings({
           editorEnhancements: { ...getConfig().editorEnhancements, columnSelection: value },
         });
       }),
@@ -707,7 +726,7 @@ export class SettingsPanel {
         COLUMN_MODIFIERS.map((m) => ({ value: m, label: m === "Meta" ? "Meta（Win 徽标键）" : m })),
         cfg.editorEnhancements.columnSelectionModifier,
         (value) => {
-          void updateSettings({
+          saveSettings({
             editorEnhancements: {
               ...getConfig().editorEnhancements,
               columnSelectionModifier: value,
@@ -716,13 +735,13 @@ export class SettingsPanel {
         },
       ),
       numberRow("字号（px）", cfg.layout.editorFontSize, 10, 24, (value) => {
-        void updateSettings({ layout: { ...getConfig().layout, editorFontSize: value } });
+        saveSettings({ layout: { ...getConfig().layout, editorFontSize: value } });
       }),
       numberRow("Tab 宽度", cfg.tabSize, 1, 8, (value) => {
-        void updateSettings({ tabSize: value });
+        saveSettings({ tabSize: value });
       }),
       checkRow("Tab 插入空格（否则插入制表符）", cfg.insertSpaces, (value) => {
-        void updateSettings({ insertSpaces: value });
+        saveSettings({ insertSpaces: value });
       }),
     );
     main.append(editorSection.el);
@@ -745,7 +764,7 @@ export class SettingsPanel {
         check.checked = field.visible;
         check.addEventListener("change", () => {
           const next = items.map((f, j) => (j === i ? { ...f, visible: check.checked } : f));
-          void updateSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
+          saveSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
         });
         row.append(check);
 
@@ -766,7 +785,7 @@ export class SettingsPanel {
         up.addEventListener("click", () => {
           const next = [...items];
           [next[i - 1], next[i]] = [next[i], next[i - 1]];
-          void updateSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
+          saveSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
           renderFields(next);
         });
         row.append(up);
@@ -780,7 +799,7 @@ export class SettingsPanel {
         down.addEventListener("click", () => {
           const next = [...items];
           [next[i + 1], next[i]] = [next[i], next[i + 1]];
-          void updateSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
+          saveSettings({ layout: { ...getConfig().layout, statusBarFields: next } });
           renderFields(next);
         });
         row.append(down);

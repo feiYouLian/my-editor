@@ -4,6 +4,7 @@ use serde::Serialize;
 use similar::{ChangeTag, TextDiff};
 
 use super::encoding;
+use super::paths::PathGuard;
 
 /// 对齐后的双栏行；kind = equal / change / del / ins
 #[derive(Serialize)]
@@ -173,15 +174,19 @@ fn payload(left_label: &str, right_label: &str, left: &str, right: &str) -> Diff
     }
 }
 
-/// 比较两段文本
+/// 比较两段文本。大文本 diff 可能耗时较久：放 spawn_blocking 执行。
 #[tauri::command]
-pub fn diff_texts(
+pub async fn diff_texts(
     left_text: String,
     right_text: String,
     left_label: String,
     right_label: String,
-) -> DiffPayload {
-    payload(&left_label, &right_label, &left_text, &right_text)
+) -> Result<DiffPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        payload(&left_label, &right_label, &left_text, &right_text)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))
 }
 
 /// 读取文件并按检测到的编码解码（解码失败回退 UTF-8 宽松解码）
@@ -199,17 +204,28 @@ fn short_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// 比较两个文件
+/// 比较两个文件。读取后登记两侧路径（后续导出补丁等操作由此获得作用域）。
+/// 大文件 diff 可能耗时较久：放 spawn_blocking 执行，避免冻结界面。
 #[tauri::command]
-pub fn diff_files(left_path: String, right_path: String) -> Result<DiffPayload, String> {
-    let left = read_text(&left_path)?;
-    let right = read_text(&right_path)?;
-    Ok(payload(
-        &short_name(&left_path),
-        &short_name(&right_path),
-        &left,
-        &right,
-    ))
+pub async fn diff_files(
+    state: tauri::State<'_, PathGuard>,
+    left_path: String,
+    right_path: String,
+) -> Result<DiffPayload, String> {
+    state.add_path(&left_path);
+    state.add_path(&right_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let left = read_text(&left_path)?;
+        let right = read_text(&right_path)?;
+        Ok(payload(
+            &short_name(&left_path),
+            &short_name(&right_path),
+            &left,
+            &right,
+        ))
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 fn git(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -235,10 +251,22 @@ pub fn git_available(path: String) -> bool {
         .unwrap_or(false)
 }
 
-/// 与 Git 比较：scope = "worktree"（HEAD vs 磁盘）| "index"（HEAD vs 暂存区）
+/// 与 Git 比较：scope = "worktree"（HEAD vs 磁盘）| "index"（HEAD vs 暂存区）。
+/// git 子进程 + 全量 diff：放 spawn_blocking 执行。
 #[tauri::command]
-pub fn git_diff(path: String, scope: String) -> Result<DiffPayload, String> {
-    let p = std::path::Path::new(&path);
+pub async fn git_diff(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+    scope: String,
+) -> Result<DiffPayload, String> {
+    state.add_path(&path);
+    tauri::async_runtime::spawn_blocking(move || git_diff_blocking(&path, &scope))
+        .await
+        .map_err(|e| format!("任务调度失败: {e}"))?
+}
+
+fn git_diff_blocking(path: &str, scope: &str) -> Result<DiffPayload, String> {
+    let p = std::path::Path::new(path);
     let dir = p
         .parent()
         .ok_or("无法确定文件所在目录")?
@@ -256,8 +284,11 @@ pub fn git_diff(path: String, scope: String) -> Result<DiffPayload, String> {
         .to_string_lossy()
         .replace('\\', "/");
 
-    let old = git(&dir, &["show", &format!("HEAD:{rel}")])
-        .map_err(|e| format!("无法读取 HEAD 版本：{e}"))?;
+    // 新文件 / 未跟踪文件不在 HEAD 中：左侧按空内容处理，使其可与工作区比较
+    let old = match git(&dir, &["show", &format!("HEAD:{rel}")]) {
+        Ok(text) => text,
+        Err(_) => String::new(),
+    };
     let (new, right_label) = if scope == "index" {
         (
             git(&dir, &["show", &format!(":{rel}")])
@@ -276,9 +307,15 @@ pub fn git_diff(path: String, scope: String) -> Result<DiffPayload, String> {
     ))
 }
 
-/// 导出统一 diff 补丁：写入 <path>.patch，返回实际写入路径
+/// 导出统一 diff 补丁：写入 <path>.patch，返回实际写入路径。
+/// 安全：目标必须位于应用已知路径范围内（被比较文件同目录等）。
 #[tauri::command]
-pub fn export_patch(path: String, content: String) -> Result<String, String> {
+pub fn export_patch(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+    content: String,
+) -> Result<String, String> {
+    state.ensure_file_scope(&path)?;
     let target = format!("{path}.patch");
     let tmp = format!("{target}.tmp");
     std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;

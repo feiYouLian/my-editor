@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -113,6 +113,8 @@ struct LargeFile {
     complete: bool,
     /// (行首字节偏移, 该处行号 0-based)
     anchors: Vec<(u64, usize)>,
+    /// 会话代号：同一路径二次打开时递增，后台索引线程只写回自己这一代
+    session: u64,
 }
 
 /// 大文件会话注册表；Arc 以便后台索引线程共享
@@ -120,6 +122,8 @@ struct LargeFile {
 pub struct LargeState {
     files: Arc<Mutex<HashMap<String, LargeFile>>>,
     cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// 会话代号发生器（同一路径重复打开时区分新旧会话）
+    next_session: Arc<AtomicU64>,
 }
 
 fn decode_line(bytes: &[u8], encoding_name: &str) -> String {
@@ -232,14 +236,17 @@ fn read_head(path: &Path, len: usize) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 打开大文件：同步建首屏索引后立即返回，其余区间由后台线程补齐
+/// 打开大文件：同步建首屏索引后立即返回，其余区间由后台线程补齐。
+/// 读取后自动登记该路径，供后续作用域校验使用。
 #[tauri::command]
 pub fn open_large_file(
     app: tauri::AppHandle,
     state: tauri::State<LargeState>,
+    guard: tauri::State<crate::commands::paths::PathGuard>,
     path: String,
     anchor_bytes: Option<u64>,
 ) -> Result<LargeFileInfo, String> {
+    guard.add_path(&path);
     let p = PathBuf::from(&path);
     let size = std::fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?.len();
     let head = read_head(&p, 64 * 1024)?;
@@ -268,6 +275,9 @@ pub fn open_large_file(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.clone());
     let newline = indexer.newline();
+    // 同一路径二次打开（会话重开 / 虚拟视图替换）时分配新 session：
+    // 旧会话的后台索引线程据此识别自己已过期，不再覆盖新会话
+    let session = state.next_session.fetch_add(1, Ordering::Relaxed) + 1;
     let entry = LargeFile {
         path: p.clone(),
         size,
@@ -277,6 +287,7 @@ pub fn open_large_file(
         indexed_bytes: indexer.pos,
         complete: reached_eof,
         anchors: indexer.anchors.clone(),
+        session,
     };
     let total_lines = entry.total_lines;
     let indexed_bytes = entry.indexed_bytes;
@@ -318,11 +329,23 @@ pub fn open_large_file(
                     );
                 }
             }
+            // 会话校验：期间若同一路径被重新打开（新 session）或已关闭，
+            // 旧线程的结果一律丢弃，绝不覆盖新会话 / 向已关闭会话发事件
+            let current_session = {
+                let map = shared_bg.files.lock().unwrap_or_else(|e| e.into_inner());
+                map.get(&id).map(|item| item.session)
+            };
+            if current_session != Some(session) {
+                return;
+            }
             let total = idx.total_lines();
             let newline = idx.newline();
             {
                 let mut map = shared_bg.files.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(item) = map.get_mut(&id) {
+                    if item.session != session {
+                        return;
+                    }
                     item.anchors = idx.anchors;
                     item.total_lines = total;
                     item.newline = newline.clone();
@@ -457,19 +480,50 @@ pub fn read_large_lines(
 
 /// 整文件过滤：返回命中行的原始行号（0-based）。
 /// 命中行按批通过 `large://filter-batch` 先行推送，命令返回值作为最终权威结果。
+/// 全文件遍历可能耗时数分钟：放 spawn_blocking 执行，避免阻塞事件循环
+/// （否则界面连「取消」按钮都点不了）。
 #[tauri::command]
-pub fn filter_large_file(
+pub async fn filter_large_file(
     app: tauri::AppHandle,
-    state: tauri::State<LargeState>,
+    state: tauri::State<'_, LargeState>,
     id: String,
     query: String,
     case_sensitive: bool,
     use_regex: bool,
     request_id: u64,
 ) -> Result<FilterResult, String> {
+    // State 引用不能进 'static 闭包：克隆内部 Arc 再移交
+    let files = state.files.clone();
+    let cancel_slot = state.cancel.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        filter_large_blocking(
+            &app,
+            &files,
+            &cancel_slot,
+            &id,
+            &query,
+            case_sensitive,
+            use_regex,
+            request_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
+}
+
+fn filter_large_blocking(
+    app: &tauri::AppHandle,
+    files: &Arc<Mutex<HashMap<String, LargeFile>>>,
+    cancel_slot: &Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    id: &str,
+    query: &str,
+    case_sensitive: bool,
+    use_regex: bool,
+    request_id: u64,
+) -> Result<FilterResult, String> {
     let (path, size, encoding_name) = {
-        let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = map.get(&id).ok_or("大文件会话已关闭")?;
+        let map = files.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.get(id).ok_or("大文件会话已关闭")?;
         (entry.path.clone(), entry.size, entry.encoding.clone())
     };
     if query.is_empty() {
@@ -481,9 +535,9 @@ pub fn filter_large_file(
         });
     }
     let pattern = if use_regex {
-        query.clone()
+        query.to_string()
     } else {
-        regex::escape(&query)
+        regex::escape(query)
     };
     let re = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!case_sensitive)
@@ -492,7 +546,7 @@ pub fn filter_large_file(
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
         // 新过滤开始前中止上一次仍在扫描的任务，避免两份全文件遍历并发
         if let Some(prev) = slot.take() {
             prev.store(true, Ordering::Relaxed);
@@ -554,7 +608,7 @@ pub fn filter_large_file(
             let _ = app.emit(
                 "large://filter-progress",
                 FilterProgress {
-                    id: id.clone(),
+                    id: id.to_string(),
                     scanned,
                     total: size,
                     matches: matches.len(),
@@ -564,7 +618,7 @@ pub fn filter_large_file(
                 let _ = app.emit(
                     "large://filter-batch",
                     FilterBatch {
-                        id: id.clone(),
+                        id: id.to_string(),
                         request_id,
                         matches: std::mem::take(&mut pending),
                         scanned,
@@ -592,14 +646,21 @@ pub fn filter_large_file(
     }
 
     {
-        let mut slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
-        *slot = None;
+        // 仅清理自己登记的取消标志：期间可能已有新任务登记了新标志
+        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
+        let own = slot
+            .as_ref()
+            .map(|f| Arc::ptr_eq(f, &cancel))
+            .unwrap_or(false);
+        if own {
+            *slot = None;
+        }
     }
 
     let _ = app.emit(
         "large://filter-progress",
         FilterProgress {
-            id: id.clone(),
+            id: id.to_string(),
             scanned,
             total: size,
             matches: matches.len(),
@@ -609,7 +670,7 @@ pub fn filter_large_file(
     let _ = app.emit(
         "large://filter-batch",
         FilterBatch {
-            id,
+            id: id.to_string(),
             request_id,
             matches: pending,
             scanned,

@@ -426,8 +426,17 @@ export class LargeView {
   }
 
   private remember(win: LineWindow): void {
-    if (this.cache.size > CACHE_LIMIT) this.cache.clear();
-    win.lineNos.forEach((no, i) => this.cache.set(no, win.lines[i] ?? ""));
+    win.lineNos.forEach((no, i) => {
+      // 先删再设：让 Map 插入顺序反映最近使用，供下面按序淘汰
+      this.cache.delete(no);
+      this.cache.set(no, win.lines[i] ?? "");
+    });
+    // 按插入序淘汰最旧条目。整表 clear 会让滚动/过滤来回时反复回读，掉帧明显
+    while (this.cache.size > CACHE_LIMIT) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
   }
 
   private async fetchRange(start: number, count: number): Promise<void> {
@@ -441,16 +450,27 @@ export class LargeView {
     }
   }
 
+  /** 批量读取缺失行：合并为连续区间后一次 invoke 读一段。
+   *  逐行 invoke 在命中集大时会并发几十次 IPC，且缓存超限整表清空，
+   *  造成反复回读与掉帧。 */
   private async fetchLines(lines: number[]): Promise<void> {
     const info = this.info;
     if (!info || lines.length === 0) return;
+    const sorted = [...new Set(lines)].sort((a, b) => a - b);
+    const runs: [number, number][] = []; // [起始行, 行数]
+    for (const ln of sorted) {
+      const last = runs[runs.length - 1];
+      if (last && ln <= last[0] + last[1]) {
+        last[1] = ln - last[0] + 1;
+      } else {
+        runs.push([ln, 1]);
+      }
+    }
     try {
-      const wins = await Promise.all(
-        lines.map((ln) =>
-          invoke<LineWindow>("read_large_lines", { id: info.id, start: ln, count: 1 }),
-        ),
-      );
-      for (const win of wins) this.remember(win);
+      for (const [start, count] of runs) {
+        const win = await invoke<LineWindow>("read_large_lines", { id: info.id, start, count });
+        this.remember(win);
+      }
     } catch (e) {
       this.statusEl.textContent = `读取失败：${String(e).split("\n")[0]}`;
     }

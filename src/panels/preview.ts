@@ -36,6 +36,17 @@ export function pathKindOf(path: string | null): PreviewKind {
 /** 预览大小上限（超过则禁用预览） */
 const PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
 
+/** 双栏滚动联动：源行/块顶与各自视口顶之间保留的呼吸距离（px） */
+const SYNC_TOP_MARGIN = 8;
+/**
+ * 双栏滚动联动：回显抑制窗口（ms）。
+ * 一侧被程序滚动后，对方面板随之抛出的 scroll 事件在窗口内视为回显忽略，
+ * 避免"你滚我滚"的死循环。程序滚动产生的 scroll 事件 1~2 帧内必到，
+ * 120ms 足够覆盖；即便偶发超时也被当作一次真实滚动，计算结果相同、不会振荡，
+ * 最多让对侧多同步一次（自收敛，无死循环）。
+ */
+const PREVIEW_ECHO_MS = 120;
+
 /** 相对路径图片内联上限：超过则跳过，避免预览一次性读入大图 */
 const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 /** 已内联图片缓存：同一图片在多次重渲染时复用；超出上限按插入顺序淘汰 */
@@ -166,10 +177,14 @@ export function buildWordHtml(title: string, bodyHtml: string): string {
 </html>`;
 }
 
-/** 经系统打印对话框导出 PDF（WebView2 支持 window.print） */
+/** 经系统打印对话框导出 PDF（WebView2 支持 window.print）。
+ *  sandbox 不放行 allow-scripts：导出内容里的脚本不会执行
+ *  （srcdoc 还会继承应用 CSP，双保险）；allow-same-origin
+ *  保证父窗口仍可 focus/print 该iframe。 */
 export function openPrintDialog(fullHtml: string): void {
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
+  iframe.setAttribute("sandbox", "allow-same-origin");
   iframe.style.cssText =
     "position:fixed;right:0;bottom:0;width:1px;height:1px;border:0;opacity:0;";
   iframe.srcdoc = fullHtml;
@@ -383,6 +398,112 @@ export async function htmlToMarkdown(html: string): Promise<string> {
     .concat("\n");
 }
 
+/**
+ * highlight.js/lib/common 未内置、但 Markdown 文档里高频出现的语言。
+ * 动态 import 注册（懒加载，不进首屏）；注册后 ```dockerfile / ```powershell
+ * 等围栏标识才能命中对应语法，否则只能按纯文本渲染。
+ */
+const EXTRA_HLJS_LANGUAGES = [
+  "dockerfile",
+  "powershell",
+  "dos",
+  "nginx",
+  "apache",
+  "properties",
+  "handlebars",
+  "dart",
+  "matlab",
+  "julia",
+  "fortran",
+  "lisp",
+  "clojure",
+  "haskell",
+  "erlang",
+  "elixir",
+  "groovy",
+  "gradle",
+  "cmake",
+  "vim",
+  "x86asm",
+  "coffeescript",
+] as const;
+
+/** 自动探测的代码体积上限：highlightAuto 代价随语言数增长，超大块跳过 */
+const HLJS_AUTO_MAX_CHARS = 20_000;
+
+/** markdown-it + DOMPurify + highlight.js 懒加载管线（首次预览时构建一次）。
+ *  抽成独立函数：加载失败时由 ensureMarkdown 统一捕获并允许重试。 */
+async function loadMarkdownPipeline(host: PreviewHost): Promise<void> {
+  const [mdMod, dpMod, hljsMod, ...extraLangMods] = await Promise.all([
+    import("markdown-it"),
+    import("dompurify"),
+    import("highlight.js/lib/common"),
+    // common 缺失的高频语言逐个注册（静态路径，保证 Vite 可静态分析分块）
+    import("highlight.js/lib/languages/dockerfile"),
+    import("highlight.js/lib/languages/powershell"),
+    import("highlight.js/lib/languages/dos"),
+    import("highlight.js/lib/languages/nginx"),
+    import("highlight.js/lib/languages/apache"),
+    import("highlight.js/lib/languages/properties"),
+    import("highlight.js/lib/languages/handlebars"),
+    import("highlight.js/lib/languages/dart"),
+    import("highlight.js/lib/languages/matlab"),
+    import("highlight.js/lib/languages/julia"),
+    import("highlight.js/lib/languages/fortran"),
+    import("highlight.js/lib/languages/lisp"),
+    import("highlight.js/lib/languages/clojure"),
+    import("highlight.js/lib/languages/haskell"),
+    import("highlight.js/lib/languages/erlang"),
+    import("highlight.js/lib/languages/elixir"),
+    import("highlight.js/lib/languages/groovy"),
+    import("highlight.js/lib/languages/gradle"),
+    import("highlight.js/lib/languages/cmake"),
+    import("highlight.js/lib/languages/vim"),
+    import("highlight.js/lib/languages/x86asm"),
+    import("highlight.js/lib/languages/coffeescript"),
+  ]);
+  // highlight.js 浅色主题（预览面板为浅色文档底）
+  await import("highlight.js/styles/github.css");
+  const MarkdownIt = mdMod.default;
+  // dompurify 类型解析不稳定（.mts default），运行时 default 必定存在
+  const DOMPurify = (dpMod as unknown as {
+    default: { sanitize(html: string): string };
+  }).default;
+  const hljs = hljsMod.default;
+  // 注册 common 之外的语言（下标与 EXTRA_HLJS_LANGUAGES 一一对应）
+  extraLangMods.forEach((mod, i) =>
+    hljs.registerLanguage(EXTRA_HLJS_LANGUAGES[i], mod.default),
+  );
+  const md = new MarkdownIt({
+    html: false, // 不解析 raw HTML（安全）
+    linkify: true,
+    highlight(code, lang) {
+      try {
+        if (lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, { language: lang }).value;
+        }
+        // 未标注语言或语言未注册（旧标识 / 拼写变体）：自动探测兜底，
+        // 与 GitHub 行为一致；超大代码块跳过探测避免卡顿
+        if (code.trim() && code.length <= HLJS_AUTO_MAX_CHARS) {
+          return hljs.highlightAuto(code).value;
+        }
+      } catch {
+        // 高亮失败降级为纯文本
+      }
+      return "";
+    },
+  });
+  // 块级元素打源行标记（滚动联动）
+  md.core.ruler.push("source-line", (state) => {
+    for (const token of state.tokens) {
+      if (token.map && token.type !== "inline") {
+        token.attrSet("data-line", String(token.map[0] + 1));
+      }
+    }
+  });
+  host.installMarkdown(md as unknown as { render(text: string): string }, DOMPurify);
+}
+
 export class PreviewHost {
   private mode: PreviewMode = "edit";
   private kind: PreviewKind = null;
@@ -390,8 +511,15 @@ export class PreviewHost {
   private mdReady: Promise<void> | null = null;
   private md: { render(text: string): string } | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastSyncAt = 0;
   private contentEl: HTMLElement;
+
+  // ---- 双栏滚动联动状态 ----
+  /** 最近一次参与联动的编辑器视图（供重渲染 / 图片加载后校准用） */
+  private syncView: EditorView | null = null;
+  /** rAF 句柄：连续滚动每帧最多同步一次，保证末次事件必达（时间窗丢事件会累积偏移） */
+  private syncRaf: number | null = null;
+  /** 预览被本类程序滚动后，窗口内其 scroll 事件视为回显直接忽略 */
+  private previewEchoUntil = 0;
 
   constructor(
     private pane: HTMLElement,
@@ -427,7 +555,7 @@ export class PreviewHost {
     this.mode = this.kind && mode !== "edit" ? mode : "edit";
     this.setAreaMode(this.mode);
     if (this.mode !== "edit" && tab && this.kind) {
-      void this.renderNow(tab, this.kind);
+      this.renderSafe(tab, this.kind);
     }
   }
 
@@ -435,23 +563,130 @@ export class PreviewHost {
   scheduleRender(tab: PreviewTab): void {
     if (this.mode === "edit" || !this.kind || this.activeId !== tab.id) return;
     if (this.renderTimer) clearTimeout(this.renderTimer);
-    this.renderTimer = setTimeout(() => void this.renderNow(tab, this.kind!), 300);
+    this.renderTimer = setTimeout(() => this.renderSafe(tab, this.kind!), 300);
   }
 
-  /** 编辑器滚动 → 预览滚动（双栏 Markdown） */
+  /** 渲染并兜底错误：组件加载失败时在预览区显示原因，绝不静默空白 */
+  private renderSafe(tab: PreviewTab, kind: "md" | "html"): void {
+    this.renderNow(tab, kind).catch((e) => {
+      if (this.isStale(tab)) return;
+      console.error("[preview] 渲染失败", e);
+      this.contentEl.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "preview-note";
+      note.textContent = String(e instanceof Error ? e.message : e);
+      this.contentEl.append(note);
+    });
+  }
+
+  /**
+   * 编辑器滚动 → 预览滚动（双栏 Markdown）。
+   *
+   * 历史问题（滚动越久偏移越大）：
+   * 1. 用 posAtCoords 取顶部行——快速拖动滚动条时该行常未渲染，返回 null 直接不同步；
+   * 2. 时间窗（80ms）丢事件：一次滚动手势的最后一个事件落在窗口内就被丢弃，偏移永久残留；
+   * 3. `[data-line="N"]` 精确匹配——行落在长段落中间时没有对应标记，同样不同步。
+   *
+   * 现在改为：rAF 节流（末次事件必达）+ 高度图取顶部可见行 + 最近标记 + 块内插值。
+   */
   syncFromEditor(view: EditorView): void {
-    if (this.mode !== "split" || this.kind !== "md") return;
-    const now = Date.now();
-    if (now - this.lastSyncAt < 80) return;
-    const rect = view.scrollDOM.getBoundingClientRect();
-    const pos = view.posAtCoords({ x: rect.left + 20, y: rect.top + 2 }, false);
-    if (pos == null) return;
-    const lineNo = view.state.doc.lineAt(pos).number;
-    const target = this.contentEl.querySelector<HTMLElement>(`[data-line="${lineNo}"]`);
-    if (target) {
-      this.lastSyncAt = now;
-      this.contentEl.scrollTop = target.offsetTop - 8;
+    if (!this.canSync()) return;
+    // 注意：这里不能做回显抑制——previewEchoUntil 是本类自己滚动预览时打的
+    // 标记，编辑器连续滚动时每一帧都会刷新它，若在这里判断会把真实滚动也吞掉
+    // （每 200ms 才同步一次，且手势末次事件被丢弃，偏移再次累积）。
+    // 回显抑制只属于 onPreviewScroll（预览侧）。
+    this.syncView = view;
+    this.scheduleSync(() => this.applyEditorToPreview());
+  }
+
+  /** 以编辑器顶部可见行为准，把预览滚到对应位置（块内按源行插值，滚动连续） */
+  private applyEditorToPreview(): void {
+    const view = this.syncView;
+    if (!view || !this.canSync()) return;
+    let line: number;
+    try {
+      const doc = view.state.doc;
+      const scrollTop = view.scrollDOM.scrollTop;
+      // lineBlockAtHeight 走高度图，不依赖坐标测量：目标行未渲染时同样可用。
+      // +2 让"顶部边缘所在行"稳定落在视口内（0 时恰在行缝上会取到上一行）
+      const block = view.lineBlockAtHeight(scrollTop + 2);
+      // 视口顶落在该可视行内的比例 → 折算成小数源码行号；
+      // 预览侧用同一套小数行号插值，双向对齐到亚行精度
+      const frac =
+        block.height > 0
+          ? Math.min(1, Math.max(0, (scrollTop + 2 - block.top) / block.height))
+          : 0;
+      const pos = block.from + (block.to - block.from) * frac;
+      const whole = doc.lineAt(Math.min(pos, doc.length)).number;
+      const info = doc.line(whole);
+      line = whole + (pos - info.from) / Math.max(1, info.to - info.from);
+    } catch {
+      return; // 视图已销毁等异常：放弃本次同步
     }
+    const target = this.previewScrollTopForLine(line);
+    if (target == null) return;
+    this.previewEchoUntil = performance.now() + PREVIEW_ECHO_MS;
+    this.contentEl.scrollTop = target;
+  }
+
+  /** 源码行号 → 预览滚动位置：取"起始行 ≤ lineNo"的最后一个块，块内线性插值 */
+  private previewScrollTopForLine(lineNo: number): number | null {
+    const markers = this.lineMarkers();
+    if (markers.length === 0) return null;
+    let idx = 0;
+    for (let i = 0; i < markers.length; i++) {
+      if (markers[i].line <= lineNo) idx = i;
+      else break; // data-line 按文档序递增
+    }
+    const cur = markers[idx];
+    const curTop = this.markerTop(cur.el);
+    const next = markers[idx + 1];
+    if (!next) return Math.max(0, curTop - SYNC_TOP_MARGIN);
+    const nextTop = this.markerTop(next.el);
+    const span = Math.max(1, next.line - cur.line);
+    const frac = Math.min(1, Math.max(0, (lineNo - cur.line) / span));
+    return Math.max(0, curTop + (nextTop - curTop) * frac - SYNC_TOP_MARGIN);
+  }
+
+  /** 块标记（data-line）按文档序收集 */
+  private lineMarkers(): { el: HTMLElement; line: number }[] {
+    const out: { el: HTMLElement; line: number }[] = [];
+    for (const el of this.contentEl.querySelectorAll<HTMLElement>("[data-line]")) {
+      const line = Number(el.dataset.line);
+      if (Number.isFinite(line)) out.push({ el, line });
+    }
+    return out;
+  }
+
+  /** 标记元素相对滚动容器内容原点的顶部位置（rect 计算，不受 offsetParent 影响） */
+  private markerTop(el: HTMLElement): number {
+    return (
+      el.getBoundingClientRect().top -
+      this.contentEl.getBoundingClientRect().top +
+      this.contentEl.scrollTop
+    );
+  }
+
+  /** 重渲染 / 图片加载后：下一帧按编辑器位置重新校准预览滚动 */
+  private scheduleResync(): void {
+    this.scheduleSync(() => this.applyEditorToPreview());
+  }
+
+  /**
+   * rAF 节流执行一次联动：同一帧内后到的事件更新鲜，取消前一次待执行任务，
+   * 保证末次事件必达（时间窗丢事件是历史偏移累积的直接原因）。
+   */
+  private scheduleSync(run: () => void): void {
+    if (this.syncRaf !== null) cancelAnimationFrame(this.syncRaf);
+    this.syncRaf = requestAnimationFrame(() => {
+      this.syncRaf = null;
+      run();
+    });
+  }
+
+  /** 联动条件：双栏 + Markdown + 管线就绪 */
+  private canSync(): boolean {
+    return this.mode === "split" && this.kind === "md" && this.md !== null;
   }
 
   private setAreaMode(mode: "edit" | "preview" | "split" | "image"): void {
@@ -474,8 +709,14 @@ export class PreviewHost {
       await this.inlineLocalImages(holder, tab.path);
       // 解析期间可能已切标签 / 切模式：丢弃过期结果
       if (this.isStale(tab)) return;
+      // innerHTML 整体替换会把滚动位置重置为 0（输入期间预览"跳回顶部"的元凶）：
+      // 先记录再恢复，随后以编辑器位置重新校准
+      const scrollTop = this.contentEl.scrollTop;
       // markdown-it html:false + DOMPurify 兜底消毒（data:image 在媒体标签上被允许）
       this.contentEl.innerHTML = this.dompurify!.sanitize(holder.innerHTML);
+      this.contentEl.scrollTop = scrollTop;
+      this.bindImageLoadResync();
+      this.scheduleResync();
     } else {
       // sandbox 仅放行 allow-same-origin 以便把右键事件转回宿主；
       // 未开启 allow-scripts，HTML 内脚本仍不执行
@@ -523,51 +764,37 @@ export class PreviewHost {
     if (this.md) return;
     if (!this.mdReady) {
       this.mdReady = (async () => {
-        const [mdMod, dpMod, hljsMod] = await Promise.all([
-          import("markdown-it"),
-          import("dompurify"),
-          import("highlight.js/lib/common"),
-        ]);
-        // highlight.js 浅色主题（预览面板为浅色文档底）
-        await import("highlight.js/styles/github.css");
-        const MarkdownIt = mdMod.default;
-        // dompurify 类型解析不稳定（.mts default），运行时 default 必定存在
-        const DOMPurify = (dpMod as unknown as {
-          default: { sanitize(html: string): string };
-        }).default;
-        const hljs = hljsMod.default;
-        const md = new MarkdownIt({
-          html: false, // 不解析 raw HTML（安全）
-          linkify: true,
-          highlight(code, lang) {
-            try {
-              if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-              }
-            } catch {
-              // 高亮失败降级为纯文本
-            }
-            return "";
-          },
-        });
-        // 块级元素打源行标记（滚动联动）
-        md.core.ruler.push("source-line", (state) => {
-          for (const token of state.tokens) {
-            if (token.map && token.type !== "inline") {
-              token.attrSet("data-line", String(token.map[0] + 1));
-            }
-          }
-        });
-        this.md = md;
-        this.dompurify = DOMPurify;
-      })();
+        try {
+          await loadMarkdownPipeline(this);
+        } catch (e) {
+          // 加载失败（离线 / 缓存损坏）：清空缓存允许重试，抛出友好错误，
+          // 避免调用方在 this.md! 上崩溃或静默无预览
+          this.md = null;
+          this.dompurify = null;
+          throw new Error(
+            `预览组件加载失败: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      })().catch((e) => {
+        this.mdReady = null;
+        throw e;
+      });
     }
     await this.mdReady;
   }
 
   private dompurify: { sanitize(html: string): string } | null = null;
 
-  /** 导出用：返回消毒后的正文 HTML（md 渲染并内联本地图片；html 原样） */
+  /** 管线构建完成后安装（供 loadMarkdownPipeline 回调） */
+  installMarkdown(
+    md: { render(text: string): string },
+    dompurify: { sanitize(html: string): string },
+  ): void {
+    this.md = md;
+    this.dompurify = dompurify;
+  }
+
+  /** 导出用：返回消毒后的正文 HTML（md 渲染并内联本地图片；html 先消毒） */
   async getExportBody(tab: PreviewTab): Promise<string> {
     if (pathKindOf(tab.path) === "md") {
       await this.ensureMarkdown();
@@ -577,7 +804,10 @@ export class PreviewHost {
       await this.inlineLocalImages(holder, tab.path);
       return this.dompurify!.sanitize(holder.innerHTML);
     }
-    return tab.content;
+    // html 类文件：导出/打印前也过一遍消毒，避免把原始内容里的
+    // <script> / 事件属性原样写进导出文档或无 sandbox 的打印 iframe
+    await this.ensureMarkdown();
+    return this.dompurify!.sanitize(tab.content);
   }
 
   // ---- 图片查看器（kind=image 的标签）----
@@ -630,22 +860,62 @@ export class PreviewHost {
 
   // ---- 预览滚动 → 编辑器滚动 ----
 
+  /**
+   * 预览滚动 → 编辑器滚动。
+   *
+   * 历史问题：时间窗（150ms）与 syncFromEditor 的 80ms 共用 lastSyncAt，
+   * 滚动手势末尾的事件落在窗口内被丢弃 → 编辑器永久落后一截；
+   * 且 onScrollToLine 用 coordsAtPos 定位，目标行未渲染时返回 null，
+   * 快速拖动预览滚动条时编辑器完全不动 → 偏移持续放大。
+   *
+   * 现在改为：rAF 节流 + 顶部边缘所在块 + 块内插值出源行号。
+   */
   private onPreviewScroll(): void {
-    if (this.mode !== "split" || this.kind !== "md") return;
-    const now = Date.now();
-    if (now - this.lastSyncAt < 150) return;
-    const lines = this.contentEl.querySelectorAll<HTMLElement>("[data-line]");
-    if (lines.length === 0) return;
+    if (!this.canSync()) return;
+    if (performance.now() < this.previewEchoUntil) return;
+    this.scheduleSync(() => this.applyPreviewToEditor());
+  }
+
+  /** 取预览顶部边缘所在的块，插值出源码行号（支持小数）交给编辑器滚动 */
+  private applyPreviewToEditor(): void {
+    const markers = this.lineMarkers();
+    if (markers.length === 0) return;
+    // 全部用视口坐标（getBoundingClientRect）比较：容器顶边与元素顶边同处
+    // 一个坐标系。注意不能拿内容坐标（相对滚动原点）和 paneTop 混用。
+    // 顶部边缘所在的块 = 最后一个 rect.top <= paneTop 的标记
+    // （比"第一个在边缘下方"的标记更稳：预览在块内滚动时编辑器连续跟随，不跳块）
     const paneTop = this.contentEl.getBoundingClientRect().top;
-    for (const el of lines) {
-      if (el.getBoundingClientRect().top >= paneTop - 2) {
-        const lineNo = Number(el.dataset.line);
-        if (Number.isFinite(lineNo)) {
-          this.lastSyncAt = now;
-          this.onScrollToLine(lineNo);
-        }
-        return;
+    let idx = -1;
+    for (let i = 0; i < markers.length; i++) {
+      if (markers[i].el.getBoundingClientRect().top <= paneTop + 2) idx = i;
+      else break;
+    }
+    let line: number;
+    if (idx < 0) {
+      line = markers[0].line;
+    } else {
+      const cur = markers[idx];
+      const next = markers[idx + 1];
+      if (!next) {
+        line = cur.line;
+      } else {
+        const curTop = cur.el.getBoundingClientRect().top;
+        const nextTop = next.el.getBoundingClientRect().top;
+        const frac =
+          nextTop > curTop
+            ? Math.min(1, Math.max(0, (paneTop - curTop) / (nextTop - curTop)))
+            : 0;
+        line = cur.line + frac * (next.line - cur.line);
       }
+    }
+    this.onScrollToLine(line);
+  }
+
+  /** 图片异步加载会改变文档高度：加载完成后按编辑器位置重新校准 */
+  private bindImageLoadResync(): void {
+    for (const img of this.contentEl.querySelectorAll("img")) {
+      if (img.complete) continue;
+      img.addEventListener("load", () => this.scheduleResync(), { once: true });
     }
   }
 }

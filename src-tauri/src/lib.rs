@@ -8,6 +8,7 @@ pub fn run() {
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
         .manage(commands::run::RunState::default())
+        .manage(commands::paths::PathGuard::new())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
             commands::file::probe_file,
@@ -23,6 +24,7 @@ pub fn run() {
             commands::fs::rename_path,
             commands::fs::delete_path,
             commands::fs::reveal_in_file_manager,
+            commands::paths::register_paths,
             commands::workspace::load_workspace,
             commands::workspace::save_workspace,
             commands::workspace::app_config_dir,

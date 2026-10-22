@@ -1,7 +1,8 @@
 /**
  * CLI 格式化工具配置（对应 config.json 的 formatters 块）。
- * 前端配置后端接入前使用此默认值；args 中的 __PLACEHOLDER__
- * 在调用时替换为真实文件路径。
+ * 前端仅用它判断「某语言是否支持 CLI 格式化」与安装指引；
+ * 真正的工具与参数在后端按语言键从 config.json 解析（防 RCE），
+ * args 中的 __PLACEHOLDER__ 由后端替换为文件路径。
  */
 
 export interface FormatterConfig {
@@ -27,16 +28,3 @@ export const installHints: Record<string, string> = {
     "需 Java 11+：下载 all-deps jar 后可用 java -jar google-java-format-all-deps.jar --aosp - 并在配置中指定完整命令",
   "clang-format": "随 LLVM/Clang 提供：https://llvm.org/builds/ 或 VS 生成工具",
 };
-
-/** 合成文件名（未命名文档传给 assume-filename 用） */
-const syntheticExt: Record<string, string> = {
-  python: "py",
-  go: "go",
-  rust: "rs",
-  java: "java",
-  cpp: "cpp",
-};
-
-export function syntheticName(languageKey: string): string {
-  return `untitled.${syntheticExt[languageKey] ?? "txt"}`;
-}

@@ -21,6 +21,9 @@ export interface RunExit {
 }
 
 export class RunPanel {
+  /** 输出区最大节点数：超出后从头部开始丢弃（后端已有 1MB 总量截断） */
+  private static readonly MAX_OUTPUT_NODES = 2000;
+
   private titleEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private stopBtn!: HTMLButtonElement;
@@ -42,6 +45,15 @@ export class RunPanel {
   /** 订阅输出与结束事件（应用启动时调用一次） */
   mount(): void {
     this.host.innerHTML = "";
+    // 监听失败（极端情况）不能静默：至少留一条错误，否则用户看不到任何输出
+    void listen<RunChunk>("run://chunk", (e) => this.append(e.payload))
+      .then((un) => this.unlistens.push(un))
+      .catch((e) => {
+        this.appendText("stderr", `订阅运行输出失败: ${String(e)}\n`);
+      });
+    void listen<RunExit>("run://exit", (e) => this.finish(e.payload))
+      .then((un) => this.unlistens.push(un))
+      .catch((e) => console.warn("[run] 订阅退出事件失败", e));
 
     const head = document.createElement("div");
     head.className = "run-head";
@@ -84,13 +96,12 @@ export class RunPanel {
 
     this.host.append(head, this.bodyEl);
     this.hide();
+  }
 
-    void listen<RunChunk>("run://chunk", (e) => this.append(e.payload)).then((un) =>
-      this.unlistens.push(un),
-    );
-    void listen<RunExit>("run://exit", (e) => this.finish(e.payload)).then((un) =>
-      this.unlistens.push(un),
-    );
+  /** 注销全部事件监听（应用退出 / 面板销毁时调用） */
+  dispose(): void {
+    for (const un of this.unlistens) un();
+    this.unlistens.length = 0;
   }
 
   /** 打开面板（每次运行前调用，清空上次输出） */
@@ -143,7 +154,8 @@ export class RunPanel {
     this.appendText(chunk.stream, chunk.text);
   }
 
-  /** 输出追加：stderr 用错误色，stdout 用正文色 */
+  /** 输出追加：stderr 用错误色，stdout 用正文色。
+   *  节点数超上限时丢弃最旧的片段，防止高频输出把 DOM 撑爆 */
   private appendText(stream: string, text: string): void {
     if (!text) return;
     const span = document.createElement("span");
@@ -151,6 +163,9 @@ export class RunPanel {
     span.textContent = text;
     const atBottom = this.bodyEl.scrollHeight - this.bodyEl.scrollTop - this.bodyEl.clientHeight < 24;
     this.bodyEl.append(span);
+    while (this.bodyEl.childElementCount > RunPanel.MAX_OUTPUT_NODES) {
+      this.bodyEl.firstElementChild?.remove();
+    }
     // 仅在用户本就贴着底部时自动滚动，避免打断向上翻阅
     if (atBottom) this.bodyEl.scrollTop = this.bodyEl.scrollHeight;
   }

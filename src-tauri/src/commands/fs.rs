@@ -4,8 +4,9 @@
 
 use serde::Serialize;
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
+
+use super::paths::PathGuard;
 
 #[derive(Serialize, Clone)]
 pub struct DirEntry {
@@ -38,10 +39,15 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
-/// 新建文件或目录（已存在则报错）
+/// 新建文件或目录（已存在则报错）。
+/// 安全：仅允许已登记工作区根目录之内（文件树 UI 的可见范围）。
 #[tauri::command]
-pub fn create_entry(path: String, is_dir: bool) -> Result<(), String> {
-    let p = PathBuf::from(&path);
+pub fn create_entry(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    let p = state.ensure_root_scope(&path)?;
     if p.exists() {
         return Err("目标已存在".to_string());
     }
@@ -55,20 +61,26 @@ pub fn create_entry(path: String, is_dir: bool) -> Result<(), String> {
     }
 }
 
-/// 重命名 / 移动
+/// 重命名 / 移动。安全：源与目标都必须在已登记工作区根目录之内。
 #[tauri::command]
-pub fn rename_path(from: String, to: String) -> Result<(), String> {
-    let target = PathBuf::from(&to);
+pub fn rename_path(
+    state: tauri::State<'_, PathGuard>,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let src = state.ensure_root_scope(&from)?;
+    let target = state.ensure_root_scope(&to)?;
     if target.exists() {
         return Err("目标已存在".to_string());
     }
-    fs::rename(&from, &to).map_err(|e| format!("重命名失败: {e}"))
+    fs::rename(&src, &target).map_err(|e| format!("重命名失败: {e}"))
 }
 
-/// 删除文件或目录（目录递归；调用方必须已弹确认）
+/// 删除文件或目录（目录递归；调用方必须已弹确认）。
+/// 安全：仅允许已登记工作区根目录之内。
 #[tauri::command]
-pub fn delete_path(path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
+pub fn delete_path(state: tauri::State<'_, PathGuard>, path: String) -> Result<(), String> {
+    let p = state.ensure_root_scope(&path)?;
     let meta = fs::metadata(&p).map_err(|e| format!("读取元信息失败: {e}"))?;
     if meta.is_dir() {
         fs::remove_dir_all(&p).map_err(|e| format!("删除目录失败: {e}"))
@@ -77,10 +89,14 @@ pub fn delete_path(path: String) -> Result<(), String> {
     }
 }
 
-/// 在系统文件管理器中定位（跨平台）
+/// 在系统文件管理器中定位（跨平台）。
+/// 安全：仅允许已登记工作区根目录之内。
 #[tauri::command]
-pub fn reveal_in_file_manager(path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
+pub fn reveal_in_file_manager(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+) -> Result<(), String> {
+    let p = state.ensure_root_scope(&path)?;
 
     #[cfg(target_os = "windows")]
     let result = {

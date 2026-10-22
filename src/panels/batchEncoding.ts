@@ -17,6 +17,16 @@ export interface BatchReport {
   failures: BatchFailure[];
 }
 
+/** 把对话框选取的路径登记到 Rust 路径守卫（批量转码的作用域校验依赖它） */
+async function registerPaths(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  try {
+    await invoke("register_paths", { paths });
+  } catch (e) {
+    console.warn("[batch] 路径登记失败", e);
+  }
+}
+
 const ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
 
 const NEWLINES: { value: string; label: string }[] = [
@@ -167,6 +177,7 @@ export class BatchEncodingPanel {
     });
     if (!selected) return;
     const list = typeof selected === "string" ? [selected] : selected;
+    await registerPaths(list);
     for (const path of list) {
       if (!this.files.includes(path)) this.files.push(path);
     }
@@ -176,6 +187,7 @@ export class BatchEncodingPanel {
   private async pickOutDir(): Promise<void> {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return;
+    await registerPaths([dir]);
     this.outDirEl.value = dir;
   }
 
@@ -241,7 +253,12 @@ export class BatchEncodingPanel {
         console.warn("[batch] 转换失败明细", report.failures);
       }
       this.setResult(lines, report.failures.length > 0);
-      if (report.written.length > 0) this.files = [];
+      // 只移除成功的条目：失败文件保留在列表里，用户可修正后重试
+      // （原来「有成功就清空全部」会让失败项也消失，无从针对性重试）
+      if (report.written.length > 0) {
+        const done = new Set(report.written);
+        this.files = this.files.filter((f) => !done.has(f));
+      }
       this.renderFiles();
     } catch (e) {
       this.setResult(`转换失败：${String(e).split("\n")[0]}`, true);

@@ -24,6 +24,7 @@ import { openColumnEditor } from "./editor/columnEditor";
 import { toggleBookmark, gotoBookmark } from "./editor/bookmarks";
 import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
+import { EditorView } from "@codemirror/view";
 import { FileTree, createEntryIcon } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
 import { MenuBar } from "./panels/menubar";
@@ -134,7 +135,8 @@ function refreshWhitespace(): void {
 
 /** 状态栏自动换行指示 */
 function refreshWordWrap(): void {
-  const on = getConfig().editorEnhancements.wordWrap;
+  // 读同步镜像而非配置：配置落库有 300ms 防抖，窗口内还是旧值
+  const on = wordWrapOn;
   statusWrap.textContent = `换行: ${on ? "开" : "关"}`;
   statusWrap.classList.toggle("on", on);
 }
@@ -163,9 +165,13 @@ function toggleWhitespacePersisted(): void {
 
 statusWhitespace.addEventListener("click", () => toggleWhitespacePersisted());
 
+/** 自动换行开关的同步镜像（配置落库有 300ms 防抖，期间防止连点互相抵消） */
+let wordWrapOn = getConfig().editorEnhancements.wordWrap;
+
 /** 切换自动换行并写回配置 */
 function toggleWordWrapPersisted(): void {
-  const next = !getConfig().editorEnhancements.wordWrap;
+  const next = !wordWrapOn;
+  wordWrapOn = next;
   editorHandle.setWordWrap(next);
   persistConfig({
     editorEnhancements: { ...getConfig().editorEnhancements, wordWrap: next },
@@ -378,7 +384,9 @@ async function reopenWithEncoding(tabId: string, encoding: string): Promise<void
   if (!tab || !tab.path) return;
   if (
     tab.dirty &&
-    !window.confirm(`「${tab.name}」有未保存修改，重新打开将丢弃这些修改。是否继续？`)
+    !(await confirmAction(
+      `「${tab.name}」有未保存修改，重新打开将丢弃这些修改。是否继续？`,
+    ))
   ) {
     return;
   }
@@ -892,41 +900,68 @@ document.querySelector<HTMLElement>(".tabsbar")?.addEventListener("dblclick", (e
   newUntitled();
 });
 
+/** 正在关闭中的标签（防重入：确认对话框挂起期间禁止二次进入） */
+const closingTabs = new Set<string>();
+
 async function closeTab(id: string): Promise<void> {
+  if (closingTabs.has(id)) return;
   const tab = tabStore.findById(id);
   if (!tab) return;
   if (tab.dirty) {
-    // 三选确认：保存 / 不保存 / 取消
-    const choice = await confirmCloseDirty(tab.name);
-    if (choice === "cancel") return;
-    if (choice === "save") {
-      try {
-        if (tab.path) {
-          await writeTo(tab, tab.path);
-        } else {
-          const target = await save({ defaultPath: tab.name });
-          if (typeof target !== "string") return; // 用户取消保存 → 不关闭
-          await writeTo(tab, target);
+    closingTabs.add(id);
+    try {
+      // 三选确认：保存 / 不保存 / 取消
+      const choice = await confirmCloseDirty(tab.name);
+      if (choice === "cancel") return;
+      if (choice === "save") {
+        try {
+          if (tab.path) {
+            await writeTo(tab, tab.path);
+          } else {
+            const target = await save({ defaultPath: tab.name });
+            if (typeof target !== "string") return; // 用户取消保存 → 不关闭
+            await writeTo(tab, target);
+          }
+        } catch (e) {
+          showMessage(`保存失败: ${String(e).split("\n")[0]}`);
+          return;
         }
-      } catch (e) {
-        window.alert(`保存失败: ${e}`);
-        return;
       }
+    } finally {
+      closingTabs.delete(id);
     }
   }
   // 关闭前把未保存内容落草稿，避免静默丢弃（已保存则顺带清除草稿）
   if (tab.dirty) await persistDraft(id);
+  // 编辑器状态缓存 / 光标 / 草稿键 / 大文件会话的清理统一走关闭订阅
   tabStore.close(id);
-  editorHandle.forgetDocument(id);
-  previewModes.delete(id);
-  cursorPos.delete(id);
-  draftKeys.delete(id);
-  const timer = draftTimers.get(id);
+}
+
+/** 标签移除后的统一清理（单条关闭与批量关闭共用） */
+tabStore.onTabClosed((tab) => {
+  editorHandle.forgetDocument(tab.id);
+  previewModes.delete(tab.id);
+  cursorPos.delete(tab.id);
+  draftKeys.delete(tab.id);
+  const timer = draftTimers.get(tab.id);
   if (timer) {
     clearTimeout(timer);
-    draftTimers.delete(id);
+    draftTimers.delete(tab.id);
   }
   void releaseLargeSession(tab);
+});
+
+/**
+ * 批量关闭（关闭左侧/右侧/其他/全部）：先把脏标签的未保存内容落草稿，
+ * 再执行批量关闭。用户取消确认时草稿内容与当前内容一致，无害；
+ * 确认关闭后内容不丢失，可按正常草稿恢复流程找回。
+ */
+async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
+  const dirty = tabStore.list().filter((t) => t.dirty && draftable(t));
+  for (const tab of dirty) {
+    await persistDraft(tab.id);
+  }
+  await fn();
 }
 
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
@@ -948,53 +983,71 @@ tabStore.subscribe(() => {
 });
 
 let currentLoadedTabId: string | null = null;
+/** 标签切换代际令牌：await 之后校验，过期加载立即中止，
+ *  避免把光标/文件树高亮/大文件视图打到已经不是当前标签的目标上 */
+let loadToken = 0;
 
 async function loadActiveTab(): Promise<void> {
+  const token = ++loadToken;
   const tab = activeTab();
   currentLoadedTabId = tab?.id ?? null;
-  if (!tab) {
-    // 无标签：清空编辑器、预览与结果面板，回到默认空态
-    editorHandle.loadDocument("", "");
-    editorColumn()?.classList.remove("virtual");
-    largeView().close();
-    refreshPreview();
-    resultsPanel?.refresh();
-    return;
-  }
-  if (tab.pending && tab.path) {
-    // 会话恢复的占位标签：首次激活时才载入内容
-    if (!(await loadPendingTab(tab))) return;
-  }
-  if (tab.virtual && tab.largeId) {
-    // 大文件只读虚拟视图：隐藏编辑器与预览，行内容按窗口拉取
-    editorColumn()?.classList.add("virtual");
-    try {
-      const info = await invoke<LargeFileInfo>("large_file_info", { id: tab.largeId });
-      await largeView().open(info, getConfig().largeFile.viewportPaddingLines);
-    } catch {
-      // 会话已释放（例如应用重建）：退回编辑器路径
-      tab.virtual = false;
-      tab.largeId = undefined;
+  // 切换窗口开始：抑制编辑器回调，防止上一个文档的内容/光标写入新标签
+  editorHandle.beginSwitch();
+  try {
+    // 虚拟视图不可用时回退编辑器路径：用有限次重试代替递归自调用
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!tab) {
+        // 无标签：清空编辑器、预览与结果面板，回到默认空态
+        await editorHandle.loadDocument("", "");
+        if (token !== loadToken) return;
+        editorColumn()?.classList.remove("virtual");
+        largeView().close();
+        refreshPreview();
+        resultsPanel?.refresh();
+        return;
+      }
+      if (tab.pending && tab.path) {
+        // 会话恢复的占位标签：首次激活时才载入内容
+        if (!(await loadPendingTab(tab))) return;
+        if (token !== loadToken) return;
+      }
+      if (tab.virtual && tab.largeId) {
+        // 大文件只读虚拟视图：隐藏编辑器与预览，行内容按窗口拉取
+        editorColumn()?.classList.add("virtual");
+        try {
+          const info = await invoke<LargeFileInfo>("large_file_info", { id: tab.largeId });
+          await largeView().open(info, getConfig().largeFile.viewportPaddingLines);
+          return;
+        } catch {
+          // 会话已释放（例如应用重建）：退回编辑器路径（仅重试一次）
+          tab.virtual = false;
+          tab.largeId = undefined;
+          editorColumn()?.classList.remove("virtual");
+          continue;
+        }
+      }
       editorColumn()?.classList.remove("virtual");
-      await loadActiveTab();
+      largeView().close();
+      await editorHandle.loadDocument(
+        tab.path ?? "",
+        tab.content,
+        tab.readonly,
+        tab.languageOverride,
+        tab.id,
+      );
+      if (token !== loadToken) return;
+      applyRestoredCursor(tab);
+      // 文件树联动：展开祖先目录并高亮当前文件
+      if (tab.path) fileTree.revealPath(tab.path);
+      // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器
+      refreshPreview();
+      resultsPanel?.refresh();
+      return;
     }
-    return;
+  } finally {
+    // 仅最新一代切换负责解除抑制，过期的 finally 不得提前释放
+    if (token === loadToken) editorHandle.endSwitch();
   }
-  editorColumn()?.classList.remove("virtual");
-  largeView().close();
-  await editorHandle.loadDocument(
-    tab.path ?? "",
-    tab.content,
-    tab.readonly,
-    tab.languageOverride,
-    tab.id,
-  );
-  applyRestoredCursor(tab);
-  // 文件树联动：展开祖先目录并高亮当前文件
-  if (tab.path) fileTree.revealPath(tab.path);
-  // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器
-  refreshPreview();
-  resultsPanel?.refresh();
 }
 
 // ---- 工作区持久化（根目录与展开状态） ----
@@ -1279,6 +1332,49 @@ $<HTMLButtonElement>("win-min").addEventListener("click", () => void appWindow.m
 $<HTMLButtonElement>("win-max").addEventListener("click", () => void appWindow.toggleMaximize());
 $<HTMLButtonElement>("win-close").addEventListener("click", () => void appWindow.close());
 
+/**
+ * 退出前统一清理：flush 待写草稿与会话、停止运行中的子进程、
+ * 释放大文件只读会话。
+ * 不依赖 webview 的 beforeunload——Tauri 关窗时它不一定触发，
+ * 草稿是防抖写的，直接退出会丢最后一段时间的内容。
+ */
+async function flushOnExit(): Promise<void> {
+  if (sessionDirty || sessionTimer) saveSessionNow();
+  const timers = [...draftTimers.entries()];
+  for (const [id, timer] of timers) {
+    clearTimeout(timer);
+    draftTimers.delete(id);
+    await persistDraft(id);
+  }
+  try {
+    await invoke("stop_run");
+  } catch {
+    // 没有进程在跑时 stop_run 返回 false 或报错，均可忽略
+  }
+  for (const tab of tabStore.list()) {
+    if (tab.virtual && tab.largeId) {
+      try {
+        await invoke("close_large_file", { id: tab.largeId });
+      } catch {
+        // 会话可能已释放，忽略
+      }
+    }
+  }
+}
+
+let exiting = false;
+void appWindow.onCloseRequested(async (event) => {
+  if (exiting) return;
+  // 先拦截关闭，清理完成后再强制销毁（不再触发关闭请求，避免循环）
+  event.preventDefault();
+  exiting = true;
+  try {
+    await flushOnExit();
+  } finally {
+    await appWindow.destroy();
+  }
+});
+
 // 注：双击标题栏最大化由 Tauri data-tauri-drag-region 内置处理（drag.js），无需自建
 void titlebar;
 
@@ -1307,10 +1403,10 @@ function showTabMenu(x: number, y: number, tabId: string): void {
   const items: { label: string; run: () => void }[] = [
     { label: "与当前标签比较", run: () => compareTabs(tabId) },
     { label: "关闭当前", run: () => void closeTab(tabId) },
-    { label: "关闭左侧", run: () => void tabStore.closeLeft(tabId) },
-    { label: "关闭右侧", run: () => void tabStore.closeRight(tabId) },
-    { label: "关闭其他", run: () => void tabStore.closeOthers(tabId) },
-    { label: "关闭全部", run: () => void tabStore.closeAll() },
+    { label: "关闭左侧", run: () => void closeTabsBulk(() => tabStore.closeLeft(tabId)) },
+    { label: "关闭右侧", run: () => void closeTabsBulk(() => tabStore.closeRight(tabId)) },
+    { label: "关闭其他", run: () => void closeTabsBulk(() => tabStore.closeOthers(tabId)) },
+    { label: "关闭全部", run: () => void closeTabsBulk(() => tabStore.closeAll()) },
   ];
   for (const item of items) {
     const el = document.createElement("div");
@@ -1337,9 +1433,14 @@ editorHandle = createEditor($("editor"), {
   onDocChange: () => {
     const tab = activeTab();
     if (!tab) return;
+    // 编辑器承载的文档必须仍是该标签：切换标签的异步窗口内视图里
+    // 可能还是上一个文档，此时写入会把内容/草稿串到错误标签上
+    if (editorHandle.docId() !== tab.id) return;
     tabStore.setContent(tab.id, editorHandle.getContent());
     const t = tabStore.findById(tab.id);
     if (t) previewHost.scheduleRender(toPreviewTab(t));
+    // 结果面板存的是绝对偏移：编辑后防抖重枚举，否则双击跳错位置
+    resultsPanel?.scheduleRefresh();
     // 未保存内容防抖写入草稿（配置关闭时不写）
     if (t) scheduleDraftSave(t);
   },
@@ -1347,7 +1448,8 @@ editorHandle = createEditor($("editor"), {
     statusCursor.textContent = `行 ${line}，列 ${col}`;
     statusLines.textContent = `共 ${totalLines} 行`;
     const tab = activeTab();
-    if (tab) {
+    // 同上：编辑器文档与激活标签不一致时丢弃，避免光标串台
+    if (tab && editorHandle.docId() === tab.id) {
       cursorPos.set(tab.id, { line, col });
       // 只标记，不写盘：切标签 / 隐藏 / 定时器兜底时再落会话
       sessionDirty = true;
@@ -1405,17 +1507,39 @@ function refreshPreview(): void {
   previewHost.apply(tab ? toPreviewTab(tab) : null, mode);
 }
 
+/**
+ * 预览滚动 → 编辑器滚动（双栏 Markdown）。
+ *
+ * 历史问题：coordsAtPos 对"当前未渲染的行"返回 null，快速拖动预览滚动条时
+ * 编辑器完全不动，双栏偏移持续放大。改用 EditorView.scrollIntoView 效应：
+ * CM6 会先把目标行纳入渲染范围再定位，视口外同样可滚。
+ */
+function scrollEditorToLine(line: number): void {
+  const view = editorHandle.view;
+  const doc = view.state.doc;
+  if (doc.lines === 0) return;
+  // line 可能是小数（预览块内插值）：折算进行内位置
+  const clamped = Math.min(Math.max(line, 1), doc.lines);
+  const whole = Math.floor(clamped);
+  const lineInfo = doc.line(whole);
+  const offset = Math.round((clamped - whole) * (lineInfo.to - lineInfo.from));
+  const pos = Math.min(lineInfo.from + offset, lineInfo.to);
+  // 标记一次联动滚动：随后编辑器抛出的 scroll 事件在窗口内视为回显
+  editorEchoUntil = performance.now() + EDITOR_ECHO_MS;
+  view.dispatch({
+    effects: EditorView.scrollIntoView(pos, { y: "start", yMargin: 8 }),
+  });
+}
+
+/** 联动回显抑制窗口（与 preview.ts 的 PREVIEW_ECHO_MS 对齐） */
+const EDITOR_ECHO_MS = 120;
+/** 最近一次由预览联动产生的编辑器滚动截止时刻 */
+let editorEchoUntil = 0;
+
 const previewHost = new PreviewHost(
   $("preview-pane"),
   editorArea,
-  (line) => {
-    // 预览滚动 → 编辑器滚动（双栏 Markdown）
-    const view = editorHandle.view;
-    const lineInfo = view.state.doc.line(Math.min(line, view.state.doc.lines));
-    const coords = view.coordsAtPos(lineInfo.from);
-    const rect = view.scrollDOM.getBoundingClientRect();
-    if (coords) view.scrollDOM.scrollTop += coords.top - (rect.top + 8);
-  },
+  scrollEditorToLine,
   (x, y) => {
     // HTML 预览在 iframe 内，右键经同源转发到这里
     const tab = activeTab();
@@ -1426,9 +1550,11 @@ const previewHost = new PreviewHost(
 );
 
 // 编辑器滚动 → 预览联动
-editorHandle.view.scrollDOM.addEventListener("scroll", () =>
-  previewHost.syncFromEditor(editorHandle.view),
-);
+editorHandle.view.scrollDOM.addEventListener("scroll", () => {
+  // 预览联动产生的回显：忽略，避免两侧互相追赶
+  if (performance.now() < editorEchoUntil) return;
+  previewHost.syncFromEditor(editorHandle.view);
+});
 
 // ---- 当前文档查找 / 替换面板（菜单与右键菜单共用）----
 
@@ -1921,6 +2047,13 @@ async function exportHtmlImagesToAssets(
   const folderName = folder.replace(/^.*[\\/]/, "");
   const replaced = new Map<string, string>();
   let index = 0;
+  // 素材目录位于「另存对话框选定的新目录」下，应用此前没见过它：
+  // 先登记为已知路径，否则 Rust 侧写盘作用域校验会拒绝（图片走降级丢失）
+  try {
+    await invoke("register_paths", { paths: [folder] });
+  } catch (e) {
+    console.warn("[export] 素材目录登记失败", e);
+  }
   for (const img of images) {
     const dataUri = img.getAttribute("src") ?? "";
     const hit = replaced.get(dataUri);
@@ -2098,7 +2231,7 @@ async function openFilePath(
       showMessage(`已按 ${data.encoding} 解码（置信度低，可点击状态栏编码切换）`);
     }
   } catch (e) {
-    if (!opts.silent) window.alert(`打开失败: ${e}`);
+    if (!opts.silent) showMessage(`打开失败: ${String(e).split("\n")[0]}`);
   }
 }
 
@@ -2130,7 +2263,14 @@ async function saveFileAs(): Promise<void> {
   if (blockIfReadonly()) return;
   const target = await save({ defaultPath: tab.name });
   if (typeof target !== "string") return;
-  await writeTo(tab, target);
+  // 对话框期间用户可能已关闭/切换标签：必须重新校验，否则会把
+  // 已放弃的标签内容写到磁盘上
+  const current = tabStore.findById(tab.id);
+  if (!current) {
+    showMessage("标签已关闭，已取消另存为");
+    return;
+  }
+  await writeTo(current, target);
 }
 
 // ---- 另存为指定编码（单文件）----
@@ -2151,15 +2291,23 @@ function saveAsWithEncoding(): void {
   saveEncodingDialog.open(encodings, tab.encoding, (encoding) => {
     void (async () => {
       const current = tabStore.findById(tab.id);
-      if (!current) return;
+      if (!current) {
+        showMessage("标签已关闭，已取消另存为");
+        return;
+      }
       const target = await save({ defaultPath: current.name });
       if (typeof target !== "string") return;
+      // 保存对话框期间标签可能已被关闭
+      if (!tabStore.findById(tab.id)) {
+        showMessage("标签已关闭，已取消另存为");
+        return;
+      }
       try {
         await writeTo(current, target, encoding);
         const name = target.split(/[\\/]/).pop() ?? target;
         showMessage(`已按 ${encoding} 另存为：${name}`);
       } catch (e) {
-        window.alert(`另存为失败: ${e}`);
+        showMessage(`另存为失败: ${String(e).split("\n")[0]}`);
       }
     })();
   }, `当前标签：${tab.name}`);
@@ -2351,7 +2499,7 @@ async function reloadConfig(): Promise<void> {
     showMessage("配置已重新加载");
     showConfigReloaded(cfgPath ?? "（未能获取配置路径）", configSummary(cfg));
   } catch (e) {
-    window.alert(`重新加载配置失败: ${String(e).split("\n")[0]}`);
+    showMessage(`重新加载配置失败: ${String(e).split("\n")[0]}`);
   }
 }
 
@@ -2360,41 +2508,66 @@ async function reloadConfig(): Promise<void> {
 /** 超过此行数，格式化前弹确认 */
 const FORMAT_CONFIRM_LINES = 10000;
 
+/** 格式化进行中标志：防止连按快捷键启动两个格式化器互相覆盖 */
+let formatting = false;
+
 async function formatCurrent(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
   if (blockIfReadonly()) return;
+  if (formatting) {
+    showMessage("正在格式化，请稍候…");
+    return;
+  }
   const key = effectiveLanguage(tab);
   if (editorHandle.view.state.doc.lines > FORMAT_CONFIRM_LINES) {
-    const ok = window.confirm(
+    const ok = await confirmAction(
       `文档超过 ${FORMAT_CONFIRM_LINES} 行，格式化可能耗时较久，继续？`,
     );
     if (!ok) return;
   }
-  const result = await formatDocument(editorHandle.view, key, tab.path);
-  if (!result.ok) {
-    // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行 + 控制台完整输出
-    showMessage(result.message.split("\n")[0] || "格式化失败");
-    console.error("[format]", result.message);
-    return;
+  formatting = true;
+  try {
+    const result = await formatDocument(editorHandle.view, key, tab.path);
+    // await 期间可能切换了标签：结果已由 format.ts 做文档指纹校验，
+    // 这里仅跳过过期标签上的消息刷新
+    if (tabStore.active()?.id !== tab.id) return;
+    if (!result.ok) {
+      // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行 + 控制台完整输出
+      showMessage(result.message.split("\n")[0] || "格式化失败");
+      console.error("[format]", result.message);
+      return;
+    }
+    showMessage(result.message);
+    refreshStatus();
+  } finally {
+    formatting = false;
   }
-  showMessage(result.message);
-  refreshStatus();
 }
 
 async function formatSelectionCurrent(): Promise<void> {
   const tab = activeTab();
   if (!tab) return;
   if (blockIfReadonly()) return;
-  const key = effectiveLanguage(tab);
-  const result = await formatSelection(editorHandle.view, key, tab.path);
-  if (!result.ok) {
-    showMessage(result.message.split("\n")[0] || "格式化失败");
-    console.error("[format]", result.message);
+  if (formatting) {
+    showMessage("正在格式化，请稍候…");
     return;
   }
-  showMessage(result.message);
-  refreshStatus();
+  const key = effectiveLanguage(tab);
+  formatting = true;
+  try {
+    const result = await formatSelection(editorHandle.view, key, tab.path);
+    if (tabStore.active()?.id !== tab.id) return;
+    if (!result.ok) {
+      showMessage(result.message.split("\n")[0] || "格式化失败");
+      console.error("[format]", result.message);
+      return;
+    }
+    showMessage(result.message);
+    refreshStatus();
+  } finally {
+    formatting = false;
+  }
 }
 
 // ---- 查找结果面板开关（菜单/命令面板共用）----
@@ -2479,7 +2652,7 @@ async function openLargeInEditor(info: LargeFileInfo): Promise<void> {
   if (!tab) return;
   if (info.size >= settings.largeFileThreshold) {
     const mb = Math.round(info.size / 1024 / 1024);
-    const ok = window.confirm(
+    const ok = await confirmAction(
       `文件约 ${mb} MB，以编辑器打开会全量载入内存，可能影响性能。确定继续吗？`,
     );
     if (!ok) return;
@@ -3049,8 +3222,10 @@ function runnerFor(tab: Tab): string | null {
   if (lang === "python") return "python";
   if (lang === "javascript" || lang === "jsx") return "node";
   if (lang === "java") return "java";
-  // 内容以 curl 开头即按 cURL 参数脚本处理
-  if (/^\s*curl\b/m.test(tab.content)) return "curl";
+  // 内容以 curl 开头即按 cURL 参数脚本处理。
+  // 只检查前 4KB：本函数每次输入都会调用，对全文跑多行正则太贵
+  const head = tab.content.length > 4096 ? tab.content.slice(0, 4096) : tab.content;
+  if (/^\s*curl\b/m.test(head)) return "curl";
   return null;
 }
 
@@ -3238,9 +3413,41 @@ registerKeyCommands([
 // 列编辑器当前键位加入保留集：全局命令不得抢占（其自身经 editorEnhancements.columnEditorKey 改绑）
 setExtraReservedKeys([settings.columnEditorKey]);
 
+/**
+ * 是否处于模态状态（任何对话框 / 差异视图 / 命令面板打开中）。
+ * 模态期间屏蔽全局快捷键：否则会在模态背后关标签、启动子进程等。
+ */
+const MODAL_SELECTORS =
+  ".dialog-backdrop, .settings-backdrop, .diff-backdrop, .palette-overlay";
+
+function isModalOpen(): boolean {
+  return document.querySelector(MODAL_SELECTORS) !== null;
+}
+
+/**
+ * 模态关闭后恢复焦点。
+ * 对话框被移除后焦点会落到 body，用户再按 Ctrl+S / Ctrl+F 等依赖编辑器
+ * 焦点的快捷键全部失效，必须手动点回编辑区。
+ * 这里全局统一处理：记住最后一个「模态外」焦点元素，全部模态关闭时恢复。
+ */
+let lastNonModalFocus: HTMLElement | null = null;
+document.addEventListener("focusin", (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return;
+  if (t.closest(MODAL_SELECTORS)) return; // 模态内部的焦点变迁不记录
+  lastNonModalFocus = t;
+});
+new MutationObserver(() => {
+  if (isModalOpen()) return;
+  const prev = lastNonModalFocus;
+  if (prev?.isConnected) prev.focus();
+}).observe(document.body, { childList: true, subtree: true });
+
 window.addEventListener(
   "keydown",
   (e) => {
+    // 模态 / 面板打开期间不派发全局命令（仅放行 Esc 由各面板自行处理）
+    if (isModalOpen()) return;
     const cmd = matchKeyCommand(e, getConfig());
     if (!cmd) return;
     e.preventDefault();

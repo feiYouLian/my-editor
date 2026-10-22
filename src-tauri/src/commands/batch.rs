@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::encoding;
 use super::file::{apply_eol, atomic_write, detect_newline};
+use super::paths::PathGuard;
 
 /// 源文件是否带 UTF-8 BOM（转存为 UTF-8 时沿用）
 fn has_utf8_bom(bytes: &[u8]) -> bool {
@@ -30,8 +31,12 @@ pub struct BatchReport {
 /// 批量另存为指定编码
 /// - newline："KEEP"（保持各文件原有风格）| "LF" | "CRLF" | "CR"
 /// - out_dir：输出目录（与原文件同路径会被拒绝）
+/// 安全：输入文件与输出目录都必须在应用已知路径范围内
+/// （对话框选取的路径需由前端先 register_paths 登记）。
+/// 多文件读写放 spawn_blocking 执行，避免阻塞事件循环。
 #[tauri::command]
-pub fn batch_save_encoding(
+pub async fn batch_save_encoding(
+    state: tauri::State<'_, PathGuard>,
     files: Vec<String>,
     encoding: String,
     newline: String,
@@ -40,39 +45,78 @@ pub fn batch_save_encoding(
     if encoding::lookup(&encoding).is_none() {
         return Err(format!("不支持的编码: {encoding}"));
     }
-    let dir = PathBuf::from(&out_dir);
+    // 作用域校验同步完成（快），失败直接返回
+    let dir = state.ensure_file_scope(&out_dir)?;
     if !dir.is_dir() {
         return Err(format!("输出目录不存在: {}", dir.display()));
     }
-    let mut written = Vec::new();
-    let mut failures = Vec::new();
-    for file in files {
-        match convert_one(Path::new(&file), &dir, &encoding, &newline) {
-            Ok(path) => written.push(path),
-            Err(error) => failures.push(BatchFailure { path: file, error }),
+    let scoped: Vec<PathBuf> = files
+        .iter()
+        .filter_map(|f| state.ensure_file_scope(f).ok())
+        .collect();
+    let failures: Vec<BatchFailure> = files
+        .iter()
+        .filter(|f| state.ensure_file_scope(f).is_err())
+        .map(|f| BatchFailure {
+            path: f.clone(),
+            error: "路径不在已打开的工作区/文件范围内，已跳过".to_string(),
+        })
+        .collect();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut failures = failures;
+        let mut written = Vec::new();
+        // 预检：先确认所有目标都可用（无同名冲突），再统一开写。
+        // 原实现逐个转换，中途遇到同名文件已落盘一半，输出目录留半成品。
+        let mut jobs: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for src in &scoped {
+            let Some(name) = src.file_name() else {
+                failures.push(BatchFailure {
+                    path: src.to_string_lossy().to_string(),
+                    error: "无法取得文件名".to_string(),
+                });
+                continue;
+            };
+            let target = dir.join(name);
+            if same_path(src, &target) {
+                failures.push(BatchFailure {
+                    path: src.to_string_lossy().to_string(),
+                    error: "输出路径与原文件相同，请选择其它输出目录".to_string(),
+                });
+                continue;
+            }
+            if target.exists() {
+                failures.push(BatchFailure {
+                    path: src.to_string_lossy().to_string(),
+                    error: format!("输出目录中已存在同名文件: {}", target.display()),
+                });
+                continue;
+            }
+            jobs.push((src.clone(), target));
         }
-    }
-    Ok(BatchReport { written, failures })
+        for (src, target) in jobs {
+            match convert_prechecked(&src, &target, &encoding, &newline) {
+                Ok(path) => written.push(path),
+                Err(error) => failures.push(BatchFailure {
+                    path: src.to_string_lossy().to_string(),
+                    error,
+                }),
+            }
+        }
+        Ok(BatchReport { written, failures })
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 单文件转换：读源 → 按探测编码解码 → 套用换行风格 → 按目标编码写入输出目录
-fn convert_one(
+/// （目标路径已由调用方预检过）
+fn convert_prechecked(
     source: &Path,
-    out_dir: &Path,
+    target: &Path,
     encoding_name: &str,
     newline: &str,
 ) -> Result<String, String> {
     let bytes = std::fs::read(source).map_err(|e| format!("读取失败: {e}"))?;
-    let name = source
-        .file_name()
-        .ok_or_else(|| "无法取得文件名".to_string())?;
-    let target = out_dir.join(name);
-    if same_path(source, &target) {
-        return Err("输出路径与原文件相同，请选择其它输出目录".to_string());
-    }
-    if target.exists() {
-        return Err(format!("输出目录中已存在同名文件: {}", target.display()));
-    }
 
     let guess = encoding::guess(&bytes);
     let text = encoding::decode(&bytes, &guess.encoding)
@@ -84,8 +128,29 @@ fn convert_one(
     };
     let converted = apply_eol(&text, &eol);
     let out = encoding::encode(&converted, encoding_name, has_utf8_bom(&bytes))?;
-    atomic_write(&target, &out)?;
+    atomic_write(target, &out)?;
     Ok(target.to_string_lossy().to_string())
+}
+
+/// 单文件转换（含目标预检）：供测试与单独调用使用
+#[cfg(test)]
+fn convert_one(
+    source: &Path,
+    out_dir: &Path,
+    encoding_name: &str,
+    newline: &str,
+) -> Result<String, String> {
+    let name = source
+        .file_name()
+        .ok_or_else(|| "无法取得文件名".to_string())?;
+    let target = out_dir.join(name);
+    if same_path(source, &target) {
+        return Err("输出路径与原文件相同，请选择其它输出目录".to_string());
+    }
+    if target.exists() {
+        return Err(format!("输出目录中已存在同名文件: {}", target.display()));
+    }
+    convert_prechecked(source, &target, encoding_name, newline)
 }
 
 /// 路径等价判定（Windows 下大小写与分隔符不敏感）
@@ -97,6 +162,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();

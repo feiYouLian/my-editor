@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { EditorView } from "@codemirror/view";
-import { cliFormatters, installHints, syntheticName } from "../config/formatters";
+import { cliFormatters, installHints } from "../config/formatters";
 
 /**
  * 代码格式化（双通道）：
@@ -62,6 +62,8 @@ export interface FormatResult {
   ok: boolean;
   message: string;
   changed: boolean;
+  /** 格式化输出（仅 ok 时存在）；调用方负责校验文档未变后再写入 */
+  output?: string;
 }
 
 /**
@@ -114,12 +116,11 @@ export async function formatText(
   const cli = languageKey ? cliFormatters[languageKey] : undefined;
   if (cli) {
     try {
-      const args = cli.args.map((a) =>
-        a.replace("__PLACEHOLDER__", filePath || syntheticName(languageKey!)),
-      );
+      // 工具与参数在后端按语言键从 config.json 解析（前端不可指定可执行文件）；
+      // __PLACEHOLDER__ 由后端替换，Rust 侧无 $ 特殊语义，路径含 $&/$1 也安全
       const output = await invoke<string>("run_cli_formatter", {
-        tool: cli.tool,
-        args,
+        languageKey,
+        filePath,
         content: text,
       });
       const changed = output !== text;
@@ -128,7 +129,7 @@ export async function formatText(
         changed,
         message: changed ? "格式化完成" : "已是格式化后的内容",
         output,
-      } as FormatResult & { output?: string };
+      };
     } catch (e) {
       const hint = installHints[cli.tool];
       const msg = hint ? `${String(e)}\n安装指引: ${hint}` : String(e);
@@ -147,11 +148,11 @@ export async function formatText(
         changed,
         message: changed ? "格式化完成" : "已是格式化后的内容",
         output,
-      } as FormatResult & { output?: string };
-    } catch (err) {
+      };
+      } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, message: `格式化失败: ${msg}`, changed: false };
-    }
+      }
   }
 
   // 前端 Prettier 通道
@@ -175,7 +176,7 @@ export async function formatText(
       changed,
       message: changed ? "格式化完成" : "已是格式化后的内容",
       output,
-    } as FormatResult & { output?: string };
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, message: `格式化失败: ${msg}`, changed: false };
@@ -223,6 +224,14 @@ function indentText(text: string, prefix: string): string {
     .join("\n");
 }
 
+/** 逐行移除公共缩进前缀（与 indentText 互逆） */
+function dedentLines(text: string, prefix: string): string {
+  return text
+    .split("\n")
+    .map((l) => (l.startsWith(prefix) ? l.slice(prefix.length) : l))
+    .join("\n");
+}
+
 /**
  * 选中内容格式化：
  * 去掉公共缩进 → 按目标语言格式化 → 按原缩进还原 → 替换并重置选区。
@@ -237,15 +246,21 @@ export async function formatSelection(
   if (from === to) {
     return { ok: false, message: "请先选中要格式化的内容", changed: false };
   }
+  const source = view.state.doc.toString();
   const selected = view.state.doc.sliceString(from, to);
   const base = commonIndent(selected);
-  const dedented = base ? selected.replace(new RegExp(`^${base.replace(/\t/g, "\\t")}`, "gm"), "") : selected;
+  // 逐行去缩进，不把用户缩进拼进正则（避免元字符注入）
+  const dedented = base ? dedentLines(selected, base) : selected;
 
   const result = await formatText(dedented, languageKey, filePath);
-  const output = (result as FormatResult & { output?: string }).output;
+  const output = result.output;
   if (!result.ok || output === undefined) return result;
   if (output === dedented) {
     return { ok: true, message: "已是格式化后的内容", changed: false };
+  }
+  // await 期间文档可能已变更：用全文指纹校验，失效则放弃写入
+  if (view.state.doc.toString() !== source) {
+    return { ok: false, message: "文档已切换，已取消格式化", changed: false };
   }
   const finalText = indentText(output.replace(/\n$/, ""), base);
   view.dispatch({

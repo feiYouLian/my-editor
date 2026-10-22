@@ -365,6 +365,13 @@ fn default_formatters() -> BTreeMap<String, FormatterEntry> {
             },
         ),
         (
+            "rust".into(),
+            FormatterEntry {
+                tool: "rustfmt".into(),
+                args: Vec::new(),
+            },
+        ),
+        (
             "cpp".into(),
             FormatterEntry {
                 tool: "clang-format".into(),

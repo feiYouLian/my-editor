@@ -6,6 +6,7 @@ pub mod file;
 pub mod format;
 pub mod fs;
 pub mod large;
+pub mod paths;
 pub mod run;
 pub mod session;
 pub mod watch;

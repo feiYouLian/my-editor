@@ -6,14 +6,25 @@
 //! 两者都位于 Tauri 应用配置目录；config.json 不含这两类数据。
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 /// 草稿指纹计算内容哈希的体量上限：超过则只用 mtime + 大小判定过期，
 /// 避免启动扫描时读取大文件
 const HASH_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// 指纹缓存上限（防长会话无界增长）
+const FINGERPRINT_CACHE_LIMIT: usize = 64;
+
+/// 原文件指纹缓存：路径 → (mtime_ms, size, hash)。
+/// autosave 防抖 1s 意味着每秒都会调用 fingerprint，不缓存会让
+/// 4MB 文件每秒被读一遍并做 FNV。
+static FINGERPRINT_CACHE: LazyLock<Mutex<HashMap<PathBuf, (u64, u64, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ---------------------------------------------------------------------------
 // 会话
@@ -278,11 +289,28 @@ fn fingerprint(path: &Path) -> (u64, u64, String) {
         .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let size = md.len();
     let hash = if size <= HASH_MAX_BYTES {
-        fs::read(path).map(|b| hash_hex(&b)).unwrap_or_default()
+        // 草稿 autosave 每秒都会调用：不缓存会让 4MB 文件每秒被读一遍并做
+        // FNV。以 (mtime, size) 为键缓存，未变则复用。
+        let mut cache = FINGERPRINT_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((c_mtime, c_size, c_hash)) = cache.get(path) {
+            if *c_mtime == mtime && *c_size == size {
+                return (mtime, size, c_hash.clone());
+            }
+        }
+        let hash = fs::read(path)
+            .map(|b| hash_hex(&b))
+            .unwrap_or_default();
+        if cache.len() >= FINGERPRINT_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(path.to_path_buf(), (mtime, size, hash.clone()));
+        hash
     } else {
         String::new()
     };

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { promptText } from "../ui/dialogs";
+import { confirmAction, promptText } from "../ui/dialogs";
 import { placeMenu } from "../ui/menu";
 import type { WorkspaceState } from "../services/workspace";
 
@@ -127,14 +127,25 @@ export class FileTree {
     void this.loadChildren(this.root, children, 0);
   }
 
+  /** 目录加载代际：快速展开/折叠/刷新时丢弃过期结果，防止重复节点 */
+  private loadToken = 0;
+
   private async loadChildren(dir: string, container: HTMLElement, depth: number): Promise<void> {
+    const token = ++this.loadToken;
     let entries: DirEntry[];
     try {
       entries = await invoke<DirEntry[]>("list_dir", { path: dir });
     } catch (e) {
-      container.innerHTML = `<div class="tree-error">读取失败: ${String(e)}</div>`;
+      // 过期加载（期间已折叠/刷新）不显示错误；textContent 防 HTML 注入
+      if (token !== this.loadToken || !container.isConnected) return;
+      const err = document.createElement("div");
+      err.className = "tree-error";
+      err.textContent = `读取失败: ${String(e).split("\n")[0]}`;
+      container.append(err);
       return;
     }
+    // 过期结果直接丢弃：否则会与后一次加载的节点叠加成重复行
+    if (token !== this.loadToken || !container.isConnected) return;
     for (const entry of entries) {
       container.append(this.createNode(entry, depth));
     }
@@ -327,7 +338,7 @@ export class FileTree {
       await navigator.clipboard.writeText(path);
       this.callbacks.onNotify?.("已复制文件路径");
     } catch (e) {
-      window.alert(`复制地址失败: ${e}`);
+      this.callbacks.onNotify?.(`复制地址失败: ${String(e).split("\n")[0]}`);
     }
   }
 
@@ -354,7 +365,7 @@ export class FileTree {
       this.expanded.add(dir);
       this.render();
     } catch (e) {
-      window.alert(`创建失败: ${e}`);
+      this.callbacks.onNotify?.(`创建失败: ${String(e).split("\n")[0]}`);
     }
   }
 
@@ -366,12 +377,12 @@ export class FileTree {
       await invoke("rename_path", { from: entry.path, to: target });
       this.render();
     } catch (e) {
-      window.alert(`重命名失败: ${e}`);
+      this.callbacks.onNotify?.(`重命名失败: ${String(e).split("\n")[0]}`);
     }
   }
 
   private async deleteEntry(entry: DirEntry): Promise<void> {
-    const ok = window.confirm(
+    const ok = await confirmAction(
       `确定删除${entry.is_dir ? "目录" : "文件"}「${entry.name}」？${entry.is_dir ? "目录将递归删除！" : ""}`,
     );
     if (!ok) return;
@@ -379,7 +390,7 @@ export class FileTree {
       await invoke("delete_path", { path: entry.path });
       this.render();
     } catch (e) {
-      window.alert(`删除失败: ${e}`);
+      this.callbacks.onNotify?.(`删除失败: ${String(e).split("\n")[0]}`);
     }
   }
 }

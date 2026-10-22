@@ -3,9 +3,10 @@
 //! 覆盖 Prettier 生态之外的语言：Black / gofmt / rustfmt /
 //! google-java-format / clang-format。
 //!
-//! 配置驱动（config.json → formatters）：{ tool, args }，
-//! args 中的 __PLACEHOLDER__ 由前端替换为真实文件路径
-//! （clang-format 的 -assume-filename 需要它才能找到 .clang-format）。
+//! 安全模型（重要）：工具与参数一律在后端按「语言键」从 config.json 的
+//! formatters 表解析，前端只传语言键 + 内容。若允许前端指定 tool/args，
+//! WebView 内任意脚本（XSS、被污染的预览内容）即可借该命令以用户权限
+//! 启动任意程序（RCE）。
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -17,13 +18,62 @@ use std::time::Duration;
 /// 格式化超时（超时即中断子进程）
 const FORMAT_TIMEOUT_SECS: u64 = 5;
 
-/// 运行 CLI 格式化工具：content 经 stdin 传入，返回 stdout 内容
+/// 未命名文档的合成扩展名（供 clang-format -assume-filename 定位 .clang-format）
+fn synthetic_ext(language_key: &str) -> &'static str {
+    match language_key {
+        "python" => "py",
+        "go" => "go",
+        "rust" => "rs",
+        "java" => "java",
+        "cpp" => "cpp",
+        _ => "txt",
+    }
+}
+
+/// 拒绝可写文件 / 读取外部配置的危险参数（纵深防御，正常模板不会命中）
+fn is_rejected_arg(arg: &str) -> bool {
+    let lower = arg.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "-o" | "-i" | "--in-place" | "--output" | "--config" | "-config"
+    ) || lower.starts_with("--output=")
+        || lower.starts_with("--config=")
+        || lower.starts_with("-o=")
+        || lower.starts_with("-config=")
+}
+
+/// 运行 CLI 格式化工具：按语言键解析配置，content 经 stdin 传入，返回 stdout 内容
 #[tauri::command]
 pub async fn run_cli_formatter(
-    tool: String,
-    args: Vec<String>,
+    app: tauri::AppHandle,
+    language_key: String,
+    file_path: Option<String>,
     content: String,
 ) -> Result<String, String> {
+    // 工具/参数只信后端配置：前端只传语言键，杜绝任意命令执行
+    let entry = crate::commands::config::load_config(app)
+        .formatters
+        .get(&language_key)
+        .cloned()
+        .ok_or_else(|| format!("语言「{language_key}」未配置 CLI 格式化器"))?;
+    let tool = entry.tool.trim().to_string();
+    if tool.is_empty() {
+        return Err(format!("语言「{language_key}」的格式化工具未配置"));
+    }
+    let assume_name = file_path
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| format!("untitled.{}", synthetic_ext(&language_key)));
+    // Rust 的 String::replace 无 $ 特殊语义，路径含 $&/$1 不会破坏参数
+    let args: Vec<String> = entry
+        .args
+        .iter()
+        .map(|a| a.replace("__PLACEHOLDER__", &assume_name))
+        .collect();
+    if let Some(bad) = args.iter().find(|a| is_rejected_arg(a)) {
+        return Err(format!(
+            "参数「{bad}」被安全策略拒绝（不允许写文件或读取外部配置）"
+        ));
+    }
     tauri::async_runtime::spawn_blocking(move || run_blocking(&tool, &args, &content))
         .await
         .map_err(|e| format!("任务调度失败: {e}"))?

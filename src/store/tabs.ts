@@ -57,10 +57,23 @@ class TabStore {
   private tabs: Tab[] = [];
   private activeId: string | null = null;
   private listeners = new Set<() => void>();
+  /** 标签被移除（关闭 / 被虚拟视图取代）时通知，供宿主做统一清理 */
+  private closeListeners = new Set<(tab: Tab) => void>();
 
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /** 订阅标签移除事件：编辑器状态缓存 / 光标 / 草稿 / 大文件会话等
+   *  清理都必须走这里，保证单条关闭与批量关闭行为一致 */
+  onTabClosed(fn: (tab: Tab) => void): () => void {
+    this.closeListeners.add(fn);
+    return () => this.closeListeners.delete(fn);
+  }
+
+  private notifyClosed(tab: Tab): void {
+    this.closeListeners.forEach((fn) => fn(tab));
   }
 
   private emit(): void {
@@ -127,7 +140,11 @@ class TabStore {
         return existing;
       }
       const idx = this.tabs.indexOf(existing);
-      if (idx >= 0) this.tabs.splice(idx, 1);
+      if (idx >= 0) {
+        this.tabs.splice(idx, 1);
+        // 被取代的标签也要走清理：否则其 EditorState 缓存会滞留
+        this.notifyClosed(existing);
+      }
     }
     const tab: Tab = {
       id: `tab-${++seq}`,
@@ -319,6 +336,8 @@ class TabStore {
       const next = this.tabs[Math.min(idx, this.tabs.length - 1)] ?? null;
       this.activeId = next?.id ?? null;
     }
+    // 先清理（缓存/光标/草稿/大文件会话），再触发订阅者加载新标签
+    this.notifyClosed(closed);
     this.emit();
     return closed;
   }

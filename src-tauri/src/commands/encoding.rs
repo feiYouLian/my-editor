@@ -114,11 +114,17 @@ pub fn guess(bytes: &[u8]) -> EncodingGuess {
     // ② 合法 UTF-8（抽样前 64KB，回退到字符边界）
     let sample = &bytes[..utf8_prefix_len(bytes, 64 * 1024)];
     if std::str::from_utf8(sample).is_ok() {
-        return EncodingGuess {
-            encoding: "UTF-8".to_string(),
-            confidence: "high".to_string(),
-            candidates: candidate_list(),
-        };
+        // 抽样合法不代表全文件合法：前 64KB 恰好是 ASCII/UTF-8 注释、
+        // 后半是 GBK 时，宽松解码会把后半变成 U+FFFD。全量复核一次
+        // （一次线性扫描，代价远小于全量解码）。
+        if bytes.len() <= sample.len() || std::str::from_utf8(bytes).is_ok() {
+            return EncodingGuess {
+                encoding: "UTF-8".to_string(),
+                confidence: "high".to_string(),
+                candidates: candidate_list(),
+            };
+        }
+        // 全文件不是合法 UTF-8：继续走 chardetng 检测
     }
 
     // ③ chardetng
@@ -254,8 +260,14 @@ pub fn analyze_mojibake(bytes: &[u8], text: &str, current: &str) -> MojibakeRepo
 
     // 规则一（强信号）：字节是合法 UTF-8，却按非 UTF-8 编码解读。
     // 这类乱码产出的仍是「中文样子」的字符，靠字符统计无法识别，故直接以字节形态判定。
+    // 纯 ASCII 文件任何编码解读结果相同，不算乱码：要求存在非 ASCII 字节。
     let is_utf16 = current.eq_ignore_ascii_case("UTF-16 LE") || current.eq_ignore_ascii_case("UTF-16 BE");
-    if !current.eq_ignore_ascii_case("UTF-8") && !is_utf16 && std::str::from_utf8(bytes).is_ok() {
+    let has_non_ascii = bytes.iter().any(|b| *b >= 0x80);
+    if !current.eq_ignore_ascii_case("UTF-8")
+        && !is_utf16
+        && has_non_ascii
+        && std::str::from_utf8(bytes).is_ok()
+    {
         return MojibakeReport {
             suspicious: true,
             suggested: "UTF-8".to_string(),
@@ -307,15 +319,20 @@ pub fn analyze_mojibake(bytes: &[u8], text: &str, current: &str) -> MojibakeRepo
     }
 }
 
-/// 检测文件是否存在乱码：读取字节后调用 `analyze_mojibake`（不修改磁盘，仅诊断）
+/// 检测文件是否存在乱码：读取字节后调用 `analyze_mojibake`（不修改磁盘，仅诊断）。
+/// 全文件读取放 spawn_blocking 执行，避免大文件阻塞事件循环。
 #[tauri::command]
-pub fn detect_mojibake(
+pub async fn detect_mojibake(
     path: String,
     text: String,
     current: String,
 ) -> Result<MojibakeReport, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
-    Ok(analyze_mojibake(&bytes, &text, &current))
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取失败: {e}"))?;
+        Ok(analyze_mojibake(&bytes, &text, &current))
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 #[cfg(test)]
