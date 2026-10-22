@@ -9,6 +9,8 @@
  * `L` / `1L-7L` / `JAN-DEC` 等扩展语法不支持。
  */
 
+import { pad2 } from "../core/format";
+
 export interface CronFields {
   /** 秒（留空 = 传统 5 段，按第 0 秒触发） */
   second: string;
@@ -142,8 +144,6 @@ function stepOf(text: string): number | null {
   const m = /^\*\/(\d+)$/.exec(text.trim());
   return m ? Number(m[1]) : null;
 }
-
-const pad2 = (n: number | string): string => String(n).padStart(2, "0");
 
 /** 列表文案：逗号换顿号，范围用「–」 */
 function listText(text: string): string {

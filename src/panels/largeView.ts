@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { formatSize } from "../core/format";
 
 export interface LargeFileInfo {
   id: string;
@@ -57,13 +58,6 @@ const DEFAULT_PADDING_LINES = 200;
 const MINIMAP_BUCKETS = 240;
 const CACHE_LIMIT = 5000;
 const ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
 
 /**
  * 大文件只读虚拟视图：只渲染视口 ±PADDING_LINES 的行，

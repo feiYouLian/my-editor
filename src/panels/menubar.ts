@@ -3,20 +3,13 @@
  * 行为对齐原生应用：点击标题展开、悬停切换、点击外部/Esc 关闭。
  * 注意：标题使用 <button>，会被 Tauri 拖拽区自动排除（drag.js 的
  * isClickableElement），不影响标题栏拖动。
+ *
+ * 菜单数据模型见 core/commands.ts（menuModel 派生），本组件只负责渲染。
  */
 
-export interface MenuItem {
-  label?: string;
-  shortcut?: string;
-  run?: () => void;
-  separator?: boolean;
-}
+import type { MenuItemModel, MenuModel } from "../core/commands";
 
-export interface MenuDef {
-  id: string;
-  label: string;
-  items: MenuItem[];
-}
+export type { MenuItemModel, MenuModel };
 
 export class MenuBar {
   private dropdown: HTMLElement | null = null;
@@ -24,7 +17,7 @@ export class MenuBar {
 
   constructor(
     private container: HTMLElement,
-    private menus: MenuDef[],
+    private menus: readonly MenuModel[],
   ) {
     this.render();
     document.addEventListener("click", () => this.close());

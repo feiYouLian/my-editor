@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { EditorView } from "@codemirror/view";
 import type TurndownService from "turndown";
+import { dirnameOf } from "../core/paths";
 
 /**
  * 预览宿主：
@@ -52,11 +53,6 @@ const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 /** 已内联图片缓存：同一图片在多次重渲染时复用；超出上限按插入顺序淘汰 */
 const imageCache = new Map<string, Promise<string | null>>();
 const IMAGE_CACHE_LIMIT = 24;
-
-function dirnameOf(path: string): string {
-  const idx = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-  return idx > 0 ? path.slice(0, idx) : path;
-}
 
 /**
  * 把 Markdown 中的本地图片地址解析为绝对路径：

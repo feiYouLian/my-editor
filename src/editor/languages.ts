@@ -198,6 +198,28 @@ export function languageKeyFromPath(path: string): string | null {
   return overrides[ext] ?? extensionToLanguage[ext] ?? null;
 }
 
+/**
+ * 生效的语言：手动覆盖 > 扩展名映射 > 纯文本。
+ * 与 Tab 类型耦合，故随语言域放此（ui/app 层共用）。
+ */
+export function effectiveLanguage(tab: {
+  languageOverride?: string | null;
+  path: string | null;
+}): string | null {
+  if (tab.languageOverride !== undefined) return tab.languageOverride;
+  return tab.path ? languageKeyFromPath(tab.path) : null;
+}
+
+/** 状态栏语言文案（手动覆盖时加标注） */
+export function languageLabel(tab: {
+  languageOverride?: string | null;
+  path: string | null;
+}): string {
+  const key = effectiveLanguage(tab);
+  const name = key ? (languageDisplayNames[key] ?? key) : "纯文本";
+  return tab.languageOverride !== undefined ? `${name}（手动）` : name;
+}
+
 const cache = new Map<string, LanguageSupport | null>();
 
 /** 加载语言支持：内置同步、懒加载异步；未知扩展返回 null（纯文本） */
