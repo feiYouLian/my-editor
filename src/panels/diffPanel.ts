@@ -1,72 +1,26 @@
 /**
- * 差异视图：双栏对齐行 + 差异块导航 + 折叠未变动区段 + 导出补丁。
+ * 差异视图面板：双栏对齐行 + 差异块导航 + 折叠未变动区段 + 导出补丁。
  * 内容与差异块由 Rust 端计算，前端只负责排版与导航。
+ *
+ * 分层：类型在 diffPanel/types.ts，行构建与分帧渲染在 diffPanel/render.ts，
+ * 本文件只做对话框外壳、头部按钮、场景动作与导航状态。
  */
 
-export interface DiffRow {
-  kind: "equal" | "change" | "del" | "ins";
-  oldNo: number | null;
-  newNo: number | null;
-  left: string;
-  right: string;
-}
+import type {
+  DiffAction,
+  DiffPayload,
+  HunkAdopt,
+} from "./diffPanel/types";
+import { gapStarts, renderDiffRows } from "./diffPanel/render";
 
-export interface HunkRef {
-  row: number;
-  oldStart: number;
-  newStart: number;
-}
-
-export interface DiffPayload {
-  leftLabel: string;
-  rightLabel: string;
-  rows: DiffRow[];
-  hunks: HunkRef[];
-  added: number;
-  removed: number;
-  identical: boolean;
-  /** 行尾差异（CRLF / LF）是否已被忽略 */
-  newlineNormalized: boolean;
-  patch: string;
-}
-
-/** 场景相关动作（由调用方决定语义，如「还原改动」「采用左侧」） */
-export interface DiffAction {
-  label: string;
-  title?: string;
-  run: () => void | Promise<void>;
-}
-
-/**
- * 差异块级「采用某一侧」。
- * side 为要采用的一侧；另一侧视为文档基线，采用后写回编辑器内容（由调用方实现）。
- */
-export interface HunkAdopt {
-  side: "left" | "right";
-  /** 当前是否可执行（如标签有未保存改动时禁用） */
-  enabled: () => boolean;
-  /** 不可用时的解释（作为按钮 title） */
-  title?: string;
-  run: (hunkIndex: number) => void;
-}
-
-/**
- * 一次差异会话：采用差异块后可重新计算并刷新面板。
- * 由调用方（main.ts / app/diffService.ts）构造，DiffPanel 只消费。
- */
-export interface DiffSession {
-  /** 重新计算差异（采用后左侧基线可能已变，必须重新调用） */
-  load: () => Promise<DiffPayload>;
-  actions: DiffAction[];
-  /** 可采用的差异块动作；返回 null 表示当前场景不提供 */
-  adopt: () => HunkAdopt | null;
-  /** 合并结果是否保留结尾换行：按编辑器内容 / 磁盘基线判断 */
-  trailingFrom: "content" | "saved";
-}
-
-/** 未变动区段超过该行数时折叠 */
-const COLLAPSE_OVER = 8;
-const COLLAPSE_KEEP = 3;
+export type {
+  DiffAction,
+  DiffPayload,
+  DiffRow,
+  DiffSession,
+  HunkAdopt,
+  HunkRef,
+} from "./diffPanel/types";
 
 export class DiffPanel {
   private backdrop: HTMLElement | null = null;
@@ -79,6 +33,8 @@ export class DiffPanel {
   private currentHunk = -1;
   private expandedGaps = new Set<number>();
   private wrap = true;
+  /** 渲染代际：新渲染开始后旧的分帧任务立即作废 */
+  private renderToken = 0;
 
   /** 当前展示的差异数据（供调用方在采用差异块后重新合并） */
   getPayload(): DiffPayload | null {
@@ -169,7 +125,7 @@ export class DiffPanel {
     collapseBtn.textContent = "展开全部";
     collapseBtn.title = "展开所有未变动区段";
     collapseBtn.addEventListener("click", () => {
-      for (const gap of this.gapStarts()) this.expandedGaps.add(gap);
+      for (const gap of gapStarts(payload.rows)) this.expandedGaps.add(gap);
       this.renderRows();
     });
 
@@ -277,124 +233,20 @@ export class DiffPanel {
     this.payload = null;
   }
 
-  private gapStarts(): number[] {
-    const rows = this.payload?.rows ?? [];
-    const starts: number[] = [];
-    let i = 0;
-    while (i < rows.length) {
-      if (rows[i].kind !== "equal") {
-        i += 1;
-        continue;
-      }
-      let j = i;
-      while (j < rows.length && rows[j].kind === "equal") j += 1;
-      if (j - i > COLLAPSE_OVER) starts.push(i);
-      i = j;
-    }
-    return starts;
-  }
-
-  /** 渲染代际：新渲染开始后旧的分帧任务立即作废 */
-  private renderToken = 0;
-  /** 单帧最多构建的行数（保持界面响应，避免大差异一次性冻结主线程） */
-  private static readonly RENDER_CHUNK = 600;
-
   private renderRows(): void {
     const payload = this.payload;
     if (!payload) return;
-    const token = ++this.renderToken;
-    const rows = payload.rows;
-    const hunkOf = new Map<number, number>();
-    payload.hunks.forEach((h, idx) => hunkOf.set(h.row, idx));
-
-    this.body.replaceChildren();
-    if (rows.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "diff-hint";
-      empty.textContent = "无可比较内容";
-      this.body.append(empty);
-      return;
-    }
-
-    // 先展开成完整的条目序列（行 / 折叠占位），再分帧构建 DOM。
-    // 屏幕外的行由 CSS content-visibility 跳过渲染，控制布局与绘制成本。
-    const items: HTMLElement[] = [];
-    const push = (index: number) => {
-      const el = this.rowEl(rows[index]);
-      const hunkIndex = hunkOf.get(index);
-      if (hunkIndex !== undefined) el.dataset.hunk = `${hunkIndex}`;
-      items.push(el);
-    };
-
-    let i = 0;
-    while (i < rows.length) {
-      if (rows[i].kind === "equal") {
-        let j = i;
-        while (j < rows.length && rows[j].kind === "equal") j += 1;
-        const run = j - i;
-        if (run > COLLAPSE_OVER && !this.expandedGaps.has(i)) {
-          for (let k = i; k < i + COLLAPSE_KEEP && k < j; k += 1) push(k);
-          items.push(this.gapEl(i, run - COLLAPSE_KEEP * 2));
-          for (let k = j - COLLAPSE_KEEP; k < j; k += 1) push(k);
-        } else {
-          for (let k = i; k < j; k += 1) push(k);
-        }
-        i = j;
-        continue;
-      }
-      push(i);
-      i += 1;
-    }
-
-    // 分帧 append：每帧至多 RENDER_CHUNK 个节点，帧间让出主线程
-    const chunk = DiffPanel.RENDER_CHUNK;
-    const step = (): void => {
-      if (token !== this.renderToken) return; // 已开始新一轮渲染
-      const batch = items.splice(0, chunk);
-      if (batch.length === 0) return;
-      this.body.append(...batch);
-      if (items.length > 0) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
-
-  private gapEl(start: number, hidden: number): HTMLElement {
-    const el = document.createElement("div");
-    el.className = "df-gap";
-    el.textContent = `⋯ 展开 ${hidden} 行未变动`;
-    el.title = "点击展开该区段";
-    el.addEventListener("click", () => {
-      this.expandedGaps.add(start);
-      this.renderRows();
+    renderDiffRows({
+      body: this.body,
+      payload,
+      expandedGaps: this.expandedGaps,
+      onExpandGap: (start) => {
+        this.expandedGaps.add(start);
+        this.renderRows();
+      },
+      token: this.renderToken,
+      isStale: (token) => token !== this.renderToken,
     });
-    return el;
-  }
-
-  private rowEl(row: DiffRow): HTMLElement {
-    const el = document.createElement("div");
-    el.className = `df-row df-${row.kind}`;
-    if (row.kind !== "equal") el.dataset.change = "1";
-
-    const leftNo = document.createElement("span");
-    leftNo.className = "df-no";
-    leftNo.textContent = row.oldNo === null ? "" : `${row.oldNo}`;
-
-    const leftText = document.createElement("span");
-    leftText.className = "df-cell df-left";
-    leftText.textContent = row.left;
-    if (row.kind === "del" || row.kind === "change") leftText.title = row.left;
-
-    const rightNo = document.createElement("span");
-    rightNo.className = "df-no";
-    rightNo.textContent = row.newNo === null ? "" : `${row.newNo}`;
-
-    const rightText = document.createElement("span");
-    rightText.className = "df-cell df-right";
-    rightText.textContent = row.right;
-    if (row.kind === "ins" || row.kind === "change") rightText.title = row.right;
-
-    el.append(leftNo, leftText, rightNo, rightText);
-    return el;
   }
 
   private gotoHunk(delta: number): void {

@@ -6,7 +6,7 @@ import {
   nextRuns,
   parseCron,
   type CronFields,
-} from "./cron";
+} from "../core/cron";
 
 /**
  * Cron 解析 / 生成对话框（命令面板入口）：

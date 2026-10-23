@@ -53,14 +53,26 @@ export interface Tab {
 
 let seq = 0;
 
+/**
+ * 标签变更类型：
+ * - structure：标签集 / 路径 / 激活项 / 元数据变化，订阅方需重渲染，
+ *   立即同步通知（状态机依赖其同步性）；
+ * - content：仅编辑器内容变化（每次按键），按帧合并——同一帧内的
+ *   多次输入只通知一次，避免每按键全量重渲染标签栏/状态栏。
+ */
+export type TabChangeKind = "structure" | "content";
+
 class TabStore {
   private tabs: Tab[] = [];
   private activeId: string | null = null;
-  private listeners = new Set<() => void>();
+  private listeners = new Set<(kind: TabChangeKind) => void>();
   /** 标签被移除（关闭 / 被虚拟视图取代）时通知，供宿主做统一清理 */
   private closeListeners = new Set<(tab: Tab) => void>();
+  /** 内容变更的按帧合并：rAF 句柄与待通知标记 */
+  private contentRaf: number | null = null;
+  private contentPending = false;
 
-  subscribe(fn: () => void): () => void {
+  subscribe(fn: (kind: TabChangeKind) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
@@ -76,8 +88,26 @@ class TabStore {
     this.closeListeners.forEach((fn) => fn(tab));
   }
 
-  private emit(): void {
-    this.listeners.forEach((fn) => fn());
+  /** 结构变更：立即通知。已排程的内容通知被其覆盖（订阅方读的是最新状态） */
+  private emitStructure(): void {
+    this.contentPending = false;
+    if (this.contentRaf !== null) {
+      cancelAnimationFrame(this.contentRaf);
+      this.contentRaf = null;
+    }
+    this.listeners.forEach((fn) => fn("structure"));
+  }
+
+  /** 内容变更（编辑器输入）：按帧合并，同一帧内只通知一次 */
+  private emitContent(): void {
+    this.contentPending = true;
+    if (this.contentRaf !== null) return; // 本帧已排程
+    this.contentRaf = requestAnimationFrame(() => {
+      this.contentRaf = null;
+      if (!this.contentPending) return;
+      this.contentPending = false;
+      this.listeners.forEach((fn) => fn("content"));
+    });
   }
 
   list(): Tab[] {
@@ -95,7 +125,7 @@ class TabStore {
       : undefined;
     if (existing) {
       this.activeId = existing.id;
-      this.emit();
+      this.emitStructure();
       return existing;
     }
     const tab: Tab = {
@@ -119,7 +149,7 @@ class TabStore {
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -136,7 +166,7 @@ class TabStore {
     if (existing) {
       if (existing.virtual) {
         this.activeId = existing.id;
-        this.emit();
+        this.emitStructure();
         return existing;
       }
       const idx = this.tabs.indexOf(existing);
@@ -169,7 +199,7 @@ class TabStore {
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -198,7 +228,7 @@ class TabStore {
     tab.virtual = false;
     tab.largeId = undefined;
     this.applyContent(tab, content);
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -207,7 +237,7 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab && tab.externallyChanged !== changed) {
       tab.externallyChanged = changed;
-      this.emit();
+      this.emitStructure();
     }
   }
 
@@ -235,7 +265,7 @@ class TabStore {
     if (!tab) return;
     tab.mojibakeSuggested = suggested;
     tab.mojibakeReason = reason;
-    this.emit();
+    this.emitStructure();
   }
 
   /** 会话恢复的占位标签：仅登记路径，首次激活时才载入内容 */
@@ -263,7 +293,7 @@ class TabStore {
       pending: true,
     };
     this.tabs.push(tab);
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -272,7 +302,7 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return null;
     this.applyContent(tab, content);
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -283,7 +313,7 @@ class TabStore {
     tab.content = content;
     tab.pending = false;
     this.refreshDirty(tab);
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
@@ -292,7 +322,7 @@ class TabStore {
     const existing = this.tabs.find((t) => t.path === path);
     if (existing) {
       this.activeId = existing.id;
-      this.emit();
+      this.emitStructure();
       return existing;
     }
     const tab: Tab = {
@@ -317,14 +347,14 @@ class TabStore {
     };
     this.tabs.push(tab);
     this.activeId = tab.id;
-    this.emit();
+    this.emitStructure();
     return tab;
   }
 
   activate(id: string): void {
     if (this.activeId !== id) {
       this.activeId = id;
-      this.emit();
+      this.emitStructure();
     }
   }
 
@@ -338,7 +368,7 @@ class TabStore {
     }
     // 先清理（缓存/光标/草稿/大文件会话），再触发订阅者加载新标签
     this.notifyClosed(closed);
-    this.emit();
+    this.emitStructure();
     return closed;
   }
 
@@ -377,13 +407,13 @@ class TabStore {
     return this.closeMany(this.tabs.map((t) => t.id));
   }
 
-  /** 更新标签内容（编辑器输入时调用） */
+  /** 更新标签内容（编辑器输入时调用）：按帧合并通知，见 emitContent */
   setContent(id: string, content: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) {
       tab.content = content;
       this.refreshDirty(tab);
-      this.emit();
+      this.emitContent();
     }
   }
 
@@ -402,7 +432,7 @@ class TabStore {
       tab.savedEncoding = tab.encoding;
       tab.savedNewline = tab.newline;
       tab.dirty = false;
-      this.emit();
+      this.emitStructure();
     }
   }
 
@@ -412,7 +442,7 @@ class TabStore {
     if (tab && tab.newline !== newline) {
       tab.newline = newline;
       this.refreshDirty(tab);
-      this.emit();
+      this.emitStructure();
     }
   }
 
@@ -433,7 +463,7 @@ class TabStore {
     tab.readonlyReason = content.readonly_reason;
     // savedEncoding 保持不变：与磁盘编码是否一致由 refreshDirty 判定
     this.refreshDirty(tab);
-    this.emit();
+    this.emitStructure();
   }
 
   /** 保存成功后刷新路径（另存为） */
@@ -442,7 +472,7 @@ class TabStore {
     if (tab) {
       tab.path = path;
       tab.name = name;
-      this.emit();
+      this.emitStructure();
     }
   }
 

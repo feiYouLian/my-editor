@@ -9,7 +9,11 @@
  */
 
 import type { AppConfig } from "./settings";
-import { bindableCommands, type BindableCommand, type CommandDef } from "../core/commands";
+import {
+  bindableCommands,
+  type BindableCommand,
+  type CommandDef,
+} from "../core/commands";
 import { normalizeNotation, notationMatches } from "../core/keyNotation";
 
 // 记法工具由使用方按需从 core/keyNotation 导入；此处转发以保持既有导入路径可用

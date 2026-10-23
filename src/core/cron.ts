@@ -9,7 +9,7 @@
  * `L` / `1L-7L` / `JAN-DEC` 等扩展语法不支持。
  */
 
-import { pad2 } from "../core/format";
+import { pad2 } from "./format";
 
 export interface CronFields {
   /** 秒（留空 = 传统 5 段，按第 0 秒触发） */

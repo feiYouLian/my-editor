@@ -31,6 +31,7 @@ import { FileService, FALLBACK_ENCODINGS } from "./app/fileService";
 import { RunHost } from "./app/runHost";
 import { DiffService } from "./app/diffService";
 import { SessionHost } from "./app/sessionHost";
+import { TabSwitcher } from "./app/tabSwitcher";
 import { WindowChrome } from "./app/windowChrome";
 import { LayoutPane } from "./app/layout";
 import {
@@ -58,7 +59,6 @@ import {
   registerCommands,
 } from "./core/commands";
 import type { SettingsPanel } from "./panels/settingsPanel";
-import type { LargeFileInfo } from "./panels/largeView";
 import { CASE_LABELS, type CaseMode } from "./editor/transforms";
 import { localStamps, newUuid } from "./core/stamps";
 import { basenameOf } from "./core/paths";
@@ -263,7 +263,7 @@ async function reopenWithEncoding(tabId: string, encoding: string): Promise<void
     // 编码已变更：旧结论失效，按新解读重新检测
     tabStore.setMojibake(tabId, "", "");
     if (tabStore.active()?.id === tabId) {
-      await loadActiveTab();
+      await tabSwitcher.load();
       void checkMojibake(tabId);
     } else {
       statusBar.refresh();
@@ -390,7 +390,7 @@ function blockIfReadonly(): boolean {
 
 // ---- 应用主题 / 状态栏字段显隐 / 分栏比例：见 ui/statusBar.ts ----
 
-// ---- 标签栏（渲染 / 滚轮 / 右键菜单，见 ui/tabsBar.ts）----
+// ---- 标签栏 / 面包屑（渲染与交互在 ui/，此处装配依赖）----
 
 const tabsBarView = new TabsBar($<HTMLDivElement>("tabs"), {
   onActivate: (id) => tabStore.activate(id),
@@ -406,8 +406,6 @@ const tabsBarView = new TabsBar($<HTMLDivElement>("tabs"), {
   onNewTab: () => fileService.newUntitled(),
 });
 
-// ---- 路径面包屑（层级渲染 + 目录下拉，见 ui/breadcrumb.ts）----
-
 const breadcrumbView = new Breadcrumb(breadcrumbEl, {
   getWorkspaceRoot: () => workspaceRoot,
   getActiveTab: activeTab,
@@ -415,6 +413,8 @@ const breadcrumbView = new Breadcrumb(breadcrumbEl, {
 });
 
 // 标签过多时支持鼠标滚轮横向滚动 / 双击空白新建：见 ui/tabsBar.ts
+
+// ---- 标签关闭（确认 / 草稿落盘 / 统一清理）----
 
 /** 正在关闭中的标签（防重入：确认对话框挂起期间禁止二次进入） */
 const closingTabs = new Set<string>();
@@ -476,87 +476,19 @@ async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
 
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
 tabStore.subscribe(() => {
-  const prevActiveId = currentLoadedTabId;
+  const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
   breadcrumbView.render();
   statusBar.refresh();
   sessionHost.refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
-    void loadActiveTab();
+    void tabSwitcher.load();
   }
   if (sessionHost.structureChanged()) {
     sessionHost.persistSession();
   }
   sessionHost.syncWatchedDebounced();
 });
-
-let currentLoadedTabId: string | null = null;
-/** 标签切换代际令牌：await 之后校验，过期加载立即中止，
- *  避免把光标/文件树高亮/大文件视图打到已经不是当前标签的目标上 */
-let loadToken = 0;
-
-async function loadActiveTab(): Promise<void> {
-  const token = ++loadToken;
-  const tab = activeTab();
-  currentLoadedTabId = tab?.id ?? null;
-  // 切换窗口开始：抑制编辑器回调，防止上一个文档的内容/光标写入新标签
-  editorHandle.beginSwitch();
-  try {
-    // 虚拟视图不可用时回退编辑器路径：用有限次重试代替递归自调用
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (!tab) {
-        // 无标签：清空编辑器、预览与结果面板，回到默认空态
-        await editorHandle.loadDocument("", "");
-        if (token !== loadToken) return;
-        largeHost.setEditorVirtual(false);
-        largeHost.close();
-        preview.refresh();
-        resultsPanel?.refresh();
-        return;
-      }
-      if (tab.pending && tab.path) {
-        // 会话恢复的占位标签：首次激活时才载入内容
-        if (!(await largeHost.loadPendingTab(tab))) return;
-        if (token !== loadToken) return;
-      }
-      if (tab.virtual && tab.largeId) {
-        // 大文件只读虚拟视图：隐藏编辑器与预览，行内容按窗口拉取
-        largeHost.setEditorVirtual(true);
-        try {
-          const info = await invoke<LargeFileInfo>("large_file_info", { id: tab.largeId });
-          await largeHost.open(info, getConfig().largeFile.viewportPaddingLines);
-          return;
-        } catch {
-          // 会话已释放（例如应用重建）：退回编辑器路径（仅重试一次）
-          tab.virtual = false;
-          tab.largeId = undefined;
-          largeHost.setEditorVirtual(false);
-          continue;
-        }
-      }
-      largeHost.setEditorVirtual(false);
-      largeHost.close();
-      await editorHandle.loadDocument(
-        tab.path ?? "",
-        tab.content,
-        tab.readonly,
-        tab.languageOverride,
-        tab.id,
-      );
-      if (token !== loadToken) return;
-      sessionHost.applyRestoredCursor(tab);
-      // 文件树联动：展开祖先目录并高亮当前文件
-      if (tab.path) fileTree.revealPath(tab.path);
-      // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器
-      preview.refresh();
-      resultsPanel?.refresh();
-      return;
-    }
-  } finally {
-    // 仅最新一代切换负责解除抑制，过期的 finally 不得提前释放
-    if (token === loadToken) editorHandle.endSwitch();
-  }
-}
 
 // ---- 工作区持久化（根目录与展开状态） ----
 
@@ -645,11 +577,19 @@ const preview = new PreviewController($("preview-pane"), modeBar, editorArea, {
   showMessage: statusBar.showMessage,
 });
 
+/**
+ * 「重载当前标签」的迟绑定入口。
+ * largeHost / diffService / sessionHost 构造时 tabSwitcher 还不存在
+ * （它的依赖又包含这些宿主，构成构造环）；装配完成后由下方赋值，
+ * 运行期所有调用都走这里，不再有模块级可变状态散落各处。
+ */
+let reloadActiveTab: () => Promise<void> = async () => {};
+
 // 大文件只读虚拟视图宿主（分流 / 会话 / 逃生门）
 const largeHost = new LargeFileHost({
   showMessage: statusBar.showMessage,
   onCheckMojibake: (tabId) => void checkMojibake(tabId),
-  onReloadActiveTab: () => loadActiveTab(),
+  onReloadActiveTab: () => reloadActiveTab(),
 });
 
 // 文件操作服务（打开 / 保存 / 另存 / 插入图片 / 配置）
@@ -680,7 +620,7 @@ const runHost = new RunHost(runBtn, {
 const diffService = new DiffService({
   getActiveTab: activeTab,
   showMessage: statusBar.showMessage,
-  onReloadActiveTab: () => loadActiveTab(),
+  onReloadActiveTab: () => reloadActiveTab(),
 });
 
 // 窗口 chrome（标题栏按钮 / 缩放热区 / 退出清理）
@@ -718,7 +658,7 @@ const sessionHost = new SessionHost(
     getView: () => editorHandle.view,
     showMessage: statusBar.showMessage,
     refreshStatus: () => statusBar.refresh(),
-    onReloadActiveTab: () => loadActiveTab(),
+    onReloadActiveTab: () => reloadActiveTab(),
     onOpenFile: (path) => fileService.openFilePath(path, { silent: true }),
     onNewUntitled: (name) => fileService.newUntitled(name),
     onLoadPendingTab: (tab) => largeHost.loadPendingTab(tab),
@@ -726,6 +666,19 @@ const sessionHost = new SessionHost(
   statusDraft,
   statusExternal,
 );
+
+// 标签切换状态机（编辑器/预览/文件树/大文件视图同步 + 代际校验）
+const tabSwitcher = new TabSwitcher({
+  getActiveTab: activeTab,
+  getEditor: () => editorHandle,
+  largeHost,
+  preview,
+  fileTree,
+  sessionHost,
+  getResultsPanel: () => resultsPanel,
+});
+// 构造环收口：此后各宿主的「重载当前标签」都走 tabSwitcher
+reloadActiveTab = () => tabSwitcher.load();
 
 // ---- 预览宿主（编排在 app/previewHost.ts，渲染在 panels/preview.ts）----
 
@@ -989,17 +942,6 @@ function openSettings(category: "theme" | "keybindings" | "layout" = "theme"): v
 
 // ---- 侧栏显隐 / 侧栏宽度拖拽：见 app/layout.ts ----
 
-// ---- 标签页导航（上一个/下一个）----
-function switchTab(delta: number): void {
-  const tabs = tabStore.list();
-  if (tabs.length === 0) return;
-  const idx = tabs.findIndex((t) => t.id === tabStore.active()?.id);
-  const next = tabs[(idx + delta + tabs.length) % tabs.length];
-  if (next) tabStore.activate(next.id);
-}
-
-$<HTMLButtonElement>("nav-prev").addEventListener("click", () => switchTab(-1));
-$<HTMLButtonElement>("nav-next").addEventListener("click", () => switchTab(1));
 $<HTMLButtonElement>("search-box").addEventListener("click", () => palette.open());
 $<HTMLButtonElement>("btn-sidebar-toggle").addEventListener("click", () => layout.toggleSidebar());
 
@@ -1117,8 +1059,8 @@ registerCommands([
   // ---- 视图 ----
   { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", menu: "edit", menuOrder: 120, menuSeparatorBefore: true, hidden: true, run: () => palette.toggle() },
   { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", hidden: true, run: () => layout.toggleSidebar() },
-  { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => switchTab(-1) },
-  { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => switchTab(1) },
+  { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
+  { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
   // ---- 纯菜单项（系统/CM6 内置行为，仅展示）----
   { id: "edit.undo", title: "撤销", section: "编辑", defaultKey: "Mod-Z", fixed: true, menu: "edit", menuOrder: 10, hidden: true, run: () => void undo(editorHandle.view) },
   { id: "edit.redo", title: "重做", section: "编辑", defaultKey: "Mod-Shift-Z", fixed: true, menu: "edit", menuOrder: 20, hidden: true, run: () => void redo(editorHandle.view) },
