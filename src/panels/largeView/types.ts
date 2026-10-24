@@ -22,6 +22,7 @@ export interface LineWindow {
 }
 
 export interface FilterResult {
+  /** IPC 原始类型：JSON 反序列化产物，进入 LargeView 后转存 MatchBuffer */
   matches: number[];
   truncated: boolean;
   cancelled: boolean;
@@ -32,6 +33,7 @@ export interface FilterResult {
 export interface FilterBatch {
   id: string;
   requestId: number;
+  /** IPC 原始类型：JSON 反序列化产物，进入 LargeView 后转存 MatchBuffer */
   matches: number[];
   scanned: number;
   total: number;

@@ -8,6 +8,7 @@ pub fn run() {
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
         .manage(commands::run::RunState::default())
+        .manage(commands::terminal::TerminalState::default())
         .manage(commands::paths::PathGuard::new())
         .invoke_handler(tauri::generate_handler![
             commands::file::open_text_file,
@@ -20,6 +21,12 @@ pub fn run() {
             commands::run::run_code,
             commands::run::run_curl,
             commands::run::stop_run,
+            commands::terminal::terminal_open,
+            commands::terminal::terminal_write,
+            commands::terminal::terminal_resize,
+            commands::terminal::terminal_close,
+            commands::terminal::terminal_run_code,
+            commands::terminal::terminal_run_curl,
             commands::fetch::fetch_url,
             commands::fetch::suggest_fetch_filename,
             commands::fs::list_dir,

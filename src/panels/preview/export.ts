@@ -5,19 +5,54 @@
 
 import type TurndownService from "turndown";
 
-/** 导出用的独立文档样式（与预览面板排版一致，浅色） */
+/** 导出用的独立文档样式（与预览面板排版一致，浅色，无 CSS 变量） */
 const EXPORT_CSS = `
-body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.7; color: #24292f; margin: 24px auto; max-width: 860px; padding: 0 20px; }
-h1, h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: .3em; }
-pre { background: #f6f8fa; border-radius: 6px; padding: 12px; overflow: auto; }
-code { font-family: Consolas, "Courier New", monospace; font-size: 12px; background: rgba(175,184,193,.2); border-radius: 3px; padding: .1em .3em; }
-pre code { background: none; padding: 0; }
-img { max-width: 100%; }
-table { border-collapse: collapse; }
-th, td { border: 1px solid #d0d7de; padding: 6px 12px; }
-blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0 12px; color: #57606a; }
-a { color: #4c8dff; }
-@media print { body { margin: 0; max-width: none; padding: 0; } }
+body { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.75; color: #1f2328; margin: 32px auto; max-width: 860px; padding: 0 24px; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+p { margin: 0 0 1em; }
+h1, h2, h3, h4, h5, h6 { margin: 1.6em 0 .65em; font-weight: 600; line-height: 1.3; }
+h1 { font-size: 2em; padding-bottom: .35em; border-bottom: 1px solid #d8dee4; letter-spacing: -.02em; }
+h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid #eaeef2; }
+h3 { font-size: 1.25em; }
+h4 { font-size: 1.05em; }
+h5 { font-size: .95em; }
+h6 { font-size: .9em; color: #57606a; }
+strong { font-weight: 600; }
+del { color: #6e7781; }
+a { color: #0969da; text-decoration: none; border-bottom: 1px solid rgba(9,105,218,.28); }
+ul, ol { margin: 0 0 1em; padding-left: 1.9em; }
+li { margin: .25em 0; }
+li::marker { color: #8c959f; }
+ul ul { list-style: circle; }
+ul ul ul { list-style: square; }
+blockquote { margin: 0 0 1.1em; padding: 10px 16px; color: #57606a; background: #f6f8fa; border-left: 4px solid #d0d7de; border-radius: 0 6px 6px 0; }
+blockquote > :last-child { margin-bottom: 0; }
+hr { height: 1px; margin: 28px 0; border: 0; background: #d0d7de; }
+img { max-width: 100%; height: auto; border-radius: 8px; }
+p > img:only-child { display: block; margin: 0 auto .2em; }
+p > a:only-child > img { display: block; margin: 0 auto .2em; }
+p > a:only-child { border-bottom: none; }
+.md-table-wrap { margin: 0 0 1.15em; border: 1px solid #d8dee4; border-radius: 8px; overflow: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .95em; }
+th, td { padding: 8px 14px; border-bottom: 1px solid #eaeef2; text-align: left; vertical-align: top; }
+th { background: #f6f8fa; font-weight: 600; }
+tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) { background: #fafbfc; }
+code { font-family: Consolas, "Courier New", monospace; font-size: .875em; background: rgba(175,184,193,.22); border-radius: 5px; padding: .15em .4em; }
+pre { margin: 0 0 1.15em; padding: 13px 16px; overflow: auto; background: #f6f8fa; border: 1px solid #eaeef2; border-radius: 8px; font-size: 12.5px; line-height: 1.6; tab-size: 4; }
+pre code { padding: 0; background: transparent; border-radius: 0; font-size: inherit; white-space: pre; }
+.hljs { color: #24292e; background: transparent; }
+.hljs-comment, .hljs-quote { color: #6a737d; }
+.hljs-keyword, .hljs-selector-tag, .hljs-subst { color: #d73a49; }
+.hljs-string, .hljs-doctag, .hljs-regexp { color: #032f62; }
+.hljs-title, .hljs-section, .hljs-selector-id { color: #6f42c1; font-weight: 600; }
+.hljs-number, .hljs-literal, .hljs-variable, .hljs-template-variable, .hljs-tag .hljs-attr { color: #005cc5; }
+.hljs-type, .hljs-class .hljs-title { color: #22863a; }
+.hljs-tag, .hljs-name, .hljs-attribute { color: #22863a; }
+.hljs-built_in, .hljs-builtin-name { color: #e36209; }
+.hljs-meta { color: #6a737d; }
+@media print { body { margin: 0; max-width: none; padding: 0; } pre { white-space: pre-wrap; } }
 `;
 
 function escapeHtml(text: string): string {

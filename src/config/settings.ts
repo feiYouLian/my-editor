@@ -84,6 +84,12 @@ export interface FetchSettings {
   allowPrivateNetwork: boolean;
 }
 
+/** 内置终端设置 */
+export interface TerminalSettings {
+  /** 终端 shell：空串 = 自动检测（Windows 优先 pwsh，否则 PowerShell） */
+  shell: string;
+}
+
 export interface GlobalReplaceSettings {
   backup: boolean;
 }
@@ -125,6 +131,7 @@ export interface AppConfig {
   largeFile: LargeFileSettings;
   search: SearchSettings;
   fetch: FetchSettings;
+  terminal: TerminalSettings;
   globalReplace: GlobalReplaceSettings;
   ignoreDirs: string[];
   fileEncodingMemory: Record<string, string>;
@@ -230,6 +237,7 @@ export function defaultConfig(): AppConfig {
     },
     search: { parallelism: "auto", chunkSizeBytes: 4 * 1024 * 1024 },
     fetch: { allowPrivateNetwork: false },
+    terminal: { shell: "" },
     globalReplace: { backup: true },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},

@@ -222,6 +222,21 @@ impl Default for FetchSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
+pub struct TerminalSettings {
+    /// 终端 shell：空串 = 自动检测（Windows 优先 pwsh，否则 powershell）
+    pub shell: String,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            shell: String::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
 pub struct GlobalReplaceSettings {
     pub backup: bool,
 }
@@ -307,6 +322,7 @@ pub struct AppConfig {
     pub large_file: LargeFileSettings,
     pub search: SearchSettings,
     pub fetch: FetchSettings,
+    pub terminal: TerminalSettings,
     pub global_replace: GlobalReplaceSettings,
     pub ignore_dirs: Vec<String>,
     pub file_encoding_memory: BTreeMap<String, String>,
@@ -336,6 +352,7 @@ impl Default for AppConfig {
             large_file: LargeFileSettings::default(),
             search: SearchSettings::default(),
             fetch: FetchSettings::default(),
+            terminal: TerminalSettings::default(),
             global_replace: GlobalReplaceSettings::default(),
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),

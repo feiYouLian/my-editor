@@ -29,6 +29,7 @@ import { PreviewController } from "./app/previewHost";
 import { LargeFileHost } from "./app/largeFileHost";
 import { FileService, FALLBACK_ENCODINGS } from "./app/fileService";
 import { RunHost } from "./app/runHost";
+import { TerminalHost } from "./app/terminalHost";
 import { FetchHost } from "./app/fetchHost";
 import { DiffService } from "./app/diffService";
 import { SessionHost } from "./app/sessionHost";
@@ -619,6 +620,15 @@ const fileService = new FileService({
   largeHost,
 });
 
+// 内置终端编排（懒加载 xterm；打开时让出底部区域给运行输出）
+let runHostRef: RunHost | null = null;
+const terminalHost = new TerminalHost({
+  getActiveTab: activeTab,
+  getWorkspaceRoot: () => workspaceRoot,
+  showMessage: statusBar.showMessage,
+  onBeforeOpen: () => runHostRef?.hideOutputPanel(),
+});
+
 // 运行与工具面板宿主（Code Run / Cron / 批量编码 / 正则 / 表格 / 最近打开）
 const runHost = new RunHost(runBtn, {
   getActiveTab: activeTab,
@@ -627,7 +637,12 @@ const runHost = new RunHost(runBtn, {
   getView: () => editorHandle.view,
   onOpenFile: (path) => void fileService.openFilePath(path),
   insertAsTab: (text, name, language) => fileService.openGeneratedTab(name, text, language),
+  runInTerminal: (path, runner) => void terminalHost.runFile(path, runner),
+  runCurlInTerminal: (script) => void terminalHost.runCurlScript(script),
+  onOpenLocation: (path, line) => void openFileAt(path, line),
+  onBeforeRun: () => terminalHost.hide(),
 });
+runHostRef = runHost;
 
 // 网页抓取编排（默认目录 / PathGuard 登记 / 抓取后打开）
 const fetchHost = new FetchHost({
@@ -662,6 +677,7 @@ const windowChrome = new WindowChrome({
         }
       }
     }
+    await terminalHost.dispose();
   },
 });
 
@@ -735,8 +751,8 @@ function buildEditorMenu(): MenuEntry[] {
   const canFormat = supportsFormatting(lang);
   const canRun =
     tab !== null && tab.kind === "text" && Boolean(tab.path) && runHost.runnerFor(tab) !== null;
-  // cURL 脚本执行不要求磁盘文件、不要求已保存（只读也允许）
-  const canScript = tab !== null && tab.kind === "text" && !tab.virtual;
+  // cURL 入口只在当前选区/文档确实像 curl 命令时出现（避免 Python 等文件误显）
+  const canScript = runHost.looksLikeCurlScript();
   const cut = (): void => void copyFromEditor(view, true, statusBar.showMessage);
   const copy = (): void => void copyFromEditor(view, false, statusBar.showMessage);
   const paste = (): void => void pasteIntoEditor(view, statusBar.showMessage);
@@ -780,8 +796,10 @@ function buildEditorMenu(): MenuEntry[] {
     }
   }
   if (canRun) code.push({ label: "运行当前文件", shortcut: "F5", run: () => runHost.runCurrentFile() });
+  if (canRun) code.push({ label: "在终端运行当前文件", shortcut: "Ctrl+F5", run: () => runHost.runInTerminal() });
   if (runHost.isRunning) code.push({ label: "停止运行", run: () => runHost.stop() });
   if (canScript) code.push({ label: "执行 cURL 脚本", run: () => runHost.runCurlScript() });
+  if (canScript) code.push({ label: "在终端执行 cURL 脚本", run: () => runHost.runCurlInTerminal() });
   if (!readonly) {
     if (code.length > 0) code.push({ separator: true });
     code.push({ label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) });
@@ -987,6 +1005,7 @@ function openSettings(category: "theme" | "keybindings" | "layout" = "theme"): v
 
 $<HTMLButtonElement>("search-box").addEventListener("click", () => palette.open());
 $<HTMLButtonElement>("btn-sidebar-toggle").addEventListener("click", () => layout.toggleSidebar());
+$<HTMLButtonElement>("btn-terminal").addEventListener("click", () => void terminalHost.toggle());
 
 // 调试面板开关（免去按 F12；命令属 core webview 插件而非 window，且仅 debug 构建存在）
 const devtoolsBtn = $<HTMLButtonElement>("btn-devtools");
@@ -1092,6 +1111,13 @@ registerCommands([
   { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", run: () => detectMojibakeManually() },
   { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", run: () => runHost.runCurrentFile() },
   { id: "run.curlScript", title: "执行 cURL 脚本（选区/整篇，无需保存）", section: "运行", run: () => runHost.runCurlScript() },
+  { id: "terminal.toggle", title: "切换终端（Ctrl+`）", section: "终端", defaultKey: "Mod-`", run: () => void terminalHost.toggle() },
+  { id: "code.runInTerminal", title: "在终端运行当前文件（Ctrl+F5）", section: "运行", defaultKey: "Mod-F5", run: () => runHost.runInTerminal() },
+  { id: "code.runCurlInTerminal", title: "在终端执行 cURL 脚本", section: "运行", run: () => runHost.runCurlInTerminal() },
+  { id: "output.show", title: "显示运行输出面板", section: "运行", run: () => {
+      terminalHost.hide();
+      runHost.showOutputPanel();
+    } },
   { id: "code.stop", title: "停止运行", section: "运行", run: () => runHost.stop() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(editorHandle.view, 1) },
@@ -1150,6 +1176,18 @@ async function openWorkspaceDir(): Promise<void> {
   if (!dir) return;
   // setRoot 会经 onWorkspaceStateChange 同步 workspaceRoot、侧栏标题与持久化
   fileTree.setRoot(dir);
+}
+
+/** 打开运行输出中的文件位置（堆栈点击）：打开文件并跳到指定行 */
+async function openFileAt(path: string, line: number): Promise<void> {
+  await fileService.openFilePath(path);
+  // openFilePath 的标签加载是异步的：等 tabSwitcher 把文档真正装进编辑器
+  await tabSwitcher.load();
+  if (activeTab()?.virtual) {
+    statusBar.showMessage("大文件只读视图不支持跳转到指定行");
+    return;
+  }
+  editorHandle.gotoLine(line);
 }
 
 // ---- 快捷键分发（注册表驱动；用户覆盖存 config.json 的 keybindings 段）----

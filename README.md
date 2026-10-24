@@ -1,6 +1,6 @@
 # my-editor · 轻量级定制文本编辑器
 
-设计文档：[`轻量级定制文本编辑器_技术设计文档.md`](./轻量级定制文本编辑器_技术设计文档.md)（v2.8；性能实测基线见 §11.19）
+设计文档：[`轻量级定制文本编辑器_技术设计文档.md`](./轻量级定制文本编辑器_技术设计文档.md)（v2.8；性能实测基线见 §11.19）；新增域见 [`新增功能_技术设计文档.md`](./新增功能_技术设计文档.md) 与 [`终端与CodeRun增强_技术设计文档.md`](./终端与CodeRun增强_技术设计文档.md)。
 
 基于 **Tauri 2 + Vite + TypeScript + CodeMirror 6** 的桌面文本编辑器：前端负责编辑与交互，Rust 侧负责文件 IO、编码、大文件索引、Diff、格式化调度、进程运行与文件监听。
 
@@ -68,9 +68,17 @@
 ### 代码运行（Code Run）
 
 - 支持 Python / Node（JS、JSX）/ Java / cURL
-- cURL 脚本无需保存即可执行（选区优先，无选区整篇）；`.curl` 文件与 Markdown 围栏有高亮
+- cURL 脚本无需保存即可执行（选区优先，无选区整篇）；`.curl` 文件与 Markdown 围栏有高亮；兼容 PowerShell / DevTools 的 `& 'curl' ...` 复制形式，Windows 使用 `curl.exe` 避免 PowerShell 别名
 - 标题栏运行按钮与 `F5`，运行中切换为停止
 - 独立输出面板，流式回传；30s 超时、单次输出上限 1MB、进程树终止
+- 输出按语言优化：去 ANSI、Python/Node/Java 错误与堆栈分色、堆栈位置可点击跳转、cURL JSON 响应美化
+- `Ctrl+F5` / 右键「在终端运行当前文件」：把命令送入内置终端，支持交互式输入
+
+### 内置终端
+
+- 真 PTY（Windows ConPTY），默认 PowerShell（有 pwsh 时优先）；``Ctrl+` `` 或工具栏 ``>_`` 打开/隐藏
+- 支持颜色、光标控制、交互式程序、`Ctrl+C`、中文输入输出与窗口自适应
+- 单会话；隐藏保留 shell，关闭按钮/应用退出结束进程；配置项 `terminal.shell` 可指定自定义 shell
 
 ### 设置与主题
 
@@ -134,12 +142,14 @@ npx tauri icon icons/app-icon.png         # 生成 src-tauri/icons/ 全量图标
 ```
 src/                          # 前端（原生 TS + Vite）
 ├── main.ts                   # 应用编排：标签联动、菜单、命令注册、Code Run、草稿/会话
-├── app/
-│   ├── runHost.ts            # 运行 / 工具 / 格式转换入口编排
-│   └── fetchHost.ts          # 网页抓取编排（默认目录 / 抓取后打开）
 ├── core/
 │   ├── convert.ts            # 格式转换（JSON / YAML / Properties + 嗅探）
-│   └── convertCodegen.ts     # JSON → Java / TypeScript 代码生成
+│   ├── convertCodegen.ts     # JSON → Java / TypeScript 代码生成
+│   └── runOutput.ts          # Code Run 输出分类 / 堆栈位置 / cURL JSON
+├── app/
+│   ├── runHost.ts            # 运行 / 工具 / 格式转换入口编排
+│   ├── terminalHost.ts       # 终端会话生命周期与「在终端运行」编排
+│   └── fetchHost.ts          # 网页抓取编排（默认目录 / 抓取后打开）
 ├── editor/
 │   ├── setup.ts              # CodeMirror 实例与扩展开关
 │   ├── languages.ts          # 语言注册与懒加载
@@ -170,6 +180,7 @@ src/                          # 前端（原生 TS + Vite）
 │   ├── saveEncoding.ts       # 另存为指定编码
 │   ├── convertPanel.ts       # 格式转换面板
 │   ├── fetchPageDialog.ts    # 从网址抓取网页对话框
+│   ├── terminalPanel.ts      # xterm 终端面板（懒加载）
 │   └── runPanel.ts           # Code Run 输出面板
 ├── services/
 │   ├── workspace.ts          # 工作区读写
@@ -200,6 +211,7 @@ src-tauri/src/                # Rust 后端
     ├── diff.rs               # 文本 / 文件 / Git 差异与补丁导出
     ├── format.rs             # CLI 格式化调度
     ├── run.rs                # Code Run（进程组、超时、输出上限）
+    ├── terminal.rs           # 内置终端（PTY 会话、输入/尺寸、在终端运行）
     ├── fetch.rs              # 网页抓取（URL 校验 / 私网拦截 / 原子落盘）
     ├── watch.rs              # 外部修改监听（notify）
     ├── session.rs            # 会话与草稿持久化
@@ -217,7 +229,7 @@ scripts/                      # 开发辅助脚本（图标生成）
 
 | 文件 / 目录 | 内容 |
 | --- | --- |
-| `config.json` | 主题、快捷键、布局、编辑器增强、会话与大文件、网页抓取开关等配置 |
+| `config.json` | 主题、快捷键、布局、编辑器增强、会话与大文件、网页抓取、终端 shell 等配置 |
 | `workspace.json` | 工作区根目录与文件树展开状态 |
 | `session.json` | 打开文件列表、光标位置、激活文件、分栏比例 |
 | `drafts/` | 未保存内容的草稿（防抖写入，按保留天数清理） |
@@ -236,6 +248,8 @@ scripts/                      # 开发辅助脚本（图标生成）
 | Ctrl/Cmd+, | 打开设置 |
 | Ctrl/Cmd+PageUp / PageDown | 上一个 / 下一个标签 |
 | F5 | 运行当前文件（Code Run） |
+| Ctrl/Cmd+F5 | 在终端运行当前文件 |
+| ``Ctrl/Cmd+` `` | 打开 / 隐藏内置终端 |
 | Shift+Alt+F | 格式化文档 |
 | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z | 撤销 / 重做 |
 | Ctrl/Cmd+/ | 切换注释 |
@@ -255,4 +269,6 @@ scripts/                      # 开发辅助脚本（图标生成）
 - 批量转换原文件（就地改写）已舍去，仅提供非破坏式的「批量另存为编码」
 - 格式转换本期只做 JSON ↔ YAML 与 Properties ↔ YAML；JSON ↔ XML / CSV 延期
 - 网页抓取只保存原始 HTML，不下载 / 重写图片、CSS、JS 等子资源；重定向后的最终地址 v1 不再复查（私网默认拦截 + CSP 主防线）
+- 内置终端是任意命令执行入口、非沙箱；终端内命令不受 Code Run 的 30s / 1MB 限制。单会话，不随会话恢复
+- `cmd.exe` 暂不支持「在终端运行」（请使用 PowerShell）；终端主题 ANSI 16 色沿用 xterm 默认
 - E2E 关键路径、macOS / Linux 内存数据待补

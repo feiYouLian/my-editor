@@ -22,6 +22,12 @@ const FLUSH_BYTES: usize = 16 * 1024;
 /// 读取缓冲
 const READ_BUF: usize = 4096;
 
+/// Windows 上必须用 curl.exe：PowerShell 会把 curl 解析为 Invoke-WebRequest 别名
+#[cfg(windows)]
+pub(crate) const CURL_PROGRAM: &str = "curl.exe";
+#[cfg(not(windows))]
+pub(crate) const CURL_PROGRAM: &str = "curl";
+
 /// 输出片段事件
 pub const CHUNK_EVENT: &str = "run://chunk";
 /// 运行结束事件
@@ -95,7 +101,7 @@ fn split_args(text: &str) -> Vec<String> {
     out
 }
 
-/// 拼接续行：行尾 `\` 与下一行合并（去掉反斜杠，补一个空格）。
+/// 拼接续行：行尾 `\`（bash）或 `` ` ``（PowerShell）与下一行合并（去掉续行符，补一个空格）。
 /// 注释行（`#` 开头）整行剔除；续行中的 `#` 不当作注释。
 fn join_continuations(text: &str) -> String {
     let mut out = String::new();
@@ -105,7 +111,10 @@ fn join_continuations(text: &str) -> String {
             continue;
         }
         let trimmed = line.trim_end();
-        if let Some(stem) = trimmed.strip_suffix('\\') {
+        let stem = trimmed
+            .strip_suffix('\\')
+            .or_else(|| trimmed.strip_suffix('`'));
+        if let Some(stem) = stem {
             out.push_str(stem);
             out.push(' ');
             continued = true;
@@ -118,53 +127,167 @@ fn join_continuations(text: &str) -> String {
     out
 }
 
-/// 解析 cURL 参数脚本（内容而非路径）：剔首词 `curl`、去注释、拼续行、引号感知切分。
-/// `build_command` 的文件分支与 `run_curl` 的脚本文本共用此实现。
+/// 解析 cURL 参数脚本（内容而非路径）：剔首词 `curl` / `curl.exe`、去注释、拼续行、引号感知切分。
+/// 兼容 PowerShell 的 `& 'curl' ...` 形式（DevTools / 浏览器复制常见）。
 fn parse_curl_args(text: &str) -> Result<Vec<String>, String> {
     let joined = join_continuations(text);
     let mut args = split_args(&joined);
-    if args.first().map(|a| a == "curl").unwrap_or(false) {
+    // PowerShell 调用运算符不是 curl 参数
+    if args.first().map(|a| a == "&").unwrap_or(false) {
+        args.remove(0);
+    }
+    // 去掉开头的 curl / curl.exe（大小写不敏感）
+    if args
+        .first()
+        .map(|a| a.eq_ignore_ascii_case("curl") || a.eq_ignore_ascii_case("curl.exe"))
+        .unwrap_or(false)
+    {
         args.remove(0);
     }
     if args.is_empty() {
-        return Err("cURL 参数为空（按 curl 参数书写，如 curl -sS https://example.com）".to_string());
+        return Err(
+            "cURL 参数为空（按 curl 参数书写，支持 PowerShell 的 & 'curl' 形式）".to_string(),
+        );
     }
     Ok(args)
 }
 
+/// 运行源：磁盘文件或直接给定的脚本内容（cURL）
+pub(crate) enum RunSource<'a> {
+    File(&'a Path),
+    Script(&'a str),
+}
+
+/// 与进程创建方式无关的命令描述：run_code 与终端执行共用。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    /// 需要在子进程 / shell 行中设置的环变量
+    pub envs: Vec<(String, String)>,
+}
+
+fn file_arg(file: &Path) -> String {
+    file.to_string_lossy().into_owned()
+}
+
+/// 按运行器生成命令描述（不创建进程）
+pub(crate) fn command_spec(runner: &str, source: RunSource<'_>) -> Result<CommandSpec, String> {
+    match (runner, source) {
+        ("python", RunSource::File(file)) => Ok(CommandSpec {
+            program: "python".into(),
+            args: vec![file_arg(file)],
+            // 避免中文 Windows 控制台按 GBK 输出
+            envs: vec![("PYTHONIOENCODING".into(), "utf-8".into())],
+        }),
+        ("node", RunSource::File(file)) => Ok(CommandSpec {
+            program: "node".into(),
+            args: vec![file_arg(file)],
+            envs: Vec::new(),
+        }),
+        ("java", RunSource::File(file)) => Ok(CommandSpec {
+            // 单文件源码启动（Java 11+）；指定 UTF-8 输出
+            program: "java".into(),
+            args: vec![
+                "-Dfile.encoding=UTF-8".into(),
+                "-Dstdout.encoding=UTF-8".into(),
+                file_arg(file),
+            ],
+            envs: Vec::new(),
+        }),
+        ("curl", RunSource::File(file)) => {
+            let text = std::fs::read_to_string(file).map_err(|e| format!("读取失败: {e}"))?;
+            command_spec("curl", RunSource::Script(&text))
+        }
+        ("curl", RunSource::Script(text)) => Ok(CommandSpec {
+            program: CURL_PROGRAM.into(),
+            args: parse_curl_args(text)?,
+            envs: Vec::new(),
+        }),
+        ("python" | "node" | "java", RunSource::Script(_)) => {
+            Err(format!("{runner} 需要磁盘文件，不能直接执行脚本文本"))
+        }
+        (other, _) => Err(format!("不支持的运行器: {other}")),
+    }
+}
+
 /// 按运行器构造命令（cURL 从文件内容解析参数）
 fn build_command(runner: &str, file: &Path) -> Result<Command, String> {
-    let path = file.to_string_lossy().to_string();
-    let cmd = match runner {
-        "python" => {
-            let mut c = Command::new("python");
-            c.arg(&path);
-            // 避免中文 Windows 控制台按 GBK 输出
-            c.env("PYTHONIOENCODING", "utf-8");
-            c
-        }
-        "node" => {
-            let mut c = Command::new("node");
-            c.arg(&path);
-            c
-        }
-        "java" => {
-            // 单文件源码启动（Java 11+）；指定 UTF-8 输出
-            let mut c = Command::new("java");
-            c.args(["-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", path.as_str()]);
-            c
-        }
-        "curl" => {
-            let text =
-                std::fs::read_to_string(file).map_err(|e| format!("读取失败: {e}"))?;
-            let args = parse_curl_args(&text)?;
-            let mut c = Command::new("curl");
-            c.args(args);
-            c
-        }
-        other => return Err(format!("不支持的运行器: {other}")),
-    };
+    let spec = command_spec(runner, RunSource::File(file))?;
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args);
+    for (key, value) in &spec.envs {
+        cmd.env(key, value);
+    }
     Ok(cmd)
+}
+
+/// shell 类型决定命令行引号规则
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShellKind {
+    PowerShell,
+    Posix,
+    Cmd,
+}
+
+/// 由可执行文件名推断 shell 类型（powershell.exe / pwsh / cmd.exe / bash…）
+pub(crate) fn shell_kind(program: &str) -> ShellKind {
+    let name = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    if name.contains("powershell") || name.contains("pwsh") {
+        ShellKind::PowerShell
+    } else if name == "cmd" || name == "cmd.exe" {
+        ShellKind::Cmd
+    } else {
+        ShellKind::Posix
+    }
+}
+
+fn quote_powershell(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "''"))
+}
+
+fn quote_posix(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+/// 把命令描述渲染成可写入 shell 的一行命令。
+/// PowerShell 用 `& 'prog' 'arg'`；POSIX 用 `'prog' 'arg'`；cmd.exe 暂不支持。
+pub(crate) fn render_shell_line(kind: ShellKind, spec: &CommandSpec) -> Result<String, String> {
+    match kind {
+        ShellKind::Cmd => Err("cmd.exe 暂不支持在终端运行，请改用 PowerShell".to_string()),
+        ShellKind::PowerShell => {
+            let mut parts: Vec<String> = Vec::new();
+            for (key, value) in &spec.envs {
+                parts.push(format!("$env:{key}={}", quote_powershell(value)));
+            }
+            let mut cmd = format!("& {}", quote_powershell(&spec.program));
+            for arg in &spec.args {
+                cmd.push(' ');
+                cmd.push_str(&quote_powershell(arg));
+            }
+            parts.push(cmd);
+            Ok(parts.join("; "))
+        }
+        ShellKind::Posix => {
+            let mut line = String::new();
+            for (key, value) in &spec.envs {
+                line.push_str(key);
+                line.push('=');
+                line.push_str(&quote_posix(value));
+                line.push(' ');
+            }
+            line.push_str(&quote_posix(&spec.program));
+            for arg in &spec.args {
+                line.push(' ');
+                line.push_str(&quote_posix(arg));
+            }
+            Ok(line)
+        }
+    }
 }
 
 /// 结束整棵进程树（Windows）/ 直接子进程（其它平台）
@@ -204,6 +327,41 @@ fn kill_tree_if_generation(slot: &Arc<Mutex<Option<Running>>>, generation: u64) 
     let _ = running.child.kill();
 }
 
+/// 返回可安全按 UTF-8 解码的前缀长度。
+/// 末尾不完整的 1–3 字节字符序列留到下一次 flush，避免中文在分块边界被替换为乱码。
+fn utf8_flush_len(buf: &[u8]) -> usize {
+    if buf.is_empty() {
+        return 0;
+    }
+    // 跳过末尾的 UTF-8 连续字节（10xxxxxx），定位最后一个 lead byte
+    let mut i = buf.len();
+    while i > 0 && buf[i - 1] & 0xC0 == 0x80 {
+        i -= 1;
+    }
+    if i == 0 {
+        // 整块都是连续字节（不应发生：尾部一直向前结转）：直接 lossy 输出
+        return buf.len();
+    }
+    let lead = buf[i - 1];
+    let need = if lead < 0x80 {
+        1
+    } else if lead >> 5 == 0b110 {
+        2
+    } else if lead >> 4 == 0b1110 {
+        3
+    } else if lead >> 3 == 0b11110 {
+        4
+    } else {
+        1 // 非法 lead：不累加，直接交给 lossy 解码
+    };
+    let continuation = buf.len() - i;
+    if need > 1 && continuation + 1 < need {
+        i - 1
+    } else {
+        buf.len()
+    }
+}
+
 /// 读取线程：按体积 / 时间批量回传，超过总量上限后只标记截断
 fn spawn_reader<R: Read + Send + 'static>(
     app: AppHandle,
@@ -227,7 +385,19 @@ fn spawn_reader<R: Read + Send + 'static>(
                         continue;
                     }
                     pending.extend_from_slice(&buf[..n]);
-                    if pending.len() >= FLUSH_BYTES || last.elapsed().as_millis() >= FLUSH_MS {
+                    let complete = utf8_flush_len(&pending);
+                    if complete < pending.len() {
+                        // 末尾字符被截断：只回传完整前缀，尾部留到下一次读取
+                        if complete == 0 {
+                            continue;
+                        }
+                        let tail = pending.split_off(complete);
+                        flush(&app, stream, &mut pending);
+                        pending = tail;
+                        last = Instant::now();
+                    } else if pending.len() >= FLUSH_BYTES
+                        || last.elapsed().as_millis() >= FLUSH_MS
+                    {
                         flush(&app, stream, &mut pending);
                         last = Instant::now();
                     }
@@ -405,11 +575,11 @@ pub fn run_curl(
     guard: tauri::State<crate::commands::paths::PathGuard>,
     script: String,
 ) -> Result<(), String> {
-    let args = parse_curl_args(&script)?;
+    let spec = command_spec("curl", RunSource::Script(&script))?;
     kill_tree(&state.slot);
 
-    let mut cmd = Command::new("curl");
-    cmd.args(args);
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args);
     // 无磁盘文件可依：取首个已登记的工作区目录；没有则用进程默认目录
     if let Some(dir) = guard.first_dir_root() {
         cmd.current_dir(dir);
@@ -525,5 +695,120 @@ mod tests {
     fn parse_curl_args_rejects_empty_script() {
         assert!(parse_curl_args("# 只有注释\n\n  ").is_err());
         assert!(parse_curl_args("").is_err());
+    }
+
+    #[test]
+    fn utf8_flush_len_holds_incomplete_sequences() {
+        assert_eq!(utf8_flush_len(b""), 0);
+        assert_eq!(utf8_flush_len("a".as_bytes()), 1);
+        assert_eq!(utf8_flush_len(&[0xE4]), 0);
+        assert_eq!(utf8_flush_len(&[0xE4, 0xB8]), 0);
+        assert_eq!(utf8_flush_len("中".as_bytes()), 3);
+        assert_eq!(utf8_flush_len(b"a\xE4\xB8"), 1);
+        assert_eq!(utf8_flush_len("😀".as_bytes()), 4);
+        assert_eq!(utf8_flush_len(&[0xFF, b'a']), 2);
+    }
+
+    #[test]
+    fn shell_kind_detects_known_shells() {
+        assert_eq!(shell_kind("powershell.exe"), ShellKind::PowerShell);
+        assert_eq!(
+            shell_kind("C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+            ShellKind::PowerShell
+        );
+        assert_eq!(shell_kind("cmd.exe"), ShellKind::Cmd);
+        assert_eq!(shell_kind("/bin/bash"), ShellKind::Posix);
+    }
+
+    #[test]
+    fn powershell_line_quotes_args_and_envs() {
+        let spec = CommandSpec {
+            program: "python".into(),
+            args: vec!["C:\\a b\\测试.py".into(), "it's".into()],
+            envs: vec![("PYTHONIOENCODING".into(), "utf-8".into())],
+        };
+        let line = render_shell_line(ShellKind::PowerShell, &spec).unwrap();
+        assert_eq!(
+            line,
+            "$env:PYTHONIOENCODING='utf-8'; & 'python' 'C:\\a b\\测试.py' 'it''s'"
+        );
+    }
+
+    #[test]
+    fn posix_line_quotes_args_and_envs() {
+        let spec = CommandSpec {
+            program: "python".into(),
+            args: vec!["a b".into(), "it's".into()],
+            envs: vec![("PYTHONIOENCODING".into(), "utf-8".into())],
+        };
+        let line = render_shell_line(ShellKind::Posix, &spec).unwrap();
+        assert_eq!(line, "PYTHONIOENCODING='utf-8' 'python' 'a b' 'it'\\''s'");
+    }
+
+    #[test]
+    fn cmd_shell_is_rejected_for_terminal_run() {
+        let spec = CommandSpec {
+            program: "python".into(),
+            args: vec!["a.py".into()],
+            envs: Vec::new(),
+        };
+        assert!(render_shell_line(ShellKind::Cmd, &spec).is_err());
+    }
+
+    #[test]
+    fn command_spec_matches_each_runner() {
+        let file = temp_file("spec.py", "print('hi')");
+        let py = command_spec("python", RunSource::File(&file)).unwrap();
+        assert_eq!(py.program, "python");
+        assert_eq!(py.args.len(), 1);
+        assert_eq!(py.envs[0].0, "PYTHONIOENCODING");
+
+        let java = command_spec("java", RunSource::File(&file)).unwrap();
+        assert_eq!(java.args[0], "-Dfile.encoding=UTF-8");
+
+        let curl = command_spec("curl", RunSource::Script("curl -sS https://example.com")).unwrap();
+        assert!(curl.program == "curl" || curl.program == "curl.exe");
+        assert_eq!(curl.args, vec!["-sS", "https://example.com"]);
+
+        assert!(command_spec("node", RunSource::Script("x")).is_err());
+        assert!(command_spec("ruby", RunSource::File(&file)).is_err());
+    }
+
+    #[test]
+    fn parse_curl_args_accepts_powershell_and_curl_exe() {
+        // 浏览器 DevTools / PowerShell 复制的命令：& 'curl' / & 'curl.exe'
+        let args = parse_curl_args(
+            "& 'curl.exe' '--url' 'http://localhost:8082/userInfo/accessToken' '-X' 'POST' '-H' 'Authorization: 1'",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--url",
+                "http://localhost:8082/userInfo/accessToken",
+                "-X",
+                "POST",
+                "-H",
+                "Authorization: 1",
+            ]
+        );
+
+        // 直接 curl.exe 写法（大小写不敏感）
+        let args = parse_curl_args("CURL.EXE -sS https://example.com").unwrap();
+        assert_eq!(args, vec!["-sS", "https://example.com"]);
+
+        // 注释行之后的 & 'CURL'
+        let args = parse_curl_args("# 注释\n& 'CURL' '--url' 'http://example.com'").unwrap();
+        assert_eq!(args, vec!["--url", "http://example.com"]);
+
+        // PowerShell 反引号续行
+        let args = parse_curl_args(
+            "& 'curl' '--url' 'http://example.com' `\n  '-H' 'A: b' `\n  '-X' 'POST'",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec!["--url", "http://example.com", "-H", "A: b", "-X", "POST"]
+        );
     }
 }

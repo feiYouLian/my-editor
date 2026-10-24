@@ -113,9 +113,10 @@ export class PreviewController {
     return this.modes.get(tab.id) ?? getConfig().layout.defaultViewMode;
   }
 
-  /** 标签关闭：遗忘其模式记忆 */
+  /** 标签关闭：遗忘其模式记忆，并释放面板上该标签的渲染结果 */
   forget(tabId: string): void {
     this.modes.delete(tabId);
+    this.panel.forgetTab(tabId);
   }
 
   /** 设置当前标签的视图模式（设置中心回调用） */

@@ -15,9 +15,9 @@ export interface CachedState {
 }
 
 /** 缓存条数上限 */
-const STATE_CACHE_LIMIT = 16;
-/** 单文档缓存体积上限（字节） */
-const STATE_CACHE_MAX_BYTES = 5 * 1024 * 1024;
+const STATE_CACHE_LIMIT = 8;
+/** 单文档缓存体积上限（字节）：文档文本 + 语法树 + 撤销历史叠加后约为文本的 2–3 倍 */
+const STATE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
 
 export class DocumentStateCache {
   private cache = new Map<string, CachedState>();

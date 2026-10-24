@@ -34,6 +34,8 @@ import {
 } from "../core/convert";
 import { jsonToCode } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
+import { dirnameOf } from "../core/paths";
+import { looksLikeCurlScript as isCurlScriptText } from "../core/curlScript";
 
 export interface RunHostDeps {
   getActiveTab: () => Tab | null;
@@ -44,6 +46,14 @@ export interface RunHostDeps {
   onOpenFile: (path: string) => void;
   /** 把转换 / 代码生成结果插入为新的未命名标签 */
   insertAsTab: (text: string, name: string, language: string) => void;
+  /** 在终端运行当前文件（由 main 注入 TerminalHost） */
+  runInTerminal: (path: string, runner: string) => void;
+  /** 在终端执行 cURL 脚本文本 */
+  runCurlInTerminal: (script: string) => void;
+  /** 打开运行输出中的文件位置（堆栈点击跳转） */
+  onOpenLocation: (path: string, line: number) => void;
+  /** 输出面板即将显示（用于隐藏终端，避免底部区域被两个面板挤满） */
+  onBeforeRun?: () => void;
 }
 
 export class RunHost {
@@ -75,11 +85,15 @@ export class RunHost {
     // 最近打开：点击后走统一的打开流程（含大文件分流）
     this.recentFiles = new RecentFilesDialog((path) => deps.onOpenFile(path));
 
-    // Code Run 输出面板
-    this.runPanel = new RunPanel(document.getElementById("run-output")!, () => {
-      this.runActive = this.runPanel.isRunning;
-      this.refreshRunButton();
-    });
+    // Code Run 输出面板（按语言分类、堆栈位置可点击）
+    this.runPanel = new RunPanel(
+      document.getElementById("run-output")!,
+      () => {
+        this.runActive = this.runPanel.isRunning;
+        this.refreshRunButton();
+      },
+      (path, line) => deps.onOpenLocation(path, line),
+    );
     this.runPanel.mount();
 
     // 格式转换面板：写回编辑器 / 插入新标签经 deps 注入（panels 不反向依赖 app）
@@ -129,10 +143,10 @@ export class RunHost {
     if (lang === "python") return "python";
     if (lang === "javascript" || lang === "jsx") return "node";
     if (lang === "java") return "java";
-    // 内容以 curl 开头即按 cURL 参数脚本处理。
-    // 只检查前 4KB：本函数每次输入都会调用，对全文跑多行正则太贵
+    // cURL 脚本：只看第一个有意义行（兼容 curl / curl.exe / PowerShell & 'curl'）
+    // 只检查前 4KB：本函数每次输入都会调用，对全文扫描太贵
     const head = tab.content.length > 4096 ? tab.content.slice(0, 4096) : tab.content;
-    if (/^\s*curl\b/m.test(head)) return "curl";
+    if (isCurlScriptText(head)) return "curl";
     return null;
   }
 
@@ -156,7 +170,31 @@ export class RunHost {
       this.deps.showMessage("当前语言不支持运行（支持 Python / JS / Java / cURL）");
       return;
     }
-    void this.runPanel.start(tab.path, runner);
+    this.deps.onBeforeRun?.();
+    void this.runPanel.start(tab.path, runner, dirnameOf(tab.path));
+  }
+
+  /** 在终端运行当前文件（保存 / 脏检查与 F5 一致） */
+  runInTerminal(): void {
+    const tab = this.deps.getActiveTab();
+    if (!tab || tab.kind !== "text" || !tab.path) {
+      this.deps.showMessage("请先保存为磁盘文件再运行");
+      return;
+    }
+    if (tab.virtual) {
+      this.deps.showMessage("大文件只读视图不支持运行");
+      return;
+    }
+    if (tab.dirty) {
+      this.deps.showMessage("有未保存改动：终端运行的是磁盘内容，请先保存（Ctrl+S）");
+      return;
+    }
+    const runner = this.runnerFor(tab);
+    if (!runner) {
+      this.deps.showMessage("当前语言不支持运行（支持 Python / JS / Java / cURL）");
+      return;
+    }
+    this.deps.runInTerminal(tab.path, runner);
   }
 
   /** 停止运行 */
@@ -170,14 +208,41 @@ export class RunHost {
    * 只读也允许（执行不修改文档，与文本变换不同）。
    */
   runCurlScript(): void {
+    const script = this.readCurlScript();
+    if (!script) return;
+    this.deps.onBeforeRun?.();
+    void this.runPanel.startScript("curl", script);
+  }
+
+  /** 在终端执行 cURL 脚本（选区优先，无选区整篇） */
+  runCurlInTerminal(): void {
+    const script = this.readCurlScript();
+    if (!script) return;
+    this.deps.runCurlInTerminal(script);
+  }
+
+  /** 当前选区（优先）或整篇是否像 cURL 命令：右键菜单显隐用，不提示 */
+  looksLikeCurlScript(): boolean {
+    const tab = this.deps.getActiveTab();
+    if (!tab || tab.kind !== "text" || tab.virtual) return false;
+    const view = this.deps.getView();
+    const sel = view.state.selection.main;
+    const text = sel.empty
+      ? view.state.doc.toString()
+      : view.state.sliceDoc(sel.from, sel.to);
+    return isCurlScriptText(text);
+  }
+
+  /** 读取并校验 cURL 脚本文本（选区优先）；不合法时提示并返回 null */
+  private readCurlScript(): string | null {
     const tab = this.deps.getActiveTab();
     if (!tab || tab.kind !== "text") {
       this.deps.showMessage("请先打开一个文本文件");
-      return;
+      return null;
     }
     if (tab.virtual) {
       this.deps.showMessage("大文件只读视图不支持执行脚本");
-      return;
+      return null;
     }
     const view = this.deps.getView();
     const sel = view.state.selection.main;
@@ -186,9 +251,29 @@ export class RunHost {
       : view.state.sliceDoc(sel.from, sel.to);
     if (!script.trim()) {
       this.deps.showMessage("没有可执行的 cURL 脚本（先输入或选中一段 curl 命令）");
+      return null;
+    }
+    if (!isCurlScriptText(script)) {
+      this.deps.showMessage(
+        "当前内容不是 cURL 命令（应以 curl 开头，支持 PowerShell 的 & 'curl' 写法）",
+      );
+      return null;
+    }
+    return script;
+  }
+
+  /** 隐藏输出面板（终端打开时调用，保留输出与运行状态） */
+  hideOutputPanel(): void {
+    this.runPanel.hide();
+  }
+
+  /** 重新显示上一次运行输出 */
+  showOutputPanel(): void {
+    if (!this.runPanel.hasContent) {
+      this.deps.showMessage("还没有运行输出（F5 运行当前文件）");
       return;
     }
-    void this.runPanel.startScript("cURL 脚本", script);
+    this.runPanel.show();
   }
 
   /** 是否有任务在跑（右键菜单 / 状态栏用） */

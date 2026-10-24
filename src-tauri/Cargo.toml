@@ -27,6 +27,8 @@ memchr = "2.8.3"
 notify = "8"
 # 网页抓取：rustls 纯 Rust TLS，跨平台无需系统 OpenSSL；默认特性关闭以控制体积
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# 内置终端：跨平台 PTY（Windows 走 ConPTY）
+portable-pty = "0.9"
 
 # 发布体积优化：strip 符号 + LTO + 体积优先优化 + 单代码单元
 [profile.release]

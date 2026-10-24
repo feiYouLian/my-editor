@@ -418,5 +418,6 @@ function configSummary(cfg: AppConfig): string[] {
     `columnEditorKey = ${e.columnEditorKey}　columnSelectionModifier = ${e.columnSelectionModifier}`,
     `layout.sidebarVisible = ${cfg.layout.sidebarVisible}`,
     `fetch.allowPrivateNetwork = ${cfg.fetch.allowPrivateNetwork}`,
+    `terminal.shell = ${cfg.terminal.shell || "（自动）"}`,
   ];
 }

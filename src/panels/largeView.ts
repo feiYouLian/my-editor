@@ -17,6 +17,7 @@ import {
 } from "./largeView/constants";
 import { buildLargeViewDom, type LargeViewDom } from "./largeView/dom";
 import { LineCache, coalesceLines } from "./largeView/lineCache";
+import { MatchBuffer } from "./largeView/matchBuffer";
 import { drawMinimap } from "./largeView/minimap";
 import type {
   FilterBatch,
@@ -36,7 +37,8 @@ export interface LargeViewDeps {
 
 export class LargeView {
   private info: LargeFileInfo | null = null;
-  private matches: number[] | null = null;
+  /** 过滤命中行号（Uint32Array 定长缓冲，上限与后端 MAX_FILTER_MATCHES 一致） */
+  private readonly matchBuf = new MatchBuffer();
   private density: number[] = [];
   private readonly cache = new LineCache();
   private caseOn = false;
@@ -105,7 +107,7 @@ export class LargeView {
     this.filterRequestId++;
     this.filterFinishedId = -1;
     this.paddingLines = Math.max(0, paddingLines);
-    this.matches = null;
+    this.matchBuf.reset();
     this.density = [];
     this.cache.clear();
     this.host.classList.remove("hidden");
@@ -124,7 +126,7 @@ export class LargeView {
     this.info = null;
     this.filterRequestId++;
     this.filterFinishedId = -1;
-    this.matches = null;
+    this.matchBuf.reset();
     this.cache.clear();
     this.host.classList.add("hidden");
   }
@@ -181,13 +183,10 @@ export class LargeView {
 
   /** 流式批次：追加命中行，首批到达即先渲染；末批收尾 */
   private applyFilterBatch(p: FilterBatch): void {
-    if (p.matches.length > 0) {
-      if (!this.matches) this.matches = [];
-      this.matches.push(...p.matches);
-      if (this.matches.length > 50000) this.matches.length = 50000;
-    }
+    // 上限由 MatchBuffer 内部裁剪：Uint32Array 定长，不能像 number[] 那样 push
+    this.matchBuf.append(p.matches);
     if (!p.done) {
-      this.el.statusEl.textContent = `过滤中…（已命中 ${this.matches?.length ?? 0} 行）`;
+      this.el.statusEl.textContent = `过滤中…（已命中 ${this.matchBuf.length} 行）`;
       // 用户停在顶部时优先刷新首批结果，节流避免每批都读盘
       const now = performance.now();
       if (
@@ -208,8 +207,8 @@ export class LargeView {
     }
     this.deps.onMessage(
       p.truncated
-        ? `过滤命中已达上限，仅保留前 ${this.matches?.length ?? 0} 行`
-        : `过滤命中 ${this.matches?.length ?? 0} 行`,
+        ? `过滤命中已达上限，仅保留前 ${this.matchBuf.length} 行`
+        : `过滤命中 ${this.matchBuf.length} 行`,
     );
     void this.loadWindow();
     this.drawMinimap();
@@ -237,13 +236,13 @@ export class LargeView {
 
   /** 当前可滚动的条目数：过滤模式为命中数，否则为总行数 */
   private virtualCount(): number {
-    if (this.matches) return this.matches.length;
+    if (this.matchBuf.active) return this.matchBuf.length;
     return this.info?.totalLines ?? 0;
   }
 
   /** 虚拟条目下标 → 原始行号 */
   private lineOf(index: number): number {
-    if (this.matches) return this.matches[index] ?? 0;
+    if (this.matchBuf.active) return this.matchBuf.at(index);
     return index;
   }
 
@@ -267,17 +266,23 @@ export class LargeView {
     this.resizeSpacer();
     if (total === 0) {
       this.el.rowsEl.innerHTML = "";
-      this.el.statusEl.textContent = this.matches ? "没有匹配的行" : "空文件";
+      this.el.statusEl.textContent = this.matchBuf.active ? "没有匹配的行" : "空文件";
       return;
     }
 
     const firstVisible = Math.floor(this.el.scrollEl.scrollTop / LINE_HEIGHT);
     const visibleCount = Math.ceil(this.el.scrollEl.clientHeight / LINE_HEIGHT) + 1;
 
-    if (this.matches) {
+    const matches = this.matchBuf.view();
+    if (matches) {
       const from = Math.max(0, firstVisible - 40);
-      const to = Math.min(this.matches.length, firstVisible + visibleCount + 40);
-      const missing = this.matches.slice(from, to).filter((ln) => !this.cache.has(ln));
+      const to = Math.min(matches.length, firstVisible + visibleCount + 40);
+      // 局部数组只覆盖视口附近的行，不影响常驻内存
+      const missing: number[] = [];
+      for (let i = from; i < to; i += 1) {
+        const ln = matches[i];
+        if (!this.cache.has(ln)) missing.push(ln);
+      }
       if (missing.length) {
         this.loading = true;
         try {
@@ -350,8 +355,8 @@ export class LargeView {
     this.el.rowsEl.append(frag);
 
     const total = this.virtualCount();
-    this.el.statusEl.textContent = this.matches
-      ? `命中 ${this.matches.length} 行 · 显示第 ${from + 1}–${to} 条`
+    this.el.statusEl.textContent = this.matchBuf.active
+      ? `命中 ${this.matchBuf.length} 行 · 显示第 ${from + 1}–${to} 条`
       : `显示第 ${from + 1}–${to} 行 / 共 ${total} 行`;
   }
 
@@ -369,7 +374,7 @@ export class LargeView {
     this.filterFinishedId = -1;
     this.lastStreamRefresh = 0;
     // 先切到空结果集：批次到达即可增量渲染，不用等整文件扫完
-    this.matches = [];
+    this.matchBuf.begin();
     this.cache.clear();
     this.el.scrollEl.scrollTop = 0;
     this.resizeSpacer();
@@ -383,7 +388,7 @@ export class LargeView {
         requestId,
       });
       if (requestId !== this.filterRequestId) return;
-      this.matches = res.matches;
+      this.matchBuf.replace(res.matches);
       // 末批事件可能先到并已完成收尾
       if (this.filterFinishedId === requestId) return;
       this.filterFinishedId = requestId;
@@ -409,7 +414,7 @@ export class LargeView {
     this.filterRequestId++;
     this.filterFinishedId = -1;
     void this.cancel();
-    this.matches = null;
+    this.matchBuf.reset();
     this.cache.clear();
     this.el.scrollEl.scrollTop = 0;
     await this.loadWindow();
@@ -463,7 +468,7 @@ export class LargeView {
     if (!info) return;
     drawMinimap(this.el.canvas, {
       density: this.density,
-      matches: this.matches,
+      matches: this.matchBuf.view(),
       total: this.virtualCount(),
       scrollTop: this.el.scrollEl.scrollTop,
       clientHeight: this.el.scrollEl.clientHeight,

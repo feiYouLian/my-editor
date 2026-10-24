@@ -10,5 +10,6 @@ pub mod large;
 pub mod paths;
 pub mod run;
 pub mod session;
+pub mod terminal;
 pub mod watch;
 pub mod workspace;

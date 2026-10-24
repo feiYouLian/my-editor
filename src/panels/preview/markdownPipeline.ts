@@ -105,6 +105,21 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
       return "";
     },
   });
+  // 表格外包一层滚动容器：宽表横向滚动 + 圆角边框（预览与导出共用）
+  const defaultTableOpen = md.renderer.rules.table_open;
+  const defaultTableClose = md.renderer.rules.table_close;
+  md.renderer.rules.table_open = (tokens, idx, options, env, self) =>
+    `<div class="md-table-wrap">${
+      defaultTableOpen
+        ? defaultTableOpen(tokens, idx, options, env, self)
+        : self.renderToken(tokens, idx, options)
+    }`;
+  md.renderer.rules.table_close = (tokens, idx, options, env, self) =>
+    `${
+      defaultTableClose
+        ? defaultTableClose(tokens, idx, options, env, self)
+        : self.renderToken(tokens, idx, options)
+    }</div>`;
   // 块级元素打源行标记（滚动联动）
   md.core.ruler.push("source-line", (state) => {
     for (const token of state.tokens) {

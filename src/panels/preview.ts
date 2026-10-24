@@ -84,16 +84,44 @@ export class PreviewHost {
     this.clearImageToolbar();
     if (tab?.kind === "image") {
       this.kind = null;
+      this.contentEl.classList.remove("md-doc");
       this.setAreaMode("image");
       renderImageViewer(this.pane, this.contentEl, tab);
       return;
     }
     this.kind = tab ? kindOf(tab.path) : null;
-    this.mode = this.kind && mode !== "edit" ? mode : "edit";
+    // 非 md/html（或无标签）：上一次的渲染结果已无意义，立即释放 DOM。
+    // 只切 CSS class 的话，整棵预览树（含 data URL 图片与 iframe 文档）会一直驻留。
+    if (!this.kind) {
+      this.releaseContent();
+      this.mode = "edit";
+      this.setAreaMode("edit");
+      return;
+    }
+    this.mode = mode !== "edit" ? mode : "edit";
     this.setAreaMode(this.mode);
-    if (this.mode !== "edit" && tab && this.kind) {
+    if (this.mode !== "edit" && tab) {
       this.renderSafe(tab, this.kind);
     }
+  }
+
+  /** 关闭标签：若面板正展示它，释放其渲染结果 */
+  forgetTab(tabId: string): void {
+    if (this.activeId !== tabId) return;
+    this.activeId = null;
+    this.releaseContent();
+  }
+
+  /** 释放预览 DOM：清空后 data URL 字符串与 iframe 文档树才会被回收 */
+  private releaseContent(): void {
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+    this.contentEl.innerHTML = "";
+    this.contentEl.classList.remove("md-doc");
+    this.clearImageToolbar();
+    this.kind = null;
   }
 
   /** 编辑内容变化后的防抖重渲染 */
@@ -238,6 +266,7 @@ export class PreviewHost {
       return;
     }
     if (kind === "md") {
+      this.contentEl.classList.add("md-doc");
       await this.ensureMarkdown();
       // 先渲染为 DOM：本地图片需在消毒前替换为 data URL
       // （盘符路径会被 DOMPurify 当作未知协议而移除 src）
@@ -255,6 +284,7 @@ export class PreviewHost {
       this.bindImageLoadResync();
       this.scheduleResync();
     } else {
+      this.contentEl.classList.remove("md-doc");
       // sandbox 仅放行 allow-same-origin 以便把右键事件转回宿主；
       // 未开启 allow-scripts，HTML 内脚本仍不执行
       this.contentEl.innerHTML =

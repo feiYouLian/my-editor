@@ -8,8 +8,8 @@ import { LINE_HEIGHT } from "./constants";
 export interface MinimapState {
   /** 每桶的非空行数（large_minimap 命令返回） */
   density: number[];
-  /** 过滤命中行号（null = 未过滤） */
-  matches: number[] | null;
+  /** 过滤命中行号（null = 未过滤）；Uint32Array 定长，避免大命中集的装箱开销 */
+  matches: Uint32Array | null;
   /** 当前可滚动条目数（过滤模式为命中数，否则为总行数） */
   total: number;
   scrollTop: number;

@@ -7,10 +7,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { dirnameOf } from "../../core/paths";
 
 /** 相对路径图片内联上限：超过则跳过，避免预览一次性读入大图 */
-const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
-/** 已内联图片缓存：同一图片在多次重渲染时复用；超出上限按插入顺序淘汰 */
+const INLINE_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+/** 已内联图片缓存：同一图片在多次重渲染时复用；超出上限按插入顺序淘汰。
+ *  data URL 的 base64 约为原始字节的 4/3，且字符串在 JS 堆与 DOM 属性各存一份，
+ *  故上限同时受单张体积与条数约束（最坏约 8 × 4MB × 4/3 ≈ 43MB）。 */
 const imageCache = new Map<string, Promise<string | null>>();
-const IMAGE_CACHE_LIMIT = 24;
+const IMAGE_CACHE_LIMIT = 8;
 
 /**
  * 把 Markdown 中的本地图片地址解析为绝对路径：
