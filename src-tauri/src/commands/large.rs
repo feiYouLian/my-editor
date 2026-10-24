@@ -774,10 +774,21 @@ pub fn large_file_info(
 }
 
 /// 关闭大文件会话，释放索引
+///
+/// 退出流程会逐个关闭会话，而锁可能正被索引/缩略图线程占用，
+/// 因此放到阻塞线程等锁，避免主线程被挂住导致窗口「未响应」。
 #[tauri::command]
-pub fn close_large_file(state: tauri::State<LargeState>, id: String) {
-    let mut map = state.files.lock().unwrap_or_else(|e| e.into_inner());
-    map.remove(&id);
+pub async fn close_large_file(
+    state: tauri::State<'_, LargeState>,
+    id: String,
+) -> Result<(), String> {
+    let files = state.files.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
+        map.remove(&id);
+    })
+    .await
+    .map_err(|e| format!("关闭大文件会话失败: {e}"))
 }
 
 #[cfg(test)]

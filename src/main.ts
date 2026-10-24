@@ -1006,20 +1006,19 @@ function openSettings(category: "theme" | "keybindings" | "layout" = "theme"): v
 // ---- 侧栏显隐 / 侧栏宽度拖拽：见 app/layout.ts ----
 
 $<HTMLButtonElement>("search-box").addEventListener("click", () => palette.open());
-$<HTMLButtonElement>("btn-sidebar-toggle").addEventListener("click", () => layout.toggleSidebar());
+// 侧栏开关两处入口：侧栏头部（收起）、标签栏左端（展开，侧栏收起时才显示）
+for (const id of ["btn-sidebar-toggle", "btn-sidebar-show"]) {
+  document.getElementById(id)?.addEventListener("click", () => layout.toggleSidebar());
+}
 $<HTMLButtonElement>("btn-terminal").addEventListener("click", () => void terminalHost.toggle());
 
-// 调试面板开关（免去按 F12；命令属 core webview 插件而非 window，且仅 debug 构建存在）
-const devtoolsBtn = $<HTMLButtonElement>("btn-devtools");
-if (import.meta.env.DEV) {
-  devtoolsBtn.addEventListener("click", () => {
-    void invoke("plugin:webview|internal_toggle_devtools").catch((e) =>
-      console.error("[devtools] 切换失败", e),
-    );
-  });
-} else {
-  devtoolsBtn.hidden = true;
-}
+// 调试面板开关（免去按 F12）；命令属 core webview 插件而非 window。
+// 发布构建同样可用：Cargo.toml 已开启 tauri 的 devtools 特性，否则该命令不存在。
+$<HTMLButtonElement>("btn-devtools").addEventListener("click", () => {
+  void invoke("plugin:webview|internal_toggle_devtools").catch((e) =>
+    console.error("[devtools] 切换失败", e),
+  );
+});
 
 // ---- 菜单栏 ----
 // 菜单数据由命令注册表派生（core/commands.ts 的 menuModel），

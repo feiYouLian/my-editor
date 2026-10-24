@@ -31,6 +31,9 @@ export class LayoutPane {
   setSidebarVisible(visible: boolean): void {
     this.sidebarVisible = visible;
     document.querySelector(".main")?.classList.toggle("no-sidebar", !visible);
+    // 收起后侧栏连同头部开关一起不可见，改由标签栏左端的按钮负责展开
+    const showBtn = document.getElementById("btn-sidebar-show");
+    if (showBtn instanceof HTMLElement) showBtn.hidden = visible;
   }
 
   /** 切换侧栏并写回配置 */

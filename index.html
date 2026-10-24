@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>轻量级定制文本编辑器</title>
+    <!-- 内联 data: 图标：避免 webview 自动请求 /favicon.ico 得到 404 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d1117'/%3E%3Cpath d='M4 5h8M4 8h8M4 11h5' stroke='%2358a6ff' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/src/styles/main.css" />
   </head>
   <body>
@@ -28,13 +30,13 @@
           </button>
         </div>
         <div class="titlebar-spacer"></div>
-        <button type="button" class="icon-btn" id="btn-sidebar-toggle" title="切换侧栏 (Ctrl+B)">&#9776;</button>
         <button type="button" id="btn-run" class="run-btn" title="运行当前文件（F5）" disabled>▶ 运行</button>
         <button type="button" id="btn-terminal" class="icon-btn terminal-btn" title="终端（Ctrl+`）">&gt;_</button>
         <button type="button" class="icon-btn" id="btn-devtools" title="开发者工具">&#128295;</button>
         <div class="window-controls">
           <button id="win-min" type="button" class="win-btn" title="最小化">&#8211;</button>
-          <button id="win-max" type="button" class="win-btn" title="最大化 / 还原">&#9634;</button>
+          <!-- 不用 title：状态切换会改写文本，原生 tooltip 会在点击后弹出干扰操作，改用 aria-label -->
+          <button id="win-max" type="button" class="win-btn" aria-label="最大化 / 还原">&#9634;</button>
           <button id="win-close" type="button" class="win-btn win-btn-close" title="关闭">&#10005;</button>
         </div>
       </header>
@@ -44,15 +46,21 @@
         <aside class="sidebar">
           <div class="sidebar-header">
             <span class="sidebar-title" id="ws-name">工作区</span>
-            <button id="btn-open-dir" type="button" class="icon-btn" title="打开目录" aria-label="打开目录">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.95a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/><path d="M8 8.4v3.2M6.4 10h3.2"/></svg>
-            </button>
+            <div class="sidebar-actions">
+              <button id="btn-open-dir" type="button" class="icon-btn" title="打开目录" aria-label="打开目录">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.95a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/><path d="M8 8.4v3.2M6.4 10h3.2"/></svg>
+              </button>
+              <!-- 侧栏开关放侧栏自己的头部（通用做法：面板的显隐按钮紧贴面板标题） -->
+              <button id="btn-sidebar-toggle" type="button" class="icon-btn" title="隐藏侧栏 (Ctrl+B)" aria-label="隐藏侧栏">&#9776;</button>
+            </div>
           </div>
           <div id="file-tree" class="file-tree"></div>
         </aside>
         <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整侧栏宽度（双击复位）"></div>
         <section class="editor-column">
           <div class="tabsbar">
+            <!-- 侧栏收起后这里变成最左端，作为唯一的「展开侧栏」入口 -->
+            <button type="button" class="icon-btn sidebar-show-btn" id="btn-sidebar-show" title="展开侧栏 (Ctrl+B)" aria-label="展开侧栏" hidden>&#187;</button>
             <div id="tabs" class="tabs-tabs"></div>
             <div id="preview-modes" class="preview-modes hidden">
               <button type="button" data-mode="edit" title="仅编辑">编辑</button>

@@ -915,6 +915,19 @@ button:disabled:hover {
   flex-shrink: 0;
 }
 
+/* 头部右侧动作区：打开目录 / 隐藏侧栏 */
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 侧栏收起后出现在标签栏左端的「展开侧栏」按钮 */
+.sidebar-show-btn {
+  flex-shrink: 0;
+}
+
 .sidebar-header .sidebar-title {
   font-size: 11px;
   font-weight: 600;
@@ -1179,6 +1192,15 @@ button:disabled:hover {
   background: transparent;
 }
 
+/* 当前文件段也可点：列出它所在目录（同级文件），便于快速切换 */
+.breadcrumb-item.current.clickable {
+  cursor: pointer;
+}
+
+.breadcrumb-item.current.clickable:hover {
+  background: var(--bg-elevated);
+}
+
 .breadcrumb-sep {
   flex-shrink: 0;
   opacity: 0.6;
@@ -1215,6 +1237,27 @@ button:disabled:hover {
 .bc-entry:hover {
   background: var(--accent);
   color: #fff;
+}
+
+/* 当前层级中被选中的那一项（点面包屑后定位到自己所在层级） */
+.bc-entry.current {
+  background: var(--bg-elevated);
+  font-weight: 600;
+}
+
+.bc-entry.current::after {
+  content: "当前";
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.65;
+}
+
+/* 下拉首行：返回上级目录 */
+.bc-entry.bc-up {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 
 .bc-icon {

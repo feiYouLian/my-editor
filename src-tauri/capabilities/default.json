@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "主窗口默认权限集（文件对话框）",
+  "description": "主窗口默认权限集（文件对话框 / 无边框窗口控制）",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -8,6 +8,7 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging"
   ]

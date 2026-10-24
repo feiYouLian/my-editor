@@ -588,17 +588,25 @@ pub fn run_curl(
 }
 
 /// 停止当前运行；返回是否有正在运行的任务
+///
+/// taskkill 可能耗时（应用退出流程也会调用本命令），必须放到阻塞线程，
+/// 否则会占住主线程让窗口「未响应」。
 #[tauri::command]
-pub fn stop_run(state: tauri::State<RunState>) -> bool {
-    {
-        let guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.as_ref() {
-            Some(running) => running.stopped.store(true, Ordering::Relaxed),
-            None => return false,
+pub async fn stop_run(state: tauri::State<'_, RunState>) -> Result<bool, String> {
+    let slot = state.slot.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(running) => running.stopped.store(true, Ordering::Relaxed),
+                None => return false,
+            }
         }
-    }
-    kill_tree(&state.slot);
-    true
+        kill_tree(&slot);
+        true
+    })
+    .await
+    .map_err(|e| format!("停止运行失败: {e}"))
 }
 
 #[cfg(test)]

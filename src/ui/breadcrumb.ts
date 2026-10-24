@@ -1,11 +1,13 @@
 /**
- * 路径面包屑：层级渲染（签名优化）+ 目录下拉（内容预览、下钻、快速打开）。
+ * 路径面包屑：层级渲染（签名优化）+ 层级下拉（同级预览、下钻、快速打开）。
  *
+ * 点某一段面包屑时，下拉列出的是「这一段所在的层级」（即其父目录的内容，
+ * 当前段高亮），便于在同一层横向切到兄弟目录/文件；需要看它内部时再点它。
  * 工作区根由调用方经 deps 注入（它是 app 级状态，不在此模块持有）。
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { splitAbsolutePath, workspaceRelativeParts } from "../core/paths";
+import { dirnameOf, splitAbsolutePath, workspaceRelativeParts } from "../core/paths";
 import type { Tab } from "../store/tabs";
 import { createEntryIcon } from "./icons";
 import { placeMenu } from "./menu";
@@ -23,6 +25,29 @@ export interface BreadcrumbDeps {
 interface Crumb {
   label: string;
   dir?: string;
+}
+
+/** 路径比较（Windows 下大小写与斜杠均不敏感） */
+function samePath(a: string, b: string): boolean {
+  const norm = (s: string): string => s.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * 取某一段面包屑「所在的层级」——即它的父目录。
+ * 已是根（盘符 / UNC 根）时退回自身，盘符补尾斜杠才能被 list_dir 接受。
+ */
+function levelDirOf(dir: string): string {
+  const trimmed = dir.replace(/[\\/]+$/, "");
+  if (trimmed.startsWith("\\\\")) {
+    const segs = trimmed.slice(2).split("\\").filter(Boolean);
+    if (segs.length <= 2) return dir; // UNC 根：没有可列的父目录
+  }
+  const parent = dirnameOf(trimmed);
+  if (!parent || parent === trimmed || /^[A-Za-z]:$/.test(parent)) {
+    return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}\\` : dir;
+  }
+  return parent;
 }
 
 export class Breadcrumb {
@@ -71,16 +96,44 @@ export class Breadcrumb {
     this.menuDir = null;
   }
 
-  /** 展开目录内容预览；点击子目录继续下钻，点击文件快速打开 */
-  private async fillMenu(menu: HTMLElement, dir: string, anchor: HTMLElement): Promise<void> {
-    this.menuDir = dir;
+  /**
+   * 列出 listDir 的内容：highlight 那一行标为「当前」，点击子目录继续下钻、点击文件快速打开。
+   * highlight 为 null 表示纯下钻视角（没有同级项需要定位）。
+   */
+  private async fillMenu(
+    menu: HTMLElement,
+    listDir: string,
+    anchor: HTMLElement,
+    highlight: string | null,
+  ): Promise<void> {
     menu.innerHTML = "";
 
     const title = document.createElement("div");
     title.className = "bc-title";
-    title.textContent = dir;
-    title.title = dir;
+    title.textContent = listDir;
+    title.title = listDir;
     menu.append(title);
+
+    // 首行「上一级」：没有父目录（盘符根 / UNC 根）时不显示
+    const up = levelDirOf(listDir);
+    if (!samePath(up, listDir)) {
+      const upRow = document.createElement("div");
+      upRow.className = "bc-entry bc-up";
+      upRow.title = up;
+      const upIcon = document.createElement("span");
+      upIcon.className = "bc-icon";
+      upIcon.textContent = "\u2191";
+      const upName = document.createElement("span");
+      upName.className = "bc-name";
+      upName.textContent = "上一级";
+      upRow.append(upIcon, upName);
+      upRow.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // 回到上一层，并把刚离开的目录高亮为「当前」
+        void this.fillMenu(menu, up, anchor, listDir);
+      });
+      menu.append(upRow);
+    }
 
     const place = (): void => {
       const rect = anchor.getBoundingClientRect();
@@ -90,7 +143,7 @@ export class Breadcrumb {
 
     let entries: { name: string; path: string; is_dir: boolean }[];
     try {
-      entries = await invoke("list_dir", { path: dir });
+      entries = await invoke("list_dir", { path: listDir });
     } catch (e) {
       const err = document.createElement("div");
       err.className = "bc-empty";
@@ -110,8 +163,10 @@ export class Breadcrumb {
     }
 
     for (const entry of entries) {
+      const current = highlight !== null && samePath(entry.path, highlight);
       const row = document.createElement("div");
-      row.className = "bc-entry";
+      row.className = current ? "bc-entry current" : "bc-entry";
+      if (current) row.setAttribute("aria-current", "true");
       const icon = document.createElement("span");
       icon.className = "bc-icon";
       icon.append(createEntryIcon(entry.name, entry.is_dir));
@@ -122,7 +177,8 @@ export class Breadcrumb {
       row.addEventListener("click", (e) => {
         e.stopPropagation();
         if (entry.is_dir) {
-          void this.fillMenu(menu, entry.path, anchor);
+          // 主动点击才进入下一级，默认视图停留在当前层级
+          void this.fillMenu(menu, entry.path, anchor, null);
         } else {
           this.closeMenu();
           this.deps.onOpenFile(entry.path);
@@ -133,9 +189,10 @@ export class Breadcrumb {
     place();
   }
 
-  private async showMenu(dir: string, anchor: HTMLElement): Promise<void> {
-    // 再次点击同一层级＝收起
-    if (this.menu && this.menuDir === dir) {
+  /** target：该段对应的真实路径（目录段＝目录，文件段＝文件） */
+  private async showMenu(target: string, anchor: HTMLElement): Promise<void> {
+    // 再次点击同一段＝收起
+    if (this.menu && this.menuDir === target) {
       this.closeMenu();
       return;
     }
@@ -145,7 +202,9 @@ export class Breadcrumb {
     menu.addEventListener("click", (e) => e.stopPropagation());
     document.body.append(menu);
     this.menu = menu;
-    await this.fillMenu(menu, dir, anchor);
+    this.menuDir = target;
+    // 点这一段的用处是「换个同级项」，所以列它所在的那一层并把这一段高亮
+    await this.fillMenu(menu, levelDirOf(target), anchor, target);
   }
 
   /** 渲染当前标签的面包屑：工作区内从子目录开始，工作区外用绝对路径 */
@@ -161,21 +220,26 @@ export class Breadcrumb {
     this.container.classList.toggle("hidden", !tab);
     if (!tab) return;
 
-    this.crumbs(tab).forEach((crumb, i) => {
+    const crumbs = this.crumbs(tab);
+    crumbs.forEach((crumb, i) => {
       if (i > 0) {
         const sep = document.createElement("span");
         sep.className = "breadcrumb-sep";
         sep.textContent = ">";
         this.container.append(sep);
       }
+      // 每段都能点：目录段看自身所在层，文件段看文件所在目录（同级文件）
+      const isLast = i === crumbs.length - 1;
+      const target = crumb.dir ?? (isLast ? (tab.path ?? undefined) : undefined);
       const el = document.createElement("span");
       el.className = crumb.dir ? "breadcrumb-item" : "breadcrumb-item current";
+      if (target) el.classList.add("clickable");
       el.textContent = crumb.label;
-      el.title = crumb.dir ?? tab.path ?? tab.name;
-      if (crumb.dir) {
+      el.title = target ?? tab.name;
+      if (target) {
         el.addEventListener("click", (e) => {
           e.stopPropagation();
-          void this.showMenu(crumb.dir!, el);
+          void this.showMenu(target, el);
         });
       }
       this.container.append(el);

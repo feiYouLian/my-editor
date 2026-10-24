@@ -287,18 +287,25 @@ pub fn terminal_resize(
 }
 
 /// 关闭终端会话；id 为空串时关闭当前会话
+///
+/// 结束 ConPTY 子进程要等 taskkill 返回，应用退出流程也会调用本命令，
+/// 因此放到阻塞线程执行，避免占住主线程让窗口「未响应」。
 #[tauri::command]
-pub fn terminal_close(state: tauri::State<TerminalState>, id: String) -> Result<(), String> {
-    let mut guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(session) = guard.as_mut() else {
-        return Ok(());
-    };
-    if !id.is_empty() && session.id != id {
-        return Ok(());
-    }
-    kill_session(session);
-    *guard = None;
-    Ok(())
+pub async fn terminal_close(state: tauri::State<'_, TerminalState>, id: String) -> Result<(), String> {
+    let slot = state.slot.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(session) = guard.as_mut() else {
+            return;
+        };
+        if !id.is_empty() && session.id != id {
+            return;
+        }
+        kill_session(session);
+        *guard = None;
+    })
+    .await
+    .map_err(|e| format!("关闭终端失败: {e}"))
 }
 
 /// 在终端中运行当前文件（PowerShell/POSIX 引号规则由 Rust 侧处理）
