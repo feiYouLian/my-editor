@@ -9,7 +9,7 @@
 
 import type { EditorView } from "@codemirror/view";
 import { getConfig } from "../config/settings";
-import type { Tab } from "../store/tabs";
+import { tabStore, type Tab } from "../store/tabs";
 import { CronPanel } from "../panels/cronPanel";
 import { BatchEncodingPanel } from "../panels/batchEncoding";
 import { RegexTesterPanel } from "../panels/regexTester";
@@ -144,8 +144,8 @@ export class RunHost {
     if (lang === "javascript" || lang === "jsx") return "node";
     if (lang === "java") return "java";
     // cURL 脚本：只看第一个有意义行（兼容 curl / curl.exe / PowerShell & 'curl'）
-    // 只检查前 4KB：本函数每次输入都会调用，对全文扫描太贵
-    const head = tab.content.length > 4096 ? tab.content.slice(0, 4096) : tab.content;
+    // 只取前 4KB：本函数每次输入都会调用，对全文扫描太贵（惰性快照下走 O(4KB) 头部读取）
+    const head = tabStore.contentHeadOf(tab, 4096);
     if (isCurlScriptText(head)) return "curl";
     return null;
   }

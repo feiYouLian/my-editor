@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { EditorView } from "@codemirror/view";
 import { getConfig } from "../config/settings";
-import type { Tab } from "../store/tabs";
+import { tabStore, type Tab } from "../store/tabs";
 import {
   PreviewHost,
   buildStandaloneHtml,
@@ -97,7 +97,7 @@ export class PreviewController {
       kind: tab.kind,
       path: tab.path,
       name: tab.name,
-      content: tab.content,
+      content: tabStore.snapshotOf(tab),
       size: tab.size,
       dataUrl: tab.dataUrl,
     };
@@ -127,9 +127,13 @@ export class PreviewController {
     this.refresh();
   }
 
-  /** 编辑器内容变化后的防抖重渲染 */
+  /** 编辑器内容变化后的防抖重渲染。
+   *  编辑模式 / 非 md-html 时预览不可见，提前返回；内容快照也推迟到防抖触发时才取，
+   *  避免每次按键都为预览做一次全文 toString + 指纹计算 */
   scheduleRender(tab: Tab): void {
-    this.panel.scheduleRender(this.toTab(tab));
+    if (tab.kind !== "text" || !pathKindOf(tab.path)) return;
+    if (this.currentMode() === "edit") return;
+    this.panel.scheduleRender(() => this.toTab(tab));
   }
 
   refresh(): void {
@@ -283,7 +287,7 @@ export class PreviewController {
       if (format === "md") {
         const target = await save({ defaultPath: `${title}.md` });
         if (typeof target !== "string") return;
-        const prepared = await this.exportImagesToAssets(tab.content, target);
+        const prepared = await this.exportImagesToAssets(tabStore.snapshotOf(tab), target);
         const content = await htmlToMarkdown(prepared.html);
         const result = await invoke<SaveResult>("save_file", {
           path: target,

@@ -86,7 +86,7 @@ export class TabSwitcher {
         this.deps.largeHost.close();
         await this.deps.getEditor().loadDocument(
           tab.path ?? "",
-          tab.content,
+          tabStore.snapshotOf(tab),
           tab.readonly,
           tab.languageOverride,
           tab.id,

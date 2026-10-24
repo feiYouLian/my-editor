@@ -7,6 +7,41 @@ import { confirmAction } from "../ui/dialogs";
  * 代价是各标签的撤销历史不保留。
  */
 
+/**
+ * 内容指纹：长度 + 两个独立 32 位哈希。
+ * 用指纹替代整份基线字符串，每个标签省一份全文常驻；碰撞概率约 2^-64，可视为无误判。
+ */
+export interface ContentFingerprint {
+  len: number;
+  a: number;
+  b: number;
+}
+
+/** 空内容的指纹（未落盘 / 占位 / 图片标签的基线） */
+const EMPTY_FINGERPRINT: ContentFingerprint = { len: 0, a: 0x811c9dc5, b: 5381 };
+
+/** FNV-1a + djb2 双哈希：一次遍历同时算两个独立散列 */
+function fingerprint(text: string): ContentFingerprint {
+  let a = 0x811c9dc5;
+  let b = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = (Math.imul(b, 33) + c) >>> 0;
+  }
+  return { len: text.length, a, b };
+}
+
+/** 编辑器当前内容的读取入口（由 main.ts 注入，避免 store 依赖编辑器实现） */
+export interface ContentProvider {
+  /** 编辑器当前承载的文档 id（与查询 id 不一致说明该标签已不在编辑器里） */
+  docId: () => string | null;
+  /** 全文：O(n)，仅在确实需要全文时调用 */
+  full: () => string;
+  /** 前 N 个字符：O(N)，供 cURL 特征检测等只读头部的场景 */
+  head: (chars: number) => string;
+}
+
 export interface Tab {
   id: string;
   path: string | null;
@@ -16,8 +51,12 @@ export interface Tab {
   /** 图片 tab 的 data URL（kind=image 时有效） */
   dataUrl?: string;
   content: string;
-  /** 最近一次打开/保存时的内容基线：用于判断是否真的与磁盘一致（撤销回原状即变干净） */
-  savedContent: string;
+  /** 最近一次打开/保存时的内容指纹（代替整份基线字符串） */
+  savedFingerprint: ContentFingerprint;
+  /** 磁盘内容是否以换行结尾：diff 采用差异块补尾换行用 */
+  savedTrailingNewline: boolean;
+  /** content 可能落后于编辑器：按键只标脏，读取前经 snapshotOf 同步 */
+  contentDirty?: boolean;
   size: number;
   dirty: boolean;
   encoding: string;
@@ -62,19 +101,31 @@ let seq = 0;
  */
 export type TabChangeKind = "structure" | "content";
 
+/** 停手精算脏标记的等待时长：按键路径只标脏，无新输入才取全文比较 */
+const CONTENT_SETTLE_MS = 800;
+
 class TabStore {
   private tabs: Tab[] = [];
   private activeId: string | null = null;
+  /** 编辑器内容提供者（main.ts 注入）：惰性快照的唯一读取入口 */
+  private provider: ContentProvider | null = null;
   private listeners = new Set<(kind: TabChangeKind) => void>();
   /** 标签被移除（关闭 / 被虚拟视图取代）时通知，供宿主做统一清理 */
   private closeListeners = new Set<(tab: Tab) => void>();
   /** 内容变更的按帧合并：rAF 句柄与待通知标记 */
   private contentRaf: number | null = null;
   private contentPending = false;
+  /** 各标签的停手精算定时器（关闭 / 被替代时清理，避免为已消失的标签取内容） */
+  private settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   subscribe(fn: (kind: TabChangeKind) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /** 注入编辑器内容提供者（编辑器创建后调用） */
+  setContentProvider(provider: ContentProvider | null): void {
+    this.provider = provider;
   }
 
   /** 订阅标签移除事件：编辑器状态缓存 / 光标 / 草稿 / 大文件会话等
@@ -85,6 +136,7 @@ class TabStore {
   }
 
   private notifyClosed(tab: Tab): void {
+    this.clearSettle(tab.id);
     this.closeListeners.forEach((fn) => fn(tab));
   }
 
@@ -120,7 +172,7 @@ class TabStore {
 
   /**
    * 打开文本文件：已打开则激活，否则新开标签（未命名文档 path 为空，每次新建独立标签）。
-   * opts.unsaved：内容未落盘（格式转换/代码生成结果），savedContent 置空使其标记为脏；
+   * opts.unsaved：内容未落盘（格式转换/代码生成结果），基线指纹置空使其标记为脏；
    * opts.languageOverride：直接指定高亮语言，避免首次渲染后再次切换。
    */
   open(
@@ -131,6 +183,7 @@ class TabStore {
       ? this.tabs.find((t) => t.path === content.path)
       : undefined;
     if (existing) {
+      this.syncContent(this.activeId);
       this.activeId = existing.id;
       this.emitStructure();
       return existing;
@@ -141,7 +194,8 @@ class TabStore {
       name: content.name,
       kind: "text",
       content: content.content,
-      savedContent: opts.unsaved ? "" : content.content,
+      savedFingerprint: opts.unsaved ? EMPTY_FINGERPRINT : fingerprint(content.content),
+      savedTrailingNewline: opts.unsaved ? false : content.content.endsWith("\n"),
       size: content.size,
       dirty: opts.unsaved === true && content.content !== "",
       encoding: content.encoding,
@@ -156,6 +210,8 @@ class TabStore {
     };
     if (opts.languageOverride !== undefined) tab.languageOverride = opts.languageOverride;
     this.tabs.push(tab);
+    // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
+    this.syncContent(this.activeId);
     this.activeId = tab.id;
     this.emitStructure();
     return tab;
@@ -190,7 +246,8 @@ class TabStore {
       name: info.name,
       kind: "text",
       content: "",
-      savedContent: "",
+      savedFingerprint: EMPTY_FINGERPRINT,
+      savedTrailingNewline: false,
       size: info.size,
       dirty: false,
       encoding: info.encoding,
@@ -206,6 +263,8 @@ class TabStore {
       largeId: info.id,
     };
     this.tabs.push(tab);
+    // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
+    this.syncContent(this.activeId);
     this.activeId = tab.id;
     this.emitStructure();
     return tab;
@@ -214,7 +273,9 @@ class TabStore {
   /** 用已载入内容填充标签（占位标签载入 / 虚拟标签转编辑器共用） */
   private applyContent(tab: Tab, content: FileContent): void {
     tab.content = content.content;
-    tab.savedContent = content.content;
+    tab.contentDirty = false;
+    tab.savedFingerprint = fingerprint(content.content);
+    tab.savedTrailingNewline = content.content.endsWith("\n");
     tab.size = content.size;
     tab.encoding = content.encoding;
     tab.savedEncoding = content.encoding;
@@ -286,7 +347,8 @@ class TabStore {
       name,
       kind: "text",
       content: "",
-      savedContent: "",
+      savedFingerprint: EMPTY_FINGERPRINT,
+      savedTrailingNewline: false,
       size: 0,
       dirty: false,
       encoding: "",
@@ -319,8 +381,10 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return null;
     tab.content = content;
+    tab.contentDirty = false;
     tab.pending = false;
-    this.refreshDirty(tab);
+    // 基线仍是磁盘内容：草稿一律视为未保存修改
+    tab.dirty = true;
     this.emitStructure();
     return tab;
   }
@@ -329,6 +393,7 @@ class TabStore {
   openImage(path: string, name: string, size: number, dataUrl: string): Tab {
     const existing = this.tabs.find((t) => t.path === path);
     if (existing) {
+      this.syncContent(this.activeId);
       this.activeId = existing.id;
       this.emitStructure();
       return existing;
@@ -340,7 +405,8 @@ class TabStore {
       kind: "image",
       dataUrl,
       content: "",
-      savedContent: "",
+      savedFingerprint: EMPTY_FINGERPRINT,
+      savedTrailingNewline: false,
       size,
       dirty: false,
       encoding: "binary",
@@ -354,6 +420,8 @@ class TabStore {
       readonlyReason: "图片查看器",
     };
     this.tabs.push(tab);
+    // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
+    this.syncContent(this.activeId);
     this.activeId = tab.id;
     this.emitStructure();
     return tab;
@@ -361,6 +429,7 @@ class TabStore {
 
   activate(id: string): void {
     if (this.activeId !== id) {
+      this.syncContent(this.activeId);
       this.activeId = id;
       this.emitStructure();
     }
@@ -415,28 +484,121 @@ class TabStore {
     return this.closeMany(this.tabs.map((t) => t.id));
   }
 
-  /** 更新标签内容（编辑器输入时调用）：按帧合并通知，见 emitContent */
-  setContent(id: string, content: string): void {
+  /**
+   * 编辑器内容已变：只标记，不取全文（按键路径 O(1)）。
+   * content 的同步移到读取时（snapshotOf）与停手后的精算（内部排程）。
+   */
+  markEdited(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
-    if (tab) {
-      tab.content = content;
-      this.refreshDirty(tab);
-      this.emitContent();
-    }
+    if (!tab) return;
+    tab.contentDirty = true;
+    tab.dirty = true;
+    this.emitContent();
+    this.scheduleSettle(id);
   }
 
-  /** 依据内容基线与元数据基线重算脏标记（撤销回基线即变干净） */
+  /** 排程一次停手精算：窗口内无新输入才取全文比较 */
+  private scheduleSettle(id: string): void {
+    const prev = this.settleTimers.get(id);
+    if (prev !== undefined) clearTimeout(prev);
+    this.settleTimers.set(
+      id,
+      setTimeout(() => {
+        this.settleTimers.delete(id);
+        this.settleContent(id);
+      }, CONTENT_SETTLE_MS),
+    );
+  }
+
+  /** 取消该标签的停手精算 */
+  private clearSettle(id: string): void {
+    const timer = this.settleTimers.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.settleTimers.delete(id);
+  }
+
+  /** 外部替换内容（差异块采用 / 转换结果等）：写入并标记为未保存修改 */
+  applyEdit(id: string, content: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.content = content;
+    tab.contentDirty = false;
+    tab.dirty = true;
+    this.emitStructure();
+  }
+
+  /** 还原为磁盘内容：内容成为新基线，元数据差异（编码/换行）仍保留脏标记 */
+  restoreContent(id: string, content: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.content = content;
+    tab.contentDirty = false;
+    tab.savedFingerprint = fingerprint(content);
+    tab.savedTrailingNewline = content.endsWith("\n");
+    this.refreshDirty(tab);
+    this.emitStructure();
+  }
+
+  /** 读取标签最新内容：激活标签会先同步编辑器内容（惰性快照，O(n) 且会更新脏标记） */
+  snapshotOf(tab: Tab): string {
+    this.syncContent(tab.id);
+    return tab.content;
+  }
+
+  /** 读取内容头部（不触发全文 toString）：供按前缀判断的场景 */
+  contentHeadOf(tab: Tab, chars: number): string {
+    const p = this.provider;
+    if (tab.contentDirty && p && p.docId() === tab.id) return p.head(chars);
+    return tab.content.length > chars ? tab.content.slice(0, chars) : tab.content;
+  }
+
+  /** 停手后的精确精算：撤销回原状时清掉脏点（由 scheduleSettle 排程） */
+  private settleContent(id: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab || !tab.contentDirty || !this.provider || this.provider.docId() !== id) return;
+    const before = tab.dirty;
+    this.syncContent(id);
+    if (tab.dirty !== before) this.emitStructure();
+  }
+
+  /** 内部：把编辑器内容落回标签（仅对当前激活文档有效） */
+  private syncContent(id: string | null): void {
+    if (id === null) return;
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab || !tab.contentDirty) return;
+    const p = this.provider;
+    // 非激活标签：内容已在切走时落回，不做全文快照
+    if (!p || p.docId() !== id) return;
+    tab.content = p.full();
+    tab.contentDirty = false;
+    this.refreshDirty(tab);
+  }
+
+  /** 依据内容指纹与元数据基线重算脏标记（撤销回基线即变干净） */
   private refreshDirty(tab: Tab): void {
+    const sameContent =
+      tab.content.length === tab.savedFingerprint.len &&
+      this.matchesFingerprint(tab.content, tab.savedFingerprint);
     tab.dirty =
-      tab.content !== tab.savedContent ||
+      !sameContent ||
       tab.encoding !== tab.savedEncoding ||
       tab.newline !== tab.savedNewline;
+  }
+
+  private matchesFingerprint(text: string, fp: ContentFingerprint): boolean {
+    if (text.length !== fp.len) return false;
+    const cur = fingerprint(text);
+    return cur.a === fp.a && cur.b === fp.b;
   }
 
   markSaved(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab) {
-      tab.savedContent = tab.content;
+      // 保存前确保基线取的是最新内容
+      this.syncContent(id);
+      tab.savedFingerprint = fingerprint(tab.content);
+      tab.savedTrailingNewline = tab.content.endsWith("\n");
       tab.savedEncoding = tab.encoding;
       tab.savedNewline = tab.newline;
       tab.dirty = false;
@@ -448,6 +610,8 @@ class TabStore {
   setNewline(id: string, newline: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (tab && tab.newline !== newline) {
+      // 脏标记要基于最新内容，先落回编辑器内容
+      this.syncContent(id);
       tab.newline = newline;
       this.refreshDirty(tab);
       this.emitStructure();
@@ -459,7 +623,9 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
     tab.content = content.content;
-    tab.savedContent = content.content; // 磁盘内容成为内容基线
+    tab.contentDirty = false;
+    tab.savedFingerprint = fingerprint(content.content); // 磁盘内容成为内容基线
+    tab.savedTrailingNewline = content.content.endsWith("\n");
     tab.size = content.size;
     tab.encoding = content.encoding;
     tab.encodingConfidence = content.encoding_confidence;

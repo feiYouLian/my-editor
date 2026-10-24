@@ -27,7 +27,7 @@ import { EditorContextMenu, type MenuEntry } from "./ui/editorMenu";
 import { copyFromEditor, pasteIntoEditor } from "./editor/clipboard";
 import { PreviewController } from "./app/previewHost";
 import { LargeFileHost } from "./app/largeFileHost";
-import { FileService, FALLBACK_ENCODINGS } from "./app/fileService";
+import { FileService, FALLBACK_ENCODINGS, readDiskAs } from "./app/fileService";
 import { RunHost } from "./app/runHost";
 import { TerminalHost } from "./app/terminalHost";
 import { FetchHost } from "./app/fetchHost";
@@ -66,7 +66,6 @@ import { CASE_LABELS, type CaseMode } from "./editor/transforms";
 import { localStamps, newUuid } from "./core/stamps";
 import { basenameOf } from "./core/paths";
 import { effectiveLanguage, languageLabel } from "./editor/languages";
-import type { FileContent } from "./types/app";
 
 // ---------------------------------------------------------------------------
 // 多标签页 + 文件树/工作区 + 命令面板 + Prettier 格式化
@@ -266,12 +265,7 @@ async function reopenWithEncoding(tabId: string, encoding: string): Promise<void
     return;
   }
   try {
-    const data = await invoke<FileContent>("reopen_with_encoding", {
-      path: tab.path,
-      encoding,
-      largeFileThreshold: settings.largeFileThreshold,
-      logExtensions: getConfig().largeFile.logExtensions,
-    });
+    const data = await readDiskAs(tab.path, encoding);
     tabStore.reopenWith(tabId, data);
     // 编码已变更：旧结论失效，按新解读重新检测
     tabStore.setMojibake(tabId, "", "");
@@ -311,7 +305,7 @@ async function checkMojibake(tabId: string): Promise<void> {
   try {
     const report = await invoke<MojibakeReport>("detect_mojibake", {
       path: tab.path,
-      text: tab.content,
+      text: tabStore.snapshotOf(tab),
       current: tab.encoding,
     });
     const current = tabStore.findById(tabId);
@@ -546,7 +540,8 @@ editorHandle = createEditor($("editor"), {
     // 编辑器承载的文档必须仍是该标签：切换标签的异步窗口内视图里
     // 可能还是上一个文档，此时写入会把内容/草稿串到错误标签上
     if (editorHandle.docId() !== tab.id) return;
-    tabStore.setContent(tab.id, editorHandle.getContent());
+    // 只标记（O(1)）：全文快照与脏精算由 store 在读取时 / 停手后自行完成
+    tabStore.markEdited(tab.id);
     const t = tabStore.findById(tab.id);
     if (t) preview.scheduleRender(t);
     // 结果面板存的是绝对偏移：编辑后防抖重枚举，否则双击跳错位置
@@ -568,6 +563,13 @@ editorHandle = createEditor($("editor"), {
     console.info(`[editor] 高亮已禁用: ${reason}`);
     statusLanguage.textContent = "纯文本（高亮已禁用）";
   },
+});
+
+// 惰性快照：按键只标记内容已变，需要全文时经 snapshotOf 从编辑器拉取
+tabStore.setContentProvider({
+  docId: () => editorHandle.docId(),
+  full: () => editorHandle.getContent(),
+  head: (chars) => editorHandle.view.state.doc.sliceString(0, chars),
 });
 
 // 配置变更 → 热更新编辑器（缩进/括号/缩进线/同名高亮/列选择/键位/主题等 Compartment 重配）

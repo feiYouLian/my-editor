@@ -62,6 +62,19 @@ function isImagePath(path: string): boolean {
   return IMAGE_EXTS.has(ext);
 }
 
+/**
+ * 按指定编码重读磁盘内容（不建标签、不改状态）。
+ * 「重新打开为」与「差异比较」共用：分流阈值必须保持同一口径。
+ */
+export function readDiskAs(path: string, encoding: string): Promise<FileContent> {
+  return invoke<FileContent>("reopen_with_encoding", {
+    path,
+    encoding,
+    largeFileThreshold: settings.largeFileThreshold,
+    logExtensions: getConfig().largeFile.logExtensions,
+  });
+}
+
 export class FileService {
   constructor(private deps: FileServiceDeps) {}
 
@@ -271,12 +284,11 @@ export class FileService {
 
   /** 调 Rust 保存命令：保留换行符与 BOM（原子替换在 Rust 侧） */
   async writeTo(tab: Tab, path: string, encodingOverride?: string): Promise<void> {
-    // 用 tab.content 而非编辑器内容：非激活标签的编辑只存在于缓存中，
-    // 且激活标签的每次输入都会实时同步进 tab.content（onDocChange → setContent）
+    // 经 snapshotOf 取内容：激活标签会先把编辑器里的最新内容落回（惰性快照）
     const encoding = encodingOverride ?? tab.encoding;
     const result = await invoke<SaveResult>("save_file", {
       path,
-      content: tab.content,
+      content: tabStore.snapshotOf(tab),
       newline: tab.newline,
       hasBom: tab.has_bom,
       encoding,

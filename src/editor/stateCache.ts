@@ -21,14 +21,21 @@ const STATE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
 
 export class DocumentStateCache {
   private cache = new Map<string, CachedState>();
+  /** 超限文档不缓存 EditorState，但保留光标：切回时不该跳回文首 */
+  private cursors = new Map<string, number>();
 
   get(key: string): CachedState | undefined {
     return this.cache.get(key);
   }
 
-  /** 写入并淘汰最旧条目；超大文档直接跳过 */
+  /** 写入并淘汰最旧条目；超大文档只记光标，不保留状态 */
   set(key: string, entry: Omit<CachedState, "state"> & { state: EditorState }): void {
-    if (entry.state.doc.length > STATE_CACHE_MAX_BYTES) return;
+    if (entry.state.doc.length > STATE_CACHE_MAX_BYTES) {
+      this.cursors.set(key, entry.state.selection.main.head);
+      this.cache.delete(key);
+      return;
+    }
+    this.cursors.delete(key);
     this.cache.delete(key);
     this.cache.set(key, entry);
     while (this.cache.size > STATE_CACHE_LIMIT) {
@@ -38,7 +45,15 @@ export class DocumentStateCache {
     }
   }
 
+  /** 取出并清除超限文档记录的光标位置 */
+  takeCursor(key: string): number | undefined {
+    const head = this.cursors.get(key);
+    this.cursors.delete(key);
+    return head;
+  }
+
   delete(key: string): void {
     this.cache.delete(key);
+    this.cursors.delete(key);
   }
 }

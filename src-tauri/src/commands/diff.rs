@@ -115,7 +115,29 @@ fn normalize(text: &str) -> (String, bool) {
     (unified, had_cr)
 }
 
-fn payload(left_label: &str, right_label: &str, left: &str, right: &str) -> DiffPayload {
+/// 参与比较的单侧文本上限：Myers 最坏 O(ND)，且对齐行会额外放大数倍内存
+const MAX_DIFF_BYTES: usize = 4 * 1024 * 1024;
+
+fn ensure_diff_size(bytes: usize) -> Result<(), String> {
+    if bytes > MAX_DIFF_BYTES {
+        return Err(format!(
+            "文本过大，已跳过比较（单侧上限 {} MB，当前 {:.1} MB）",
+            MAX_DIFF_BYTES / 1024 / 1024,
+            bytes as f64 / 1024.0 / 1024.0
+        ));
+    }
+    Ok(())
+}
+
+fn payload(
+    left_label: &str,
+    right_label: &str,
+    left: &str,
+    right: &str,
+) -> Result<DiffPayload, String> {
+    // 防御性检查：diff_texts 的文本已在内存里，这里挡住归一化与对齐行的额外放大
+    ensure_diff_size(left.len())?;
+    ensure_diff_size(right.len())?;
     let (left_n, left_cr) = normalize(left);
     let (right_n, right_cr) = normalize(right);
     let diff = TextDiff::from_lines(&left_n, &right_n);
@@ -161,7 +183,7 @@ fn payload(left_label: &str, right_label: &str, left: &str, right: &str) -> Diff
         .header(left_label, right_label)
         .to_string();
 
-    DiffPayload {
+    Ok(DiffPayload {
         left_label: left_label.to_string(),
         right_label: right_label.to_string(),
         identical: added == 0 && removed == 0,
@@ -171,7 +193,7 @@ fn payload(left_label: &str, right_label: &str, left: &str, right: &str) -> Diff
         added,
         removed,
         patch,
-    }
+    })
 }
 
 /// 比较两段文本。大文本 diff 可能耗时较久：放 spawn_blocking 执行。
@@ -186,7 +208,7 @@ pub async fn diff_texts(
         payload(&left_label, &right_label, &left_text, &right_text)
     })
     .await
-    .map_err(|e| format!("任务调度失败: {e}"))
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 读取文件并按检测到的编码解码（解码失败回退 UTF-8 宽松解码）
@@ -215,14 +237,21 @@ pub async fn diff_files(
     state.add_path(&left_path);
     state.add_path(&right_path);
     tauri::async_runtime::spawn_blocking(move || {
+        // 先按文件大小拒绝，避免把超大文件读入内存后才失败
+        for path in [&left_path, &right_path] {
+            let size = std::fs::metadata(path.as_str())
+                .map(|m| m.len() as usize)
+                .map_err(|e| format!("读取失败 {path}: {e}"))?;
+            ensure_diff_size(size)?;
+        }
         let left = read_text(&left_path)?;
         let right = read_text(&right_path)?;
-        Ok(payload(
+        payload(
             &short_name(&left_path),
             &short_name(&right_path),
             &left,
             &right,
-        ))
+        )
     })
     .await
     .map_err(|e| format!("任务调度失败: {e}"))?
@@ -296,15 +325,15 @@ fn git_diff_blocking(path: &str, scope: &str) -> Result<DiffPayload, String> {
             format!("暂存区 · {rel}"),
         )
     } else {
+        // 工作区文件先按大小拒绝，避免整文件读入后才被 payload 驳回
+        let size = std::fs::metadata(path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        ensure_diff_size(size)?;
         (read_text(&path)?, format!("工作区 · {rel}"))
     };
 
-    Ok(payload(
-        &format!("HEAD · {rel}"),
-        &right_label,
-        &old,
-        &new,
-    ))
+    Ok(payload(&format!("HEAD · {rel}"), &right_label, &old, &new)?)
 }
 
 /// 导出统一 diff 补丁：写入 <path>.patch，返回实际写入路径。
@@ -327,6 +356,11 @@ pub fn export_patch(
 mod tests {
     use super::*;
 
+    /// 测试专用：默认标签、文本必然小于上限，直接取 payload
+    fn diff_of(left: &str, right: &str) -> DiffPayload {
+        payload("l", "r", left, right).expect("测试文本不应超限")
+    }
+
     #[test]
     fn normalize_unifies_eol_and_ensures_trailing_newline() {
         assert_eq!(normalize("a\r\nb\r\n"), ("a\nb\n".to_string(), true));
@@ -338,13 +372,22 @@ mod tests {
 
     #[test]
     fn trailing_newline_presence_is_not_a_difference() {
-        let p = payload("l", "r", "a\nb", "a\nb\n");
+        let p = diff_of("a\nb", "a\nb\n");
         assert!(p.identical);
     }
 
     #[test]
+    fn oversized_side_is_rejected() {
+        let big = "x".repeat(MAX_DIFF_BYTES + 1);
+        let err = payload("l", "r", &big, "")
+            .err()
+            .expect("超限文本应被拒绝");
+        assert!(err.contains("文本过大"));
+    }
+
+    #[test]
     fn identical_when_only_eol_differs() {
-        let p = payload("l", "r", "a\r\nb\r\n", "a\nb\n");
+        let p = diff_of("a\r\nb\r\n", "a\nb\n");
         assert!(p.identical);
         assert!(p.newline_normalized);
         assert_eq!((p.added, p.removed), (0, 0));
@@ -352,14 +395,14 @@ mod tests {
 
     #[test]
     fn plain_identical_text_is_identical() {
-        let p = payload("l", "r", "same\ntext\n", "same\ntext\n");
+        let p = diff_of("same\ntext\n", "same\ntext\n");
         assert!(p.identical);
         assert!(!p.newline_normalized);
     }
 
     #[test]
     fn change_pairs_deleted_with_inserted() {
-        let p = payload("l", "r", "one\ntwo\n", "one\nTWO\n");
+        let p = diff_of("one\ntwo\n", "one\nTWO\n");
         assert!(!p.identical);
         assert_eq!((p.added, p.removed), (1, 1));
         let change = p.rows.iter().find(|r| r.kind == "change").expect("应有 change 行");
@@ -372,18 +415,18 @@ mod tests {
 
     #[test]
     fn pure_insertion_and_deletion() {
-        let ins = payload("l", "r", "a\n", "a\nb\nc\n");
+        let ins = diff_of("a\n", "a\nb\nc\n");
         assert_eq!((ins.added, ins.removed), (2, 0));
         assert!(ins.rows.iter().any(|r| r.kind == "ins"));
 
-        let del = payload("l", "r", "a\nb\nc\n", "a\n");
+        let del = diff_of("a\nb\nc\n", "a\n");
         assert_eq!((del.added, del.removed), (0, 2));
         assert!(del.rows.iter().any(|r| r.kind == "del"));
     }
 
     #[test]
     fn unchanged_lines_keep_both_line_numbers() {
-        let p = payload("l", "r", "a\nb\n", "a\nb\n");
+        let p = diff_of("a\nb\n", "a\nb\n");
         for row in p.rows.iter().filter(|r| r.kind == "equal") {
             assert_eq!(row.old_no, row.new_no);
             assert_eq!(row.left, row.right);
@@ -392,7 +435,7 @@ mod tests {
 
     #[test]
     fn patch_carries_unified_header() {
-        let p = payload("left.txt", "right.txt", "a\n", "b\n");
+        let p = payload("left.txt", "right.txt", "a\n", "b\n").expect("测试文本不应超限");
         assert!(p.patch.contains("--- left.txt"));
         assert!(p.patch.contains("+++ right.txt"));
     }

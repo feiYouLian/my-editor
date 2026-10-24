@@ -15,6 +15,7 @@ import type {
   DiffRow,
   DiffSession,
 } from "../panels/diffPanel";
+import { readDiskAs } from "./fileService";
 
 export interface DiffServiceDeps {
   getActiveTab: () => Tab | null;
@@ -54,6 +55,14 @@ function mergeHunk(
   if (lines.length === 0) return "";
   const joined = lines.join("\n");
   return trailingNewline ? `${joined}\n` : joined;
+}
+
+/**
+ * 比较两段文本前的磁盘基线：磁盘内容不再常驻内存，仅在主动比较/还原时读一次。
+ * 未命名文档（path 为空）没有磁盘基线，按空内容处理。
+ */
+async function diskBaseline(path: string | null, encoding: string): Promise<string> {
+  return path ? (await readDiskAs(path, encoding)).content : "";
 }
 
 export class DiffService {
@@ -103,16 +112,15 @@ export class DiffService {
     }
     // 文档基线侧：可采用侧的对侧
     const baseSide: "left" | "right" = adopt.side === "left" ? "right" : "left";
+    const current = tabStore.snapshotOf(tab);
     const trailing =
-      session.trailingFrom === "content"
-        ? tab.content.endsWith("\n")
-        : tab.savedContent.endsWith("\n");
+      session.trailingFrom === "content" ? current.endsWith("\n") : tab.savedTrailingNewline;
     const merged = mergeHunk(payload, hunkIndex, baseSide, adopt.side, trailing);
-    if (merged === tab.content) {
+    if (merged === current) {
       this.deps.showMessage("该处内容已与所选侧一致，无需改动");
       return;
     }
-    tabStore.setContent(tab.id, merged);
+    tabStore.applyEdit(tab.id, merged);
     await this.deps.onReloadActiveTab();
     await this.open(session, hunkIndex);
     this.deps.showMessage(`已采用第 ${hunkIndex + 1} 处差异块（未保存，Ctrl+S 生效）`);
@@ -205,11 +213,13 @@ export class DiffService {
     const tabId = tab.id;
     const name = tab.name;
     await this.open({
-      load: () => {
+      load: async () => {
         const t = tabStore.findById(tabId);
+        if (!t) throw new Error("标签已关闭");
+        const disk = await diskBaseline(t.path, t.encoding);
         return invoke<DiffPayload>("diff_texts", {
-          leftText: t?.savedContent ?? "",
-          rightText: t?.content ?? "",
+          leftText: disk,
+          rightText: tabStore.snapshotOf(t),
           leftLabel: `磁盘 · ${name}`,
           rightLabel: `编辑中 · ${name}`,
         });
@@ -221,10 +231,11 @@ export class DiffService {
           run: async () => {
             const t = tabStore.findById(tabId);
             if (!t) return;
-            tabStore.setContent(tabId, t.savedContent);
+            const disk = await diskBaseline(t.path, t.encoding);
+            tabStore.restoreContent(tabId, disk);
             await this.deps.onReloadActiveTab();
             this.panel?.close();
-            this.deps.showMessage("已还原为磁盘内容");
+            this.deps.showMessage(t.path ? "已还原为磁盘内容" : "已清空未命名文档（无磁盘基线）");
           },
         },
         {

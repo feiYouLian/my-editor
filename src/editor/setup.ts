@@ -186,6 +186,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         // 离开当前标签：先把状态（含撤销历史）存起来
         if (activeDocKey !== null) cacheActiveState(activeDocKey);
         const cached = key !== null ? stateCache.get(key) : undefined;
+        // 先取光标再删：delete 会连超限文档的光标记录一起清掉
+        const cursor = key !== null ? stateCache.takeCursor(key) : undefined;
         if (key !== null) stateCache.delete(key);
         if (cached && cached.state.doc.toString() === content) {
           view.setState(cached.state);
@@ -218,6 +220,14 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           // 新状态在创建时即按当前配置与只读态构建
           view.setState(createState(content));
           languageKey = null;
+          if (cursor !== undefined) {
+            // 超限文档没有缓存状态：至少恢复光标，否则切回会跳回文首
+            const head = Math.min(cursor, view.state.doc.length);
+            view.dispatch({
+              selection: { anchor: head },
+              effects: EditorView.scrollIntoView(head, { y: "nearest" }),
+            });
+          }
           await applyLanguage(languageOverride);
         }
         activeDocKey = key;

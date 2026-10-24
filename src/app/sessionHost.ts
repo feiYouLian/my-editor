@@ -220,7 +220,7 @@ export class SessionHost {
         key,
         path: tab.path,
         name: tab.name,
-        content: tab.content,
+        content: tabStore.snapshotOf(tab),
         encoding: tab.encoding,
         newline: tab.newline,
         hasBom: tab.has_bom,

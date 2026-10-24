@@ -13,7 +13,7 @@
 import type { EditorView } from "@codemirror/view";
 import { pathKindOf as kindOf } from "./preview/pathKind";
 import { loadMarkdownPipeline } from "./preview/markdownPipeline";
-import { inlineLocalImages } from "./preview/localImages";
+import { EXPORT_IMAGE_MAX_BYTES, inlineLocalImages } from "./preview/localImages";
 import { renderImageViewer } from "./preview/imageViewer";
 import type { PreviewKind, PreviewMode, PreviewTab } from "./preview/types";
 
@@ -80,6 +80,7 @@ export class PreviewHost {
 
   /** 标签/模式变化时调用：应用布局并按需渲染 */
   apply(tab: PreviewTab | null, mode: PreviewMode): void {
+    const prevId = this.activeId;
     this.activeId = tab?.id ?? null;
     this.clearImageToolbar();
     if (tab?.kind === "image") {
@@ -99,6 +100,9 @@ export class PreviewHost {
       return;
     }
     this.mode = mode !== "edit" ? mode : "edit";
+    // 换到另一个标签且新模式是编辑：上一个标签的渲染结果不会再被复用。
+    // 同一标签内 编辑/预览 互切仍保留（切回零延迟），属缓存而非泄漏。
+    if (this.mode === "edit" && prevId !== this.activeId) this.releaseContent();
     this.setAreaMode(this.mode);
     if (this.mode !== "edit" && tab) {
       this.renderSafe(tab, this.kind);
@@ -110,9 +114,11 @@ export class PreviewHost {
     if (this.activeId !== tabId) return;
     this.activeId = null;
     this.releaseContent();
+    this.kind = null;
   }
 
-  /** 释放预览 DOM：清空后 data URL 字符串与 iframe 文档树才会被回收 */
+  /** 释放预览 DOM：清空后 data URL 字符串与 iframe 文档树才会被回收。
+   *  不重置 kind：调用方可能仍需为当前标签渲染，置空由 forgetTab / 不可预览分支负责 */
   private releaseContent(): void {
     if (this.renderTimer) {
       clearTimeout(this.renderTimer);
@@ -121,14 +127,20 @@ export class PreviewHost {
     this.contentEl.innerHTML = "";
     this.contentEl.classList.remove("md-doc");
     this.clearImageToolbar();
-    this.kind = null;
   }
 
-  /** 编辑内容变化后的防抖重渲染 */
-  scheduleRender(tab: PreviewTab): void {
-    if (this.mode === "edit" || !this.kind || this.activeId !== tab.id) return;
+  /** 编辑内容变化后的防抖重渲染：内容快照由调用方在真正渲染时再取 */
+  scheduleRender(getTab: () => PreviewTab): void {
+    if (this.mode === "edit" || !this.kind) return;
     if (this.renderTimer) clearTimeout(this.renderTimer);
-    this.renderTimer = setTimeout(() => this.renderSafe(tab, this.kind!), 300);
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = null;
+      const kind = this.kind;
+      if (!kind || this.mode === "edit") return;
+      const tab = getTab();
+      if (this.activeId !== tab.id) return;
+      this.renderSafe(tab, kind);
+    }, 300);
   }
 
   /** 渲染并兜底错误：组件加载失败时在预览区显示原因，绝不静默空白 */
@@ -353,7 +365,7 @@ export class PreviewHost {
       const holder = document.createElement("div");
       holder.innerHTML = this.md!.render(tab.content);
       // 导出文件可能被保存到任意目录：本地图片转 data URL，保证打开即可见
-      await inlineLocalImages(holder, tab.path);
+      await inlineLocalImages(holder, tab.path, EXPORT_IMAGE_MAX_BYTES);
       return this.dompurify!.sanitize(holder.innerHTML);
     }
     // html 类文件：导出/打印前也过一遍消毒，避免把原始内容里的

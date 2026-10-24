@@ -183,6 +183,8 @@ export class LargeView {
 
   /** 流式批次：追加命中行，首批到达即先渲染；末批收尾 */
   private applyFilterBatch(p: FilterBatch): void {
+    // 命令返回可能晚于末批事件：已收尾后到达的批次不得再追加，否则重复计行
+    if (this.filterFinishedId === p.requestId) return;
     // 上限由 MatchBuffer 内部裁剪：Uint32Array 定长，不能像 number[] 那样 push
     this.matchBuf.append(p.matches);
     if (!p.done) {
@@ -199,7 +201,6 @@ export class LargeView {
       }
       return;
     }
-    if (this.filterFinishedId === p.requestId) return;
     this.filterFinishedId = p.requestId;
     if (p.cancelled) {
       this.el.statusEl.textContent = "过滤已中止";
