@@ -96,6 +96,22 @@ const jsFormatters: Record<string, (text: string) => Promise<string>> = {
   },
 };
 
+/**
+ * 组装 CLI 格式化失败信息。
+ * 仅「工具未安装 / 不在 PATH」时追加安装指引：后端该分支的文案固定以
+ * 「未找到格式化工具」开头（见 format.rs 的 NotFound 处理），其他错误
+ * （如工具报语法错误）附安装建议会误导。
+ * 状态栏只渲染首行（见 main.ts），故把安装命令并入首行，保证不看
+ * 控制台也能拿到下一步动作；完整说明仍保留在后续行与控制台日志中。
+ */
+function withInstallHint(raw: string, tool: string): string {
+  if (!raw.includes("未找到格式化工具")) return raw;
+  const hint = installHints[tool];
+  if (!hint) return raw;
+  const [command] = hint.split("\n");
+  return `未找到格式化工具「${tool}」：${command}\n${raw}\n安装指引: ${hint}`;
+}
+
 /** 该语言是否有格式化器（CLI / 内置 JS / Prettier） */
 export function supportsFormatting(languageKey: string | null): boolean {
   if (!languageKey) return false;
@@ -131,9 +147,11 @@ export async function formatText(
         output,
       };
     } catch (e) {
-      const hint = installHints[cli.tool];
-      const msg = hint ? `${String(e)}\n安装指引: ${hint}` : String(e);
-      return { ok: false, message: msg, changed: false };
+      return {
+        ok: false,
+        message: withInstallHint(String(e), cli.tool),
+        changed: false,
+      };
     }
   }
 

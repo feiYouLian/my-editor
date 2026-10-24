@@ -1,5 +1,4 @@
-import type { LanguageSupport } from "@codemirror/language";
-import { LanguageDescription } from "@codemirror/language";
+import { LanguageDescription, LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { javascript } from "@codemirror/lang-javascript";
@@ -10,7 +9,7 @@ import { python } from "@codemirror/lang-python";
 /**
  * 语言注册表：
  * - 内置语言静态打包进主 bundle：TS/JS/JSON/HTML/CSS/Markdown/Python
- * - 懒加载语言首次打开对应文件时动态 import：Rust/Go/Java/C++/SQL
+ * - 懒加载语言首次打开对应文件时动态 import：Rust/Go/Java/C++/SQL/YAML/XML/Properties/cURL
  */
 
 /** 内置语言：同步构造 */
@@ -36,6 +35,18 @@ const lazy: Record<string, () => Promise<LanguageSupport>> = {
   sql: () => import("@codemirror/lang-sql").then((m) => m.sql()),
   yaml: () => import("@codemirror/lang-yaml").then((m) => m.yaml()),
   xml: () => import("@codemirror/lang-xml").then((m) => m.xml()),
+  // properties：CodeMirror 官方遗留流模式；补 languageData 以支持 Ctrl+/
+  properties: () =>
+    import("@codemirror/legacy-modes/mode/properties").then((m) =>
+      new LanguageSupport(
+        StreamLanguage.define({
+          ...m.properties,
+          languageData: { commentTokens: { line: "#" } },
+        }),
+      ),
+    ),
+  // cURL：手写轻量流模式（editor/curlLanguage.ts）
+  curl: () => import("./curlLanguage").then((m) => m.curlLanguage()),
 };
 
 /**
@@ -107,6 +118,13 @@ const codeLanguageTable: {
     extensions: [".xml", ".svg", ".plist", ".xaml"],
     load: lazy.xml,
   },
+  {
+    name: "properties",
+    alias: ["ini", "conf"],
+    extensions: [".properties"],
+    load: lazy.properties,
+  },
+  { name: "curl", alias: ["bash-curl"], extensions: [".curl"], load: lazy.curl },
 ];
 
 /** 供 markdown({ codeLanguages }) 使用：围栏代码块按语言名/别名/扩展名匹配 */
@@ -157,6 +175,8 @@ export const extensionToLanguage: Record<string, string> = {
   ".xaml": "xml",
   ".svg": "xml",
   ".plist": "xml",
+  ".properties": "properties",
+  ".curl": "curl",
 };
 
 /** 语言键 → 展示名（状态栏显示） */
@@ -177,6 +197,8 @@ export const languageDisplayNames: Record<string, string> = {
   sql: "SQL",
   yaml: "YAML",
   xml: "XML",
+  properties: "Properties",
+  curl: "cURL",
   plaintext: "纯文本",
 };
 

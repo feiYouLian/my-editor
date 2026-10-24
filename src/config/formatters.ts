@@ -19,9 +19,18 @@ export const cliFormatters: Record<string, FormatterConfig> = {
   cpp: { tool: "clang-format", args: ["-style=file", "-assume-filename=__PLACEHOLDER__"] },
 };
 
-/** 工具缺失时的安装引导（按平台） */
+/**
+ * 工具缺失时的安装引导（按平台）。
+ * 约定：第一行是可直接执行的安装命令（会被拼到状态栏首行，状态栏只渲染
+ * 首行，见 main.ts），后续行是补充说明，仅在控制台的完整报错里可见。
+ */
 export const installHints: Record<string, string> = {
-  black: "pip install black",
+  // pip 在无写权限时会转为用户安装：black.exe 落在
+  // %APPDATA%\Python\PythonXXX\Scripts 而该目录通常不在 PATH，导致「command
+  // pip install black 成功、编辑器仍报找不到」。此时改为直调解释器模块最稳。
+  black: `pip install black
+Windows 上 pip 常把 black 装到用户目录（%APPDATA%\\Python\\PythonXXX\\Scripts）而该目录不在 PATH，
+此时可改在 config.json 的 formatters.python 中直接调用解释器：{"tool": "python", "args": ["-m", "black", "-q", "-"]}`,
   gofmt: "随 Go SDK 提供：https://go.dev/doc/install",
   rustfmt: "rustup component add rustfmt",
   "google-java-format":

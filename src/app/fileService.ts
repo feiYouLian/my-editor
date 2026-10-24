@@ -331,6 +331,25 @@ export class FileService {
     return tabStore.open(content);
   }
 
+  /** 打开一个带内容的未命名标签（格式转换 / 代码生成结果，标记为未保存） */
+  openGeneratedTab(name: string, content: string, language: string): void {
+    const data: FileContent = {
+      path: "",
+      name,
+      size: new TextEncoder().encode(content).length,
+      content,
+      encoding: "UTF-8",
+      encoding_confidence: "high",
+      encoding_candidates: [],
+      newline: "LF",
+      has_bom: false,
+      readonly: false,
+      readonly_reason: "",
+    };
+    tabStore.open(data, { unsaved: true, languageOverride: language });
+    this.deps.refreshStatus();
+  }
+
   /** 打开 config.json（便于查看/编辑配置） */
   async openConfigFile(): Promise<void> {
     try {
@@ -398,5 +417,6 @@ function configSummary(cfg: AppConfig): string[] {
     `occurrenceHighlight = ${e.occurrenceHighlight}　columnSelection = ${e.columnSelection}`,
     `columnEditorKey = ${e.columnEditorKey}　columnSelectionModifier = ${e.columnSelectionModifier}`,
     `layout.sidebarVisible = ${cfg.layout.sidebarVisible}`,
+    `fetch.allowPrivateNetwork = ${cfg.fetch.allowPrivateNetwork}`,
   ];
 }

@@ -207,6 +207,21 @@ impl Default for SearchSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
+pub struct FetchSettings {
+    /// 允许抓取私网/本机地址（默认关，服务内网文档站时手动放开）
+    pub allow_private_network: bool,
+}
+
+impl Default for FetchSettings {
+    fn default() -> Self {
+        Self {
+            allow_private_network: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
 pub struct GlobalReplaceSettings {
     pub backup: bool,
 }
@@ -291,6 +306,7 @@ pub struct AppConfig {
     pub workspace: WorkspaceSettings,
     pub large_file: LargeFileSettings,
     pub search: SearchSettings,
+    pub fetch: FetchSettings,
     pub global_replace: GlobalReplaceSettings,
     pub ignore_dirs: Vec<String>,
     pub file_encoding_memory: BTreeMap<String, String>,
@@ -319,6 +335,7 @@ impl Default for AppConfig {
             workspace: WorkspaceSettings::default(),
             large_file: LargeFileSettings::default(),
             search: SearchSettings::default(),
+            fetch: FetchSettings::default(),
             global_replace: GlobalReplaceSettings::default(),
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),
@@ -415,6 +432,20 @@ fn write_config(path: &Path, cfg: &AppConfig) -> Result<(), String> {
     fs::write(&tmp, json).map_err(|e| format!("写入失败: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("替换失败: {e}"))?;
     Ok(())
+}
+
+/// 网页抓取是否允许访问私网：直接读 config.json（不信任前端入参）。
+/// 读不到 / 解析失败一律返回 false（安全默认）。
+pub(crate) fn fetch_allow_private(app: &tauri::AppHandle) -> bool {
+    let Ok(path) = config_file(app) else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<AppConfig>(&text)
+        .map(|cfg| cfg.fetch.allow_private_network)
+        .unwrap_or(false)
 }
 
 /// 版本迁移：旧版本在此逐版补默认值 / 移除废弃键（当前仅 bump 版本号）

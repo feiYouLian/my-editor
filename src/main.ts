@@ -29,6 +29,7 @@ import { PreviewController } from "./app/previewHost";
 import { LargeFileHost } from "./app/largeFileHost";
 import { FileService, FALLBACK_ENCODINGS } from "./app/fileService";
 import { RunHost } from "./app/runHost";
+import { FetchHost } from "./app/fetchHost";
 import { DiffService } from "./app/diffService";
 import { SessionHost } from "./app/sessionHost";
 import { TabSwitcher } from "./app/tabSwitcher";
@@ -58,6 +59,7 @@ import {
   menuModel,
   registerCommands,
 } from "./core/commands";
+import { CONVERT_TARGET_LABELS, type ConvertTarget } from "./core/convert";
 import type { SettingsPanel } from "./panels/settingsPanel";
 import { CASE_LABELS, type CaseMode } from "./editor/transforms";
 import { localStamps, newUuid } from "./core/stamps";
@@ -96,7 +98,17 @@ const statusReadonly = $<HTMLSpanElement>("status-readonly");
 const statusDraft = $<HTMLSpanElement>("status-draft");
 const statusExternal = $<HTMLSpanElement>("status-external");
 
-// 状态栏（渲染 / 主题 / 字段显隐 / 分栏 / 消息 / 两个持久化开关）
+/** 格式转换目标（右键菜单顺序：先转换方向，后代码生成） */
+const CONVERT_TARGETS: ConvertTarget[] = [
+  "json2yaml",
+  "yaml2json",
+  "properties2yaml",
+  "yaml2properties",
+  "json2java",
+  "json2ts",
+];
+
+/** 状态栏（渲染 / 主题 / 字段显隐 / 分栏 / 消息 / 两个持久化开关） */
 const statusBar = createStatusBar(
   {
     path: statusPath,
@@ -614,6 +626,15 @@ const runHost = new RunHost(runBtn, {
   showMessage: statusBar.showMessage,
   getView: () => editorHandle.view,
   onOpenFile: (path) => void fileService.openFilePath(path),
+  insertAsTab: (text, name, language) => fileService.openGeneratedTab(name, text, language),
+});
+
+// 网页抓取编排（默认目录 / PathGuard 登记 / 抓取后打开）
+const fetchHost = new FetchHost({
+  getActiveTab: activeTab,
+  getWorkspaceRoot: () => workspaceRoot,
+  onOpenFile: (path) => void fileService.openFilePath(path),
+  showMessage: statusBar.showMessage,
 });
 
 // 差异比较编排（未保存 / 与文件 / 与 Git）
@@ -714,6 +735,8 @@ function buildEditorMenu(): MenuEntry[] {
   const canFormat = supportsFormatting(lang);
   const canRun =
     tab !== null && tab.kind === "text" && Boolean(tab.path) && runHost.runnerFor(tab) !== null;
+  // cURL 脚本执行不要求磁盘文件、不要求已保存（只读也允许）
+  const canScript = tab !== null && tab.kind === "text" && !tab.virtual;
   const cut = (): void => void copyFromEditor(view, true, statusBar.showMessage);
   const copy = (): void => void copyFromEditor(view, false, statusBar.showMessage);
   const paste = (): void => void pasteIntoEditor(view, statusBar.showMessage);
@@ -758,6 +781,7 @@ function buildEditorMenu(): MenuEntry[] {
   }
   if (canRun) code.push({ label: "运行当前文件", shortcut: "F5", run: () => runHost.runCurrentFile() });
   if (runHost.isRunning) code.push({ label: "停止运行", run: () => runHost.stop() });
+  if (canScript) code.push({ label: "执行 cURL 脚本", run: () => runHost.runCurlScript() });
   if (!readonly) {
     if (code.length > 0) code.push({ separator: true });
     code.push({ label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) });
@@ -782,6 +806,23 @@ function buildEditorMenu(): MenuEntry[] {
         { label: "插入表格…", run: () => runHost.toggleTableDialog() },
       ],
     });
+  }
+
+  // 格式转换：面板始终可开（只读禁替换）；直转仅在可写时列出
+  if (tab && tab.kind === "text" && !tab.virtual) {
+    const convertItems: MenuEntry[] = [
+      { label: "打开转换面板…", run: () => runHost.openConvertPanel() },
+    ];
+    if (!readonly) {
+      convertItems.push({ separator: true });
+      for (const target of CONVERT_TARGETS) {
+        convertItems.push({
+          label: CONVERT_TARGET_LABELS[target],
+          run: () => void runHost.convertDirect(target),
+        });
+      }
+    }
+    top.push({ label: "格式转换", submenu: convertItems });
   }
 
   // 文本转换（子菜单，需选中文本）
@@ -856,8 +897,10 @@ async function formatCurrent(): Promise<void> {
     // 这里仅跳过过期标签上的消息刷新
     if (tabStore.active()?.id !== tab.id) return;
     if (!result.ok) {
-      // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行 + 控制台完整输出
-      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败");
+      // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行
+      // （首行已含安装命令，见 format.ts 的 withInstallHint）+ 控制台完整输出；
+      // 错误停留 8s，留出阅读与照做的时间
+      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
       console.error("[format]", result.message);
       return;
     }
@@ -882,7 +925,7 @@ async function formatSelectionCurrent(): Promise<void> {
     const result = await formatSelection(editorHandle.view, key, tab.path);
     if (tabStore.active()?.id !== tab.id) return;
     if (!result.ok) {
-      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败");
+      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
       console.error("[format]", result.message);
       return;
     }
@@ -981,6 +1024,7 @@ registerCommands([
     } },
   { id: "file.quit", title: "退出", section: "文件", defaultKey: "Mod-Q", menu: "file", menuOrder: 80, hidden: true, run: () => windowChrome.close() },
   { id: "file.recent", title: "最近打开的文件…", section: "文件", menu: "file", menuLabel: "最近打开…", menuOrder: 40, run: () => runHost.toggleRecentFiles() },
+  { id: "fetch.open", title: "从网址抓取网页…", section: "文件", defaultKey: "Mod-Shift-U", menu: "file", menuLabel: "从网址抓取网页…", menuOrder: 45, run: () => fetchHost.open() },
   { id: "file.saveAsEncoding", title: "另存为指定编码…", section: "文件", run: () => fileService.saveAsWithEncoding() },
   { id: "file.exportMarkdown", title: "导出 Markdown（当前 HTML 文件）", section: "文件", run: () => {
       const tab = activeTab();
@@ -1014,6 +1058,14 @@ registerCommands([
   { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", run: () => runHost.toggleCron() },
   { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", run: () => runHost.toggleBatchEncoding() },
   { id: "tools.regex", title: "正则测试器", section: "工具", run: () => runHost.toggleRegexTester() },
+  // 格式转换（面板 + 高频单步直转）
+  { id: "convert.open", title: "格式转换…（面板）", section: "工具", run: () => runHost.openConvertPanel() },
+  { id: "convert.json2yaml", title: "转换：JSON → YAML", section: "转换", run: () => void runHost.convertDirect("json2yaml") },
+  { id: "convert.yaml2json", title: "转换：YAML → JSON", section: "转换", run: () => void runHost.convertDirect("yaml2json") },
+  { id: "convert.properties2yaml", title: "转换：Properties → YAML", section: "转换", run: () => void runHost.convertDirect("properties2yaml") },
+  { id: "convert.yaml2properties", title: "转换：YAML → Properties", section: "转换", run: () => void runHost.convertDirect("yaml2properties") },
+  { id: "convert.json2java", title: "转换：JSON → Java 代码", section: "转换", run: () => void runHost.convertDirect("json2java") },
+  { id: "convert.json2ts", title: "转换：JSON → TypeScript 代码", section: "转换", run: () => void runHost.convertDirect("json2ts") },
   // 文本变换（作用于选区）
   ...(Object.keys(CASE_LABELS) as CaseMode[]).map((mode) => ({
     id: `text.case.${mode}`,
@@ -1039,6 +1091,7 @@ registerCommands([
   // ---- 编码 / 运行 ----
   { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", run: () => detectMojibakeManually() },
   { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", run: () => runHost.runCurrentFile() },
+  { id: "run.curlScript", title: "执行 cURL 脚本（选区/整篇，无需保存）", section: "运行", run: () => runHost.runCurlScript() },
   { id: "code.stop", title: "停止运行", section: "运行", run: () => runHost.stop() },
   { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(editorHandle.view) },
   { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(editorHandle.view, 1) },

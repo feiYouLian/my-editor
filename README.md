@@ -16,10 +16,11 @@
 - 脏标记基线比对：内容、编码、换行符与最近保存基线一致时自动恢复干净状态
 - 外部修改检测：文件被其它程序改动时状态栏提示「外部修改」，点击重新载入（自身保存不会误报）
 - 最近打开列表、面包屑路径（工作区内显示相对层级，工作区外显示绝对路径；点击目录层级可预览内容并快速打开）
+- 从网址抓取网页：输入 URL 保存为本地 HTML 并自动打开；默认拦截内网 / 本机地址（`config.json` 可放开）
 
 ### 编辑器内核（CodeMirror 6）
 
-- 语法高亮：内置 7 种 + 懒加载 7 种（Rust / Go / Java / C++ / SQL / YAML / XML）
+- 语法高亮：内置 7 种 + 懒加载 9 种（Rust / Go / Java / C++ / SQL / YAML / XML / Properties / cURL）
 - 撤销 / 重做、多光标、行号、活动行高亮
 - 查找 / 替换：中文界面、正则捕获组 `$1`、In Selection、查找结果面板（双击跳转）
 - 书签：切换 / 下一个 / 上一个（`Ctrl+F2` / `F2` / `Shift+F2`）
@@ -58,6 +59,7 @@
 
 - 大小写与命名风格：全部大写 / 小写 / 每词首字母大写 / camelCase / PascalCase / snake_case / kebab-case / CONSTANT_CASE
 - JSON 美化 / 压缩（有选区处理选区，无选区处理整篇）
+- 格式转换：JSON ↔ YAML、Properties ↔ YAML（`.` 层级展开 / 拍平，可选标量推断），JSON → Java / TypeScript 代码生成；面板预览 + 命令面板直转
 - Markdown：加粗 / 斜体 / 高亮包裹切换、插入 GFM 表格
 - 插入：本地时间 / ISO / Unix 时间戳 / 日期 / 时间 / UUID v4 / 剪贴板图片（存 `.assets` 并插入引用）
 - 正则测试器、Cron 表达式解析与生成（5 / 6 / 7 段，含未来 5 次执行时间与字段说明）
@@ -66,6 +68,7 @@
 ### 代码运行（Code Run）
 
 - 支持 Python / Node（JS、JSX）/ Java / cURL
+- cURL 脚本无需保存即可执行（选区优先，无选区整篇）；`.curl` 文件与 Markdown 围栏有高亮
 - 标题栏运行按钮与 `F5`，运行中切换为停止
 - 独立输出面板，流式回传；30s 超时、单次输出上限 1MB、进程树终止
 
@@ -131,6 +134,12 @@ npx tauri icon icons/app-icon.png         # 生成 src-tauri/icons/ 全量图标
 ```
 src/                          # 前端（原生 TS + Vite）
 ├── main.ts                   # 应用编排：标签联动、菜单、命令注册、Code Run、草稿/会话
+├── app/
+│   ├── runHost.ts            # 运行 / 工具 / 格式转换入口编排
+│   └── fetchHost.ts          # 网页抓取编排（默认目录 / 抓取后打开）
+├── core/
+│   ├── convert.ts            # 格式转换（JSON / YAML / Properties + 嗅探）
+│   └── convertCodegen.ts     # JSON → Java / TypeScript 代码生成
 ├── editor/
 │   ├── setup.ts              # CodeMirror 实例与扩展开关
 │   ├── languages.ts          # 语言注册与懒加载
@@ -142,6 +151,7 @@ src/                          # 前端（原生 TS + Vite）
 │   ├── occurrences.ts        # 选中同名高亮
 │   ├── rainbowBrackets.ts    # 彩虹括号
 │   ├── format.ts             # Prettier + CLI 格式化
+│   ├── curlLanguage.ts       # cURL 轻量语法高亮
 │   ├── transforms.ts         # 大小写 / JSON 美化压缩
 │   └── markdownTools.ts      # Markdown 包裹与表格
 ├── panels/
@@ -158,6 +168,8 @@ src/                          # 前端（原生 TS + Vite）
 │   ├── tableDialog.ts        # Markdown 表格对话框
 │   ├── recentFiles.ts        # 最近打开
 │   ├── saveEncoding.ts       # 另存为指定编码
+│   ├── convertPanel.ts       # 格式转换面板
+│   ├── fetchPageDialog.ts    # 从网址抓取网页对话框
 │   └── runPanel.ts           # Code Run 输出面板
 ├── services/
 │   ├── workspace.ts          # 工作区读写
@@ -188,6 +200,7 @@ src-tauri/src/                # Rust 后端
     ├── diff.rs               # 文本 / 文件 / Git 差异与补丁导出
     ├── format.rs             # CLI 格式化调度
     ├── run.rs                # Code Run（进程组、超时、输出上限）
+    ├── fetch.rs              # 网页抓取（URL 校验 / 私网拦截 / 原子落盘）
     ├── watch.rs              # 外部修改监听（notify）
     ├── session.rs            # 会话与草稿持久化
     ├── batch.rs              # 批量另存为编码（非破坏式）
@@ -204,7 +217,7 @@ scripts/                      # 开发辅助脚本（图标生成）
 
 | 文件 / 目录 | 内容 |
 | --- | --- |
-| `config.json` | 主题、快捷键、布局、编辑器增强、会话与大文件等配置 |
+| `config.json` | 主题、快捷键、布局、编辑器增强、会话与大文件、网页抓取开关等配置 |
 | `workspace.json` | 工作区根目录与文件树展开状态 |
 | `session.json` | 打开文件列表、光标位置、激活文件、分栏比例 |
 | `drafts/` | 未保存内容的草稿（防抖写入，按保留天数清理） |
@@ -215,6 +228,7 @@ scripts/                      # 开发辅助脚本（图标生成）
 | --- | --- |
 | Ctrl/Cmd+S / Ctrl/Cmd+Shift+S | 保存 / 另存为 |
 | Ctrl/Cmd+O / Ctrl/Cmd+N | 打开文件 / 新建未命名文档 |
+| Ctrl/Cmd+Shift+U | 从网址抓取网页 |
 | Ctrl/Cmd+W / Ctrl/Cmd+Q | 关闭标签 / 退出 |
 | Ctrl/Cmd+F / Ctrl/Cmd+H | 当前文档查找 / 替换 |
 | Ctrl/Cmd+Shift+P | 命令面板 |
@@ -239,4 +253,6 @@ scripts/                      # 开发辅助脚本（图标生成）
 - **全局搜索与 TODO 列表已按需求舍去**：保留当前文档查找 / 替换与查找结果面板
 - **AI 辅助（B11）与 OCR（B12）** 尚未实现
 - 批量转换原文件（就地改写）已舍去，仅提供非破坏式的「批量另存为编码」
+- 格式转换本期只做 JSON ↔ YAML 与 Properties ↔ YAML；JSON ↔ XML / CSV 延期
+- 网页抓取只保存原始 HTML，不下载 / 重写图片、CSS、JS 等子资源；重定向后的最终地址 v1 不再复查（私网默认拦截 + CSP 主防线）
 - E2E 关键路径、macOS / Linux 内存数据待补

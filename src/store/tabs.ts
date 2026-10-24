@@ -118,8 +118,15 @@ class TabStore {
     return this.tabs.find((t) => t.id === this.activeId) ?? null;
   }
 
-  /** 打开文本文件：已打开则激活，否则新开标签（未命名文档 path 为空，每次新建独立标签） */
-  open(content: FileContent): Tab {
+  /**
+   * 打开文本文件：已打开则激活，否则新开标签（未命名文档 path 为空，每次新建独立标签）。
+   * opts.unsaved：内容未落盘（格式转换/代码生成结果），savedContent 置空使其标记为脏；
+   * opts.languageOverride：直接指定高亮语言，避免首次渲染后再次切换。
+   */
+  open(
+    content: FileContent,
+    opts: { unsaved?: boolean; languageOverride?: string | null } = {},
+  ): Tab {
     const existing = content.path
       ? this.tabs.find((t) => t.path === content.path)
       : undefined;
@@ -134,9 +141,9 @@ class TabStore {
       name: content.name,
       kind: "text",
       content: content.content,
-      savedContent: content.content,
+      savedContent: opts.unsaved ? "" : content.content,
       size: content.size,
-      dirty: false,
+      dirty: opts.unsaved === true && content.content !== "",
       encoding: content.encoding,
       savedEncoding: content.encoding,
       newline: content.newline,
@@ -147,6 +154,7 @@ class TabStore {
       readonly: content.readonly,
       readonlyReason: content.readonly_reason,
     };
+    if (opts.languageOverride !== undefined) tab.languageOverride = opts.languageOverride;
     this.tabs.push(tab);
     this.activeId = tab.id;
     this.emitStructure();

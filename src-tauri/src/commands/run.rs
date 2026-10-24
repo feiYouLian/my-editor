@@ -95,6 +95,43 @@ fn split_args(text: &str) -> Vec<String> {
     out
 }
 
+/// 拼接续行：行尾 `\` 与下一行合并（去掉反斜杠，补一个空格）。
+/// 注释行（`#` 开头）整行剔除；续行中的 `#` 不当作注释。
+fn join_continuations(text: &str) -> String {
+    let mut out = String::new();
+    let mut continued = false;
+    for line in text.lines() {
+        if !continued && line.trim_start().starts_with('#') {
+            continue;
+        }
+        let trimmed = line.trim_end();
+        if let Some(stem) = trimmed.strip_suffix('\\') {
+            out.push_str(stem);
+            out.push(' ');
+            continued = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+            continued = false;
+        }
+    }
+    out
+}
+
+/// 解析 cURL 参数脚本（内容而非路径）：剔首词 `curl`、去注释、拼续行、引号感知切分。
+/// `build_command` 的文件分支与 `run_curl` 的脚本文本共用此实现。
+fn parse_curl_args(text: &str) -> Result<Vec<String>, String> {
+    let joined = join_continuations(text);
+    let mut args = split_args(&joined);
+    if args.first().map(|a| a == "curl").unwrap_or(false) {
+        args.remove(0);
+    }
+    if args.is_empty() {
+        return Err("cURL 参数为空（按 curl 参数书写，如 curl -sS https://example.com）".to_string());
+    }
+    Ok(args)
+}
+
 /// 按运行器构造命令（cURL 从文件内容解析参数）
 fn build_command(runner: &str, file: &Path) -> Result<Command, String> {
     let path = file.to_string_lossy().to_string();
@@ -120,17 +157,7 @@ fn build_command(runner: &str, file: &Path) -> Result<Command, String> {
         "curl" => {
             let text =
                 std::fs::read_to_string(file).map_err(|e| format!("读取失败: {e}"))?;
-            let mut args: Vec<String> = text
-                .lines()
-                .filter(|line| !line.trim_start().starts_with('#'))
-                .flat_map(split_args)
-                .collect();
-            if args.first().map(|a| a == "curl").unwrap_or(false) {
-                args.remove(0);
-            }
-            if args.is_empty() {
-                return Err("cURL 参数为空（文件内按 curl 参数书写）".to_string());
-            }
+            let args = parse_curl_args(&text)?;
             let mut c = Command::new("curl");
             c.args(args);
             c
@@ -285,6 +312,62 @@ fn spawn_reaper(
     });
 }
 
+/// 启动进程并接管输出（run_code / run_curl 共用）：
+/// 管道接管 → 读取线程 → 登记 slot → 守望线程。
+fn spawn_run(
+    app: AppHandle,
+    slot: &Arc<Mutex<Option<Running>>>,
+    generation_counter: &Arc<AtomicU64>,
+    mut cmd: Command,
+    label: &str,
+) -> Result<(), String> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动失败（{label} 是否已安装并在 PATH 中？）: {e}"))?;
+    // 取管道失败时必须终止已启动的进程，否则留下孤儿进程
+    let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
+        (Some(out), Some(err)) => (out, err),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("无法读取进程输出管道".to_string());
+        }
+    };
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let truncated = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let generation = generation_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+    spawn_reader(
+        app.clone(),
+        "stdout",
+        stdout,
+        Arc::clone(&counter),
+        Arc::clone(&truncated),
+    );
+    spawn_reader(
+        app.clone(),
+        "stderr",
+        stderr,
+        Arc::clone(&counter),
+        Arc::clone(&truncated),
+    );
+
+    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
+        child,
+        stopped: Arc::clone(&stopped),
+        generation,
+    });
+    spawn_reaper(app, Arc::clone(slot), generation, started, truncated, stopped);
+    Ok(())
+}
+
 /// 运行当前文件：先停掉上一个任务，再启动新进程并流式回传。
 /// 安全：目标文件必须是应用已知路径（当前打开的标签），runner 仅接受
 /// 内置白名单（python / node / java / curl）。
@@ -309,59 +392,29 @@ pub fn run_code(
         .unwrap_or_else(|| PathBuf::from("."));
 
     let mut cmd = build_command(&runner, &file)?;
-    cmd.current_dir(&work_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.current_dir(&work_dir);
+    spawn_run(app, &state.slot, &state.generation, cmd, &runner)
+}
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("启动失败（{runner} 是否已安装并在 PATH 中？）: {e}"))?;
-    // 取管道失败时必须终止已启动的进程，否则留下孤儿进程
-    let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
-        (Some(out), Some(err)) => (out, err),
-        _ => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("无法读取进程输出管道".to_string());
-        }
-    };
+/// 执行一段 cURL 脚本（内容而非路径）：无需先保存文件，选区/整篇由前端裁决。
+/// 不走 PathGuard：参数是脚本内容；`-o 路径` 等由 curl 自行解释（与终端执行等价）。
+#[tauri::command]
+pub fn run_curl(
+    app: AppHandle,
+    state: tauri::State<RunState>,
+    guard: tauri::State<crate::commands::paths::PathGuard>,
+    script: String,
+) -> Result<(), String> {
+    let args = parse_curl_args(&script)?;
+    kill_tree(&state.slot);
 
-    let counter = Arc::new(AtomicUsize::new(0));
-    let truncated = Arc::new(AtomicBool::new(false));
-    let stopped = Arc::new(AtomicBool::new(false));
-    let started = Instant::now();
-    let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
-
-    spawn_reader(
-        app.clone(),
-        "stdout",
-        stdout,
-        Arc::clone(&counter),
-        Arc::clone(&truncated),
-    );
-    spawn_reader(
-        app.clone(),
-        "stderr",
-        stderr,
-        Arc::clone(&counter),
-        Arc::clone(&truncated),
-    );
-
-    *state.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
-        child,
-        stopped: Arc::clone(&stopped),
-        generation,
-    });
-    spawn_reaper(
-        app,
-        Arc::clone(&state.slot),
-        generation,
-        started,
-        truncated,
-        stopped,
-    );
-    Ok(())
+    let mut cmd = Command::new("curl");
+    cmd.args(args);
+    // 无磁盘文件可依：取首个已登记的工作区目录；没有则用进程默认目录
+    if let Some(dir) = guard.first_dir_root() {
+        cmd.current_dir(dir);
+    }
+    spawn_run(app, &state.slot, &state.generation, cmd, "curl")
 }
 
 /// 停止当前运行；返回是否有正在运行的任务
@@ -434,5 +487,43 @@ mod tests {
     fn unsupported_runner_is_rejected() {
         let file = temp_file("x.txt", "x");
         assert!(build_command("ruby", &file).is_err());
+    }
+
+    #[test]
+    fn parse_curl_args_supports_long_options_and_quotes() {
+        let args = parse_curl_args(
+            "curl --header 'Accept: application/json' -X POST https://example.com -d '{\"a\":1}'",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--header",
+                "Accept: application/json",
+                "-X",
+                "POST",
+                "https://example.com",
+                "-d",
+                "{\"a\":1}",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_curl_args_joins_continuation_lines() {
+        let args = parse_curl_args(
+            "# 注释\ncurl -X POST \\\n  -H 'X-A: 1' \\\n  https://example.com\n",
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec!["-X", "POST", "-H", "X-A: 1", "https://example.com"]
+        );
+    }
+
+    #[test]
+    fn parse_curl_args_rejects_empty_script() {
+        assert!(parse_curl_args("# 只有注释\n\n  ").is_err());
+        assert!(parse_curl_args("").is_err());
     }
 }

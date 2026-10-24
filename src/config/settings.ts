@@ -78,6 +78,12 @@ export interface SearchSettings {
   chunkSizeBytes: number;
 }
 
+/** 网页抓取设置 */
+export interface FetchSettings {
+  /** 允许抓取私网/本机地址（默认关，服务内网文档站时手动放开） */
+  allowPrivateNetwork: boolean;
+}
+
 export interface GlobalReplaceSettings {
   backup: boolean;
 }
@@ -118,6 +124,7 @@ export interface AppConfig {
   workspace: WorkspaceSettings;
   largeFile: LargeFileSettings;
   search: SearchSettings;
+  fetch: FetchSettings;
   globalReplace: GlobalReplaceSettings;
   ignoreDirs: string[];
   fileEncodingMemory: Record<string, string>;
@@ -222,6 +229,7 @@ export function defaultConfig(): AppConfig {
       viewportPaddingLines: 200,
     },
     search: { parallelism: "auto", chunkSizeBytes: 4 * 1024 * 1024 },
+    fetch: { allowPrivateNetwork: false },
     globalReplace: { backup: true },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},

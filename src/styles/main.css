@@ -2598,3 +2598,100 @@ button.settings-kb-key:hover {
 .settings-status-move:disabled {
   opacity: 0.35;
 }
+
+/* ---------- 格式转换面板 ---------- */
+.dialog.dialog-convert {
+  width: min(920px, 92vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.convert-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.convert-scope {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-controls {
+  margin-top: 8px;
+}
+
+.convert-detect {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-options:empty {
+  display: none;
+}
+
+.convert-hint {
+  min-height: 14px;
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.convert-pane {
+  min-width: 0;
+}
+
+.convert-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-pre {
+  height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.convert-pre.convert-out {
+  border-color: var(--accent);
+}
+
+.dialog-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.dialog-error.hidden {
+  display: none;
+}
+
+/* ---------- 网页抓取对话框 ---------- */
+.fetch-dialog {
+  width: min(560px, 92vw);
+}
+
+.fetch-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}

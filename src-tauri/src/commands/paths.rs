@@ -128,6 +128,15 @@ impl PathGuard {
         }
     }
 
+    /// 已登记根中的首个真实目录（供 run_curl 等无磁盘文件场景取工作目录）。
+    /// 仅排序后取第一个，保证同一会话内行为稳定。
+    pub fn first_dir_root(&self) -> Option<PathBuf> {
+        let roots = self.roots.read().unwrap_or_else(|e| e.into_inner());
+        let mut dirs: Vec<PathBuf> = roots.iter().filter(|p| p.is_dir()).cloned().collect();
+        dirs.sort();
+        dirs.into_iter().next()
+    }
+
     /// 目录树操作（新建 / 重命名 / 删除 / 定位）：仅允许已登记根目录之内。
     /// 文件树 UI 本身也只展示工作区内的条目，零误伤。
     pub fn ensure_root_scope(&self, raw: &str) -> Result<PathBuf, String> {

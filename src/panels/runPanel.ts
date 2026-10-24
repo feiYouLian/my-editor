@@ -134,6 +134,18 @@ export class RunPanel {
     }
   }
 
+  /** 执行一段脚本文本（cURL）：无需先保存为磁盘文件 */
+  async startScript(runner: string, script: string): Promise<void> {
+    this.open(runner);
+    try {
+      await invoke("run_curl", { script });
+    } catch (e) {
+      this.setRunning(false);
+      this.setStatus("启动失败", "error");
+      this.appendText("stderr", `${String(e)}\n`);
+    }
+  }
+
   stop(): void {
     void invoke<boolean>("stop_run")
       .then((had) => {

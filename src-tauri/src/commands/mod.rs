@@ -2,6 +2,7 @@ pub mod batch;
 pub mod config;
 pub mod diff;
 pub mod encoding;
+pub mod fetch;
 pub mod file;
 pub mod format;
 pub mod fs;

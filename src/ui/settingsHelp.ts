@@ -55,7 +55,7 @@ const GROUPS: Group[] = [
     ],
   },
   {
-    title: "其余分组（当前尚未接入）",
+    title: "其余分组（部分预留）",
     fields: [
       { key: "largeFile.sparseIndexAnchorBytes", meaning: "稀疏行索引锚点字节间隔", effect: "预留" },
       { key: "largeFile.viewportPaddingLines", meaning: "虚拟视图视口上下额外渲染行数", effect: "预留" },
@@ -63,6 +63,7 @@ const GROUPS: Group[] = [
       { key: "session", meaning: "会话恢复、草稿自动保存与保留天数", effect: "预留" },
       { key: "workspace", meaning: "工作区记忆开关与上次目录", effect: "预留" },
       { key: "search", meaning: "全局搜索并行度与分块字节数", effect: "预留" },
+      { key: "fetch.allowPrivateNetwork", meaning: "允许「从网址抓取网页」访问内网 / 本机地址（默认 false）", effect: "即时" },
       { key: "globalReplace", meaning: "批量替换前是否生成 .bak 备份", effect: "预留" },
       { key: "ignoreDirs", meaning: "全局搜索忽略的目录", effect: "预留" },
       { key: "fileEncodingMemory", meaning: "按文件名 / 通配符记忆编码", effect: "预留" },

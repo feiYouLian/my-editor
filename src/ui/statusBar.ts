@@ -50,7 +50,8 @@ export interface StatusBarDeps {
 
 export interface StatusBar {
   refresh(): void;
-  showMessage(text: string): void;
+  /** 瞬时消息；durationMs 默认 3000，错误类提示可传更长停留时间 */
+  showMessage(text: string, durationMs?: number): void;
   refreshWhitespace(): void;
   refreshWordWrap(): void;
   toggleWhitespace(): void;
@@ -108,12 +109,12 @@ export function createStatusBar(
     deps.refreshRunButton();
   }
 
-  /** 状态栏瞬时消息（格式化结果等，3 秒后淡出） */
-  function showMessage(text: string): void {
+  /** 状态栏瞬时消息（格式化结果等，默认 3 秒后淡出） */
+  function showMessage(text: string, durationMs = 3000): void {
     elements.message.textContent = text;
     elements.message.classList.remove("hidden");
     if (messageTimer) clearTimeout(messageTimer);
-    messageTimer = setTimeout(() => elements.message.classList.add("hidden"), 3000);
+    messageTimer = setTimeout(() => elements.message.classList.add("hidden"), durationMs);
   }
 
   /** 防抖写回 config.json（界面开关与配置文件保持联动） */
