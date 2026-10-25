@@ -50,6 +50,41 @@ jobs:
           node-version: 20
           cache: npm
 
+      # GitHub 的「发布不可变」特性：Release 一旦发布，其资产不能删除也不能替换。
+      # tauri-action 覆盖上传的做法是「先删同名 asset 再上传」，撞上不可变 Release 会直接报
+      # Cannot delete asset from an immutable release —— 而且是在编译打包几分钟之后才报。
+      # 这里在编译前先判定，失败只花十几秒。分三种情况：
+      #   草稿      → 允许覆盖（tauri-action 正常更新）
+      #   已发布+不可变 → 必然失败，提前退出并提示升版本号
+      #   已发布但可变   → 能跑通，仅告警（覆盖会让旧安装包消失）
+      - name: 检查目标 tag 的 Release 状态
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # tag 事件用实际 tag；workflow_dispatch 没有 tag，由 tauri-action 按版本号创建
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          fi
+
+          if ! info=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+              --jq '[.draft, (.immutable // false)] | @tsv' 2>/dev/null); then
+            echo "tag ${tag} 尚无 Release（或读取失败），将由 tauri-action 新建"
+            exit 0
+          fi
+
+          read -r draft immutable <<< "$info"
+          if [ "$draft" = "true" ]; then
+            echo "tag ${tag} 的 Release 仍是草稿，允许覆盖上传"
+          elif [ "$immutable" = "true" ]; then
+            echo "::error::tag ${tag} 已发布且为不可变 Release，其安装包不能删除或替换。请同步升级 package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json 的版本号后打新 tag。"
+            exit 1
+          else
+            echo "::warning::tag ${tag} 已有已发布的 Release，本次将覆盖其现有安装包。更稳妥的做法是先删除该 Release 或升级版本号。"
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-targets }}
@@ -89,6 +124,8 @@ jobs:
 
             当前仅发布 Windows 安装包。安装包未做代码签名，SmartScreen 可能提示「未知发布者」。
           # 默认发为草稿：Actions 跑完后到 Releases 页面确认产物齐全再点 Publish
+          # 注意：仓库开启「发布不可变」时，点 Publish 后该 Release 永久不可覆盖，
+          # 后续要更新安装包只能升版本号发新 tag（前置检查会在编译前拦住这种覆盖）
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
