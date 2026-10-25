@@ -83,7 +83,7 @@ pub async fn run_cli_formatter(
 #[cfg(windows)]
 fn build_command(tool: &str, args: &[String]) -> Command {
     let lower = tool.to_lowercase();
-    if lower.ends_with(".cmd") || lower.ends_with(".bat") {
+    let mut cmd = if lower.ends_with(".cmd") || lower.ends_with(".bat") {
         let mut cmd = Command::new("cmd");
         cmd.arg("/C").arg(tool).args(args);
         cmd
@@ -91,7 +91,10 @@ fn build_command(tool: &str, args: &[String]) -> Command {
         let mut cmd = Command::new(tool);
         cmd.args(args);
         cmd
-    }
+    };
+    // 工具与 cmd /C 都是控制台程序：不隐藏会闪黑框
+    crate::commands::no_console(&mut cmd);
+    cmd
 }
 
 #[cfg(not(windows))]

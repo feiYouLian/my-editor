@@ -219,6 +219,8 @@ fn build_command(runner: &str, file: &Path) -> Result<Command, String> {
     for (key, value) in &spec.envs {
         cmd.env(key, value);
     }
+    // 运行器多为控制台程序：隐藏控制台窗口，输出仍走管道回传
+    crate::commands::no_console(&mut cmd);
     Ok(cmd)
 }
 
@@ -300,9 +302,9 @@ fn kill_tree(slot: &Arc<Mutex<Option<Running>>>) {
     {
         // 结束整棵进程树：脚本自行拉起的子进程也能一并清理
         let pid = running.child.id();
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut killer = Command::new("taskkill");
+        killer.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        let _ = crate::commands::no_console(&mut killer).output();
     }
     let _ = running.child.kill();
 }
@@ -320,9 +322,9 @@ fn kill_tree_if_generation(slot: &Arc<Mutex<Option<Running>>>, generation: u64) 
     #[cfg(windows)]
     {
         let pid = running.child.id();
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut killer = Command::new("taskkill");
+        killer.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        let _ = crate::commands::no_console(&mut killer).output();
     }
     let _ = running.child.kill();
 }
@@ -593,6 +595,7 @@ pub async fn run_curl(
         if let Some(dir) = dir {
             cmd.current_dir(dir);
         }
+        crate::commands::no_console(&mut cmd);
         spawn_run(app, &slot, &generation, cmd, "curl")
     })
     .await

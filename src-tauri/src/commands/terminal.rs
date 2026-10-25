@@ -359,9 +359,9 @@ fn kill_session(session: &mut Session) {
     #[cfg(windows)]
     {
         if let Some(pid) = session.child.process_id() {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output();
+            let mut killer = std::process::Command::new("taskkill");
+            killer.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            let _ = crate::commands::no_console(&mut killer).output();
         }
     }
     let _ = session.child.kill();

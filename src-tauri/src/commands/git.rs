@@ -43,9 +43,9 @@ pub struct GitStatus {
 
 /// 执行 git 命令（参数数组；失败返回 stderr 原文）
 pub(crate) fn git(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir).args(args);
+    let out = crate::commands::no_console(&mut cmd)
         .output()
         .map_err(|e| format!("git 不可用: {e}"))?;
     if !out.status.success() {
@@ -60,10 +60,11 @@ pub(crate) fn git(dir: &str, args: &[&str]) -> Result<String, String> {
 /// - `GIT_TERMINAL_PROMPT=0`：无 TTY 时禁止交互式凭据询问，否则会挂死；
 /// - 成功时 stdout + stderr 合并返回：`git push` 的摘要走的是 stderr。
 fn git_net(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .current_dir(dir)
+    let mut cmd = Command::new("git");
+    cmd.current_dir(dir)
         .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let out = crate::commands::no_console(&mut cmd)
         .output()
         .map_err(|e| format!("git 不可用: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
