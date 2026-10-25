@@ -126,10 +126,8 @@ pub struct LayoutSettings {
     pub sidebar_view: String,
     /// 启动时展开的侧栏分区组合（如 ["files", "outline"]；空 = 默认展开「文件」）
     pub sidebar_expanded: Vec<String>,
-    /// 侧栏分区高度（px，键为分区 id；仅记录手调 / 按内容初始化的高度）
+    /// 侧栏分区高度（px，键为分区 id；仅记录用户手拖的高度）
     pub sidebar_sizes: BTreeMap<String, f64>,
-    /// 固定在侧栏底部的分区（从该分区往下的分区一并贴底）
-    pub sidebar_dock: Vec<String>,
 }
 
 impl Default for LayoutSettings {
@@ -145,7 +143,6 @@ impl Default for LayoutSettings {
             sidebar_view: "files".into(),
             sidebar_expanded: vec!["files".into()],
             sidebar_sizes: BTreeMap::new(),
-            sidebar_dock: vec!["git".into()],
         }
     }
 }

@@ -51,10 +51,8 @@ export interface LayoutSettings {
   sidebarView: "open" | "git" | "files" | "search" | "outline";
   /** 启动时展开的侧栏分区组合（空 = 默认展开「文件」，见 ui/sidebar.ts） */
   sidebarExpanded: string[];
-  /** 侧栏分区高度（px，键为分区 id；仅记录手调 / 按内容初始化的高度） */
+  /** 侧栏分区高度（px，键为分区 id；仅记录用户手拖的高度） */
   sidebarSizes: Record<string, number>;
-  /** 固定在侧栏底部的分区（从该分区往下的分区一并贴底） */
-  sidebarDock: string[];
   splitRatio: number;
   defaultViewMode: "edit" | "preview" | "split";
   showLineNumbers: boolean;
@@ -238,7 +236,6 @@ export function defaultConfig(): AppConfig {
       sidebarView: "files",
       sidebarExpanded: ["files"],
       sidebarSizes: {},
-      sidebarDock: ["git"],
       splitRatio: 0.5,
       defaultViewMode: "split",
       showLineNumbers: true,

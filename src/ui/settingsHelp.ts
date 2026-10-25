@@ -56,7 +56,6 @@ const GROUPS: Group[] = [
       { key: "sidebarView", meaning: "侧栏当前分区：open / files / search / outline", effect: "即时" },
       { key: "sidebarExpanded", meaning: '启动时展开的分区组合（空则默认 ["files"]）', effect: "重启后" },
       { key: "sidebarSizes", meaning: "分区高度（px，键为分区 id）：按内容初始化 / 拖动分隔线时更新", effect: "重启后" },
-      { key: "sidebarDock", meaning: '固定在侧栏底部的分区（默认 ["git"]，从它往下的分区一并贴底）', effect: "即时" },
     ],
   },
   {

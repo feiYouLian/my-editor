@@ -6,11 +6,9 @@
  * - 展开区分两种高度：内容够小按内容给（不抢其它分区的空间），内容比可用空间
  *   大则保持均分、吸收剩余高度；收起区只占标题行，侧栏不再整体滚动；
  * - 分区之间的分隔线可上下拖拽：两侧都展开时在二者之间分配高度，
- *   只展开底部吸附区时只调整该区高度（内部拖动余量来自上方留白）；
- *   唯一展开且不吸附底部的分区铺满剩余空间，不开放拖拽；双击按内容复位；
- * - 底部固定区：被固定的分区（默认「源代码管理」）及其下方分区贴住侧栏底边；
- *   只展开吸附区时它按自身高度贴在底部，上方留白——留白即拖动余量；
- * - 展开组合 / 高度 / 底部固定写回 config.json，启动时按此恢复（
+ *   多个分区展开时只有一侧展开的那条线也可拖（只调整该侧）；
+ *   唯一展开的分区铺满剩余空间，不开放拖拽；双击按内容复位；
+ * - 分区高度 / 展开组合写回 config.json，启动时按此恢复（
  *   config.layout.sidebarView 仍记录当前分区）。
  */
 
@@ -22,9 +20,8 @@ const SIDEBAR_VIEWS: readonly SidebarView[] = ["open", "git", "files", "search",
 /** 分区最小高度：标题行 30px + 至少一行内容 */
 const MIN_SECTION_PX = 60;
 
-/** 未配置时的默认展开组合 / 底部固定分区 */
+/** 未配置时的默认展开组合 */
 const DEFAULT_EXPANDED: readonly SidebarView[] = ["files"];
-const DEFAULT_DOCK: readonly SidebarView[] = ["git"];
 
 /** 从 config.layout 读入的侧栏布局（外部输入：值在 restore 里校验） */
 export interface SidebarLayoutConfig {
@@ -32,14 +29,12 @@ export interface SidebarLayoutConfig {
   sidebarView?: string;
   sidebarExpanded?: string[];
   sidebarSizes?: Record<string, number>;
-  sidebarDock?: string[];
 }
 
 /** 需要写回 config.layout 的侧栏布局（来自内部状态，值必然合法） */
 export interface SidebarLayoutPatch {
   sidebarExpanded: SidebarView[];
   sidebarSizes: Record<string, number>;
-  sidebarDock: SidebarView[];
 }
 
 /** 只保留合法分区 id（去重，保持传入顺序） */
@@ -65,16 +60,34 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 /**
- * 区域的内容自然高度：
- * 自身就是滚动容器时 scrollHeight 即内容高度；内部列表滚动（工具条 + 列表）时
- * 取各子元素 scrollHeight 之和，否则量到的只是被 flex 撑出的当前高度。
+ * 区域的内容自然高度。
+ *
+ * 不能直接读 scrollHeight：面板被 flex 拉伸后，scrollHeight / clientHeight 都等于
+ * 当前分配高度，量不到真实内容（关闭标签后列表变短、高度却收不回来的根源）。
+ * 这里逐个把子元素的伸缩临时去掉再读（读之前清、读完还原，同一任务内完成，
+ * 不会出现可见跳动），子元素数量有限，代价可接受；没有子元素时才退回 scrollHeight。
  */
 function contentHeight(el: HTMLElement): number {
-  let sum = 0;
-  for (const child of el.children) {
-    if (child instanceof HTMLElement) sum += child.scrollHeight;
+  const children = el.children;
+  if (children.length === 0) return el.scrollHeight;
+  // 子元素很多（文件树这类长列表）时逐个改写 flex 代价太高；这些节点是流式排布，
+  // scrollHeight 相加就是内容高度，不会出现被拉伸的问题
+  if (children.length > 20) {
+    let sum = 0;
+    for (const child of children) {
+      if (child instanceof HTMLElement) sum += child.scrollHeight;
+    }
+    return sum;
   }
-  return Math.max(sum, el.scrollHeight);
+  let sum = 0;
+  for (const child of children) {
+    if (!(child instanceof HTMLElement)) continue;
+    const inlineFlex = child.style.flex;
+    child.style.flex = "0 0 auto";
+    sum += Math.max(child.offsetHeight, child.scrollHeight);
+    child.style.flex = inlineFlex;
+  }
+  return sum;
 }
 
 export interface SidebarViewsDeps {
@@ -91,10 +104,11 @@ export class SidebarViews {
   private lastActive: SidebarView = "files";
   /** 视图 → 分区容器（标题 + 内容）：分隔线拖拽与高度计算都要用 */
   private readonly sections = new Map<SidebarView, HTMLElement>();
-  /** 手调 / 按内容初始化的分区高度（px）：未记录的分区均分剩余高度 */
+  /** 手调 / 按内容计算的分区高度（px）：未记录的分区均分剩余高度 */
   private readonly sizes = new Map<SidebarView, number>();
-  /** 固定在底部的分区：最靠上的那个吃下剩余空间，其下分区一并贴底 */
-  private dock = new Set<SidebarView>();
+  /** 用户手拖过的分区：高度只认用户设定，内容变化时不再自动贴合 */
+  private readonly manual = new Set<SidebarView>();
+
   /** 分隔线拖拽中的状态（mousemove / mouseup 挂在 window 上） */
   private drag: {
     /** 分隔线上侧 / 下侧展开的分区（收起侧为 null） */
@@ -120,28 +134,41 @@ export class SidebarViews {
       const view = btn.dataset.view as SidebarView | undefined;
       if (!view) return;
       btn.addEventListener("click", () => this.toggle(view));
-      btn.append(this.createPin(view));
     });
     this.initSashes();
     // 侧栏高度变化（窗口缩放 / 终端面板开合）：挤不下时按比例收回手调高度
     new ResizeObserver(() => this.fitSizes()).observe(this.sectionsEl);
+    this.observeContent();
     // 配置在 bootstrap 载入后由 restore 覆盖：先用默认布局渲染
     this.restore({});
   }
 
-  /** 标题行右侧的「固定到底部」按钮（hover 或已固定时可见，样式见 main.css） */
-  private createPin(view: SidebarView): HTMLElement {
-    // 标题本身是 <button>：内层不能再放 button，用 span + role 代替
-    const pin = document.createElement("span");
-    pin.className = "sidebar-pin";
-    pin.setAttribute("role", "button");
-    pin.textContent = "⇩";
-    // 标题点击是展开 / 收起，固定按钮必须拦下冒泡
-    pin.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.toggleDock(view);
-    });
-    return pin;
+  /**
+   * 内容变化 → 重算分区高度。
+   * 典型场景：关闭标签后「正在打开的文件」列表变短，固定高度不变就会在列表下方
+   * 留出空行；Git 刷新后条目变少同理。用 MutationObserver 统一兜底（各视图渲染
+   * 入口分散在 panels 里，逐个加调用既漏又散），一次宏任务内合并成一次重排
+   * （用 setTimeout 而非 rAF：窗口最小化 / 无渲染帧时 rAF 会停，高度就再也跟不上）。
+   * 手拖过的分区由 manual 保护，不参与自动贴合。
+   */
+  private observeContent(): void {
+    const pending = new Set<SidebarView>();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = (): void => {
+      timer = null;
+      let changed = false;
+      for (const view of pending) {
+        if (this.measureIfNeeded(view)) changed = true;
+      }
+      pending.clear();
+      if (changed) this.apply();
+    };
+    for (const [view, body] of Object.entries(this.panes) as [SidebarView, HTMLElement][]) {
+      new MutationObserver(() => {
+        pending.add(view);
+        if (timer === null) timer = setTimeout(flush, 0);
+      }).observe(body, { childList: true, subtree: true, characterData: true });
+    }
   }
 
   /** 最后操作的分区（供预览 / 大纲刷新判断） */
@@ -161,17 +188,18 @@ export class SidebarViews {
     this.persistLayout();
   }
 
-  /** 启动 / 配置变更时恢复布局：展开组合 + 高度 + 底部固定（外部输入一律校验） */
+  /** 启动 / 配置变更时恢复布局：展开组合 + 高度（外部输入一律校验） */
   restore(cfg: SidebarLayoutConfig): void {
     const expanded = knownViews(cfg.sidebarExpanded);
     this.expanded = new Set(expanded.length > 0 ? expanded : DEFAULT_EXPANDED);
-    const dock = knownViews(cfg.sidebarDock);
-    this.dock = new Set(dock.length > 0 ? dock : DEFAULT_DOCK);
     this.sizes.clear();
+    this.manual.clear();
     for (const [id, px] of Object.entries(cfg.sidebarSizes ?? {})) {
       const view = id as SidebarView;
       if (!this.expanded.has(view) || !Number.isFinite(px) || px <= 0) continue;
       this.sizes.set(view, px);
+      // 持久化下来的高度都来自用户手拖（见 persistLayout），恢复后继续尊重
+      this.manual.add(view);
     }
     const active = cfg.sidebarView as SidebarView | undefined;
     this.lastActive =
@@ -188,8 +216,9 @@ export class SidebarViews {
   private toggle(view: SidebarView): void {
     if (this.expanded.has(view)) {
       this.expanded.delete(view);
-      // 收起后丢掉高度，再次展开时按内容重新给
+      // 收起后丢掉高度与手调标记，再次展开时按内容重新给
       this.sizes.delete(view);
+      this.manual.delete(view);
       this.apply();
     } else {
       this.lastActive = view;
@@ -231,17 +260,9 @@ export class SidebarViews {
   /** 分区高度：按内容 / 手调的分区用固定像素，富余高度由填充区（见 fillers）均分 */
   private applySizes(): void {
     const fillers = this.fillers();
-    // 底部固定区：最靠上的被固定分区吃下剩余空间，从而贴住侧栏底边
-    const dockTop = this.domOrder().find((view) => this.dock.has(view));
     for (const [view, section] of this.sections) {
       const px = this.expanded.has(view) && !fillers.has(view) ? this.sizes.get(view) : undefined;
       section.style.flex = px === undefined ? "" : `0 0 ${Math.round(px)}px`;
-      section.classList.toggle("docked", view === dockTop);
-      const pin = section.querySelector<HTMLElement>(".sidebar-pin");
-      if (pin) {
-        pin.classList.toggle("pinned", this.dock.has(view));
-        pin.title = this.dock.has(view) ? "取消固定底部" : "固定到底部";
-      }
     }
     this.syncSashes();
   }
@@ -249,71 +270,83 @@ export class SidebarViews {
   /**
    * 填充区（均分富余高度）：
    * 1) 还没量过内容 / 内容比可用空间大的展开区；
-   * 2) 只有它一个展开区且不吸附底部时（否则内容少的分区只占一小块，中间会留一大片空）。
-   * 吸附底部的单区例外：按自身高度贴底，上方留白即拖拽余量（见 syncSashes）。
+   * 2) 只有它一个展开区时（否则内容少的分区只占一小块，中间会留一大片空）。
    */
   private fillers(): Set<SidebarView> {
     const implicit = [...this.expanded].filter((view) => !this.sizes.has(view));
     if (implicit.length > 0) return new Set(implicit);
-    if (this.expanded.size <= 1) {
-      const [only] = this.expanded;
-      return only && this.dock.has(only) ? new Set() : new Set(this.expanded);
-    }
-    return new Set();
-  }
-
-  /** 写回 config.json（展开组合 / 高度 / 底部固定），由装配层合并进 layout */
-  private persistLayout(): void {
-    this.deps.onLayout({
-      sidebarExpanded: this.domOrder().filter((view) => this.expanded.has(view)),
-      sidebarSizes: Object.fromEntries(this.sizes),
-      sidebarDock: this.domOrder().filter((view) => this.dock.has(view)),
-    });
-  }
-
-  /** 固定 / 取消固定底部（最靠上的被固定分区起，往下的分区一并贴底） */
-  private toggleDock(view: SidebarView): void {
-    if (this.dock.has(view)) this.dock.delete(view);
-    else this.dock.add(view);
-    this.apply();
-    this.persistLayout();
+    return this.expanded.size <= 1 ? new Set(this.expanded) : new Set();
   }
 
   /**
-   * 展开分区时给一个初始高度：
-   * 内容自然高度小于可用空间就按内容给（不抢其它分区的空间）；
-   * 内容更多（或还没渲染出内容）则留空，继续由 flex 均分吸收剩余高度。
-   * 例外：唯一展开的分区直接铺满（VS Code 的展开即占满），否则「只展开
-   * 源代码管理」这类内容不多、又吸附底部的分区只会占底部一小块，上面一大片空白。
-   * 想要留白 / 调高度时手动拖分隔线即可（拖过的高度会持久化，重启仍生效）。
+   * 写回 config.json（展开组合 / 高度），由装配层合并进 layout。
+   * 只持久化用户手拖的高度：按内容算出来的高度每次启动重算即可，
+   * 否则内容变化后会带着过期高度出现空行。
+   */
+  private persistLayout(): void {
+    this.deps.onLayout({
+      sidebarExpanded: this.domOrder().filter((view) => this.expanded.has(view)),
+      sidebarSizes: Object.fromEntries(
+        [...this.sizes].filter(([view]) => this.manual.has(view)),
+      ),
+    });
+  }
+
+  /**
+   * 展开分区时给一个初始高度：内容自然高度小于可用空间就按内容给
+   * （不抢其它分区的空间）；内容更多（或还没渲染出内容）则留空，
+   * 继续由 flex 均分吸收剩余高度；唯一展开的分区直接铺满（VS Code 的展开即占满）。
    */
   private initSize(view: SidebarView): void {
     if (this.sizes.has(view)) return;
-    if (this.expanded.size === 1) return;
+    this.measureIfNeeded(view);
+  }
+
+  /** 内容变化 / 首次展开时该不该重算：单区铺满与用户手拖过的分区不参与 */
+  private measureIfNeeded(view: SidebarView): boolean {
+    if (!this.expanded.has(view) || this.manual.has(view)) return false;
+    if (this.expanded.size <= 1) return false;
+    return this.measureSize(view);
+  }
+
+  /**
+   * 按内容重算分区高度（手调标记不在此判断）。
+   * 内容超出可用空间时不设固定高度，交回 flex 均分/吸收；
+   * 否则按内容给（不低于 MIN，不挤掉其它展开区的下限）。
+   * 返回是否真的改变了高度（调用方据此决定要不要重排）。
+   */
+  private measureSize(view: SidebarView): boolean {
     const section = this.sections.get(view);
     const body = this.panes[view];
-    if (!section || !body) return;
+    if (!section || !body) return false;
     const content = contentHeight(body);
     // 内容未渲染（如刚启动的文件树）：量不到高度，保持均分
-    if (content <= 0) return;
+    if (content <= 0) return false;
     const head = section.querySelector<HTMLElement>(".sidebar-section-head");
     const natural = (head?.offsetHeight ?? 0) + content;
     const avail = this.availableHeight();
-    if (natural >= avail) return;
+    const prev = this.sizes.get(view);
+    if (natural >= avail) {
+      if (prev === undefined) return false;
+      this.sizes.delete(view);
+      return true;
+    }
     const others = [...this.expanded].filter((other) => other !== view);
     const fixed = others.reduce((sum, other) => sum + (this.sizes.get(other) ?? 0), 0);
     const flexible = others.filter((other) => !this.sizes.has(other)).length;
     const cap = avail - fixed - MIN_SECTION_PX * flexible;
-    this.sizes.set(view, clamp(natural, MIN_SECTION_PX, Math.max(MIN_SECTION_PX, cap)));
+    const next = Math.round(clamp(natural, MIN_SECTION_PX, Math.max(MIN_SECTION_PX, cap)));
+    if (prev !== undefined && Math.abs(prev - next) < 1) return false;
+    this.sizes.set(view, next);
+    return true;
   }
 
   /**
    * 分隔线可拖拽态：
    * - 两侧都展开：在二者之间分配高度；
-   * - 只有一侧展开：只调整该侧高度（只留底部吸附区时向上拖变高、向下拖变矮）。
-   *   多个分区展开时一律开放（相邻分区往往一开一收，旧的「两侧都必须展开」会让
-   *   文件 + 源代码管理同时展开时一根分隔线都拖不动）；
-   * - 唯一展开且不吸附底部分区时不开放：它铺满剩余空间，拖出下方留白没有意义。
+   * - 只有一侧展开：只调整该侧高度（多个分区展开时一律开放——相邻分区往往一开一收，
+   *   旧的「两侧都必须展开」会让文件 + 源代码管理同时展开时一根分隔线都拖不动）；
+   * - 唯一展开的分区不开放：它铺满剩余空间，拖出下方留白没有意义。
    */
   private syncSashes(): void {
     this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-sash").forEach((sash) => {
@@ -323,7 +356,7 @@ export class SidebarViews {
       const draggable =
         above !== null && below !== null
           ? true
-          : single !== null && (this.expanded.size > 1 || this.dock.has(single));
+          : single !== null && this.expanded.size > 1;
       sash.classList.toggle("draggable", draggable);
     });
   }
@@ -400,12 +433,16 @@ export class SidebarViews {
       const abovePx = clamp(drag.abovePx + dy, MIN_SECTION_PX, total - MIN_SECTION_PX);
       this.sizes.set(drag.above, abovePx);
       this.sizes.set(drag.below, total - abovePx);
+      this.manual.add(drag.above);
+      this.manual.add(drag.below);
     } else if (drag.above) {
       // 只有上方展开：向下拖 = 变高
       this.sizes.set(drag.above, clamp(drag.abovePx + dy, MIN_SECTION_PX, budget));
+      this.manual.add(drag.above);
     } else if (drag.below) {
       // 只有下方展开：向上拖 = 变高
       this.sizes.set(drag.below, clamp(drag.belowPx - dy, MIN_SECTION_PX, budget));
+      this.manual.add(drag.below);
     }
     this.applySizes();
   }
@@ -420,9 +457,10 @@ export class SidebarViews {
     this.persistLayout();
   }
 
-  /** 双击分隔线：清掉手调高度，回到「按内容」的默认高度 */
+  /** 双击分隔线：清掉手调高度与标记，回到「按内容」的默认高度 */
   private resetSizes(): void {
     this.sizes.clear();
+    this.manual.clear();
     for (const view of this.expanded) this.initSize(view);
     this.apply();
     this.persistLayout();

@@ -1086,32 +1086,6 @@ button:disabled:hover {
   border-bottom: 1px solid var(--border);
 }
 
-/* 固定在底部的分区（含其下方分区）贴住侧栏底边：
-   flex 分配后剩下的空间被 auto 外边距吃掉，展开时也从底边向上占用 */
-.sidebar-section.docked {
-  margin-top: auto;
-}
-
-/* 标题行右侧的「固定到底部」按钮（hover 或已固定时可见） */
-.sidebar-pin {
-  flex: none;
-  padding: 0 2px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0;
-}
-
-.sidebar-section-head:hover .sidebar-pin {
-  opacity: 0.9;
-}
-
-.sidebar-pin.pinned {
-  color: var(--accent);
-  opacity: 0.9;
-}
-
 .sidebar-section-head {
   display: flex;
   flex: none;
