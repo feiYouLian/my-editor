@@ -50,6 +50,20 @@ jobs:
           node-version: 20
           cache: npm
 
+      # 版本号由 tauri.conf.json 决定（action 里的 __VERSION__ 取自它），
+      # tag 与之不一致会产出「标题版本 ≠ 安装包版本」的 Release。
+      # 纯本地校验、秒级，放在发布检查之前，避免版本号错了却先看到网络侧的报错。
+      - name: 校验 tag 与版本号一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag v$tag 与 tauri.conf.json 的 version $ver 不一致，先改版本号再重打 tag"
+            exit 1
+          fi
+
       # GitHub 的「发布不可变」特性：Release 一旦发布，其资产不能删除也不能替换。
       # tauri-action 覆盖上传的做法是「先删同名 asset 再上传」，撞上不可变 Release 会直接报
       # Cannot delete asset from an immutable release —— 而且是在编译打包几分钟之后才报。
@@ -79,7 +93,7 @@ jobs:
           if [ "$draft" = "true" ]; then
             echo "tag ${tag} 的 Release 仍是草稿，允许覆盖上传"
           elif [ "$immutable" = "true" ]; then
-            echo "::error::tag ${tag} 已发布且为不可变 Release，其安装包不能删除或替换。请同步升级 package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json 的版本号后打新 tag。"
+            echo "::error::tag ${tag} 已发布且为不可变 Release（${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${tag}），其安装包不能删除或替换。若该 Release 产物已完整则无需重跑；若需要重新构建，请把 package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json 的版本号一同升上去后打新 tag。"
             exit 1
           else
             echo "::warning::tag ${tag} 已有已发布的 Release，本次将覆盖其现有安装包。更稳妥的做法是先删除该 Release 或升级版本号。"
@@ -95,19 +109,6 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci
-
-      # 版本号由 tauri.conf.json 决定（action 里的 __VERSION__ 取自它），
-      # tag 与之不一致会产出「标题版本 ≠ 安装包版本」的 Release
-      - name: 校验 tag 与版本号一致
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "$tag" != "$ver" ]; then
-            echo "::error::tag v$tag 与 tauri.conf.json 的 version $ver 不一致，先改版本号再重打 tag"
-            exit 1
-          fi
 
       - name: 构建安装包并发布 Release
         uses: tauri-apps/tauri-action@v0

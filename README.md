@@ -136,6 +136,49 @@ npm run tauri build
 
 产物位于 `src-tauri/target/release/bundle/`（Windows：`msi/` 与 `nsis/`，nsis 产物即 .exe 安装包）。
 
+## 版本发布
+
+版本号以 `package.json` 的 `version` 为真源，其余 4 处必须保持一致。手动逐处改容易漏，统一用脚本：
+
+```bash
+npm run bump patch               # 0.1.2 → 0.1.3
+npm run bump minor               # 0.1.2 → 0.2.0
+npm run bump major               # 0.1.2 → 1.0.0
+npm run bump 0.2.1               # 指定版本
+npm run bump patch -- --dry-run  # 只打印将改什么，不落盘
+npm run bump 0.1.1 -- --force    # 允许降级（默认拒绝）
+```
+
+脚本（`scripts/bump-version.mjs`）按「文本行替换」修改，不整体重排文件，所以 diff 只有版本那一行；五个文件先在内存里算好、校验一致后才统一写盘，中途失败不会留下改了一半的状态。
+
+| 文件 | 修改位置 |
+| --- | --- |
+| `package.json` | 顶层 `version`（真源） |
+| `package-lock.json` | 顶层 `version` + `packages[""].version` |
+| `src-tauri/tauri.conf.json` | 顶层 `version`（决定安装包版本与「关于」显示） |
+| `src-tauri/Cargo.toml` | `[package]` 段下的 `version` |
+| `src-tauri/Cargo.lock` | `name = "my-editor"` 对应的 `[[package]]` 块 |
+
+发布流程：
+
+```bash
+npm run build && (cd src-tauri && cargo test --lib)        # 本地基线，必须全绿
+git add -A
+git commit -m "chore(release): 版本号升级至 0.2.0"
+git tag v0.2.0
+git push github HEAD && git push github refs/tags/v0.2.0   # 触发 .github/workflows/release.yml
+git push origin HEAD --tags                                # 同步 Gitee 镜像
+```
+
+发布规范（都是踩过的坑，务必遵守）：
+
+1. **tag 必须等于 `tauri.conf.json` 的版本号**。workflow 第一步就校验，不一致直接失败；安装包版本取自这里，对不上会产出版本号互相矛盾的 Release。
+2. **不要手动在 GitHub 网页创建 Release**。手建的 Release 会占住该 tag，且 tag 指向的代码往往没改版本号，之后 workflow 永远发不进去。
+3. **草稿阶段可反复重跑，Publish 之后不可变**。`tauri-action` 默认创建**草稿** Release，此时重跑会覆盖重建；一旦点了 Publish，该 Release 即成为不可变发布 —— 不能删除、不能替换资产、不能编辑。要更新安装包，唯一办法是升版本号打新 tag。
+4. **同一个 tag 不要重复触发发布**。已发布后再重跑，`tauri-action` 的「先删同名资产再上传」会被 GitHub 拒绝（`Cannot delete asset from an immutable release`）；workflow 的「检查目标 tag 的 Release 状态」步骤会在编译前拦下，省去几分钟白编译。
+5. **日常验证不必发 Release**。每次构建都会上传 `installer-windows` artifact，直接下载安装包即可，不消耗版本号。
+6. **两个远端分工**：`origin` = Gitee（镜像备份），`github` = GitHub（Actions 与 Release 所在），发布只推 `github`。
+
 ## 测试与校验
 
 ```bash
@@ -287,7 +330,7 @@ src-tauri/src/                # Rust 后端
     ├── git.rs                # Git 状态 / 暂存 / 取消暂存 / 提交
     └── config.rs             # config.json 读写与版本迁移
 
-scripts/                      # 开发辅助脚本（图标生成）
+scripts/                      # 开发辅助脚本（图标生成、版本号统一修改）
 ```
 
 ## 本地数据文件

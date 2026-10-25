@@ -1,13 +1,14 @@
 {
   "name": "my-editor",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "verify": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "bump": "node scripts/bump-version.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
