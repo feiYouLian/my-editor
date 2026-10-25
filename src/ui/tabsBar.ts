@@ -71,6 +71,112 @@ export class TabsBar {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") this.closeMenu();
     });
+
+    this.wireDrag();
+  }
+
+  // ---- 标签拖拽排序（pointer 事件：WebView2 下比 HTML5 DnD 稳） ----
+
+  /** 拖拽结束后的抑制窗口：避免 pointerup 后的 click 把标签切成激活 */
+  private suppressActivateUntil = 0;
+  private dragState: {
+    id: string;
+    startX: number;
+    pointerId: number;
+    active: boolean;
+  } | null = null;
+  private dropMarker: HTMLElement | null = null;
+  /** 基于「原数组」的插入位置（拖动中实时更新） */
+  private dropIndex = 0;
+
+  private wireDrag(): void {
+    this.container.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      // 关闭按钮上的按下不进入拖拽
+      if (target.closest(".tab-close")) return;
+      const el = target.closest<HTMLElement>(".tab");
+      const id = el?.dataset.tabId;
+      if (!el || !id) return;
+      this.dragState = { id, startX: e.clientX, pointerId: e.pointerId, active: false };
+    });
+
+    window.addEventListener("pointermove", (e) => {
+      const state = this.dragState;
+      if (!state || e.pointerId !== state.pointerId) return;
+      if (!state.active) {
+        // 4px 阈值：低于它仍视为点击
+        if (Math.abs(e.clientX - state.startX) < 4) return;
+        state.active = true;
+        this.container
+          .querySelector<HTMLElement>(`.tab[data-tab-id="${CSS.escape(state.id)}"]`)
+          ?.classList.add("dragging");
+        const marker = document.createElement("div");
+        marker.className = "tab-drop-marker";
+        document.body.append(marker);
+        this.dropMarker = marker;
+      }
+      e.preventDefault();
+      this.dropIndex = this.computeDropIndex(e.clientX);
+      this.positionMarker();
+    });
+
+    window.addEventListener("pointerup", (e) => {
+      const state = this.dragState;
+      if (!state || e.pointerId !== state.pointerId) return;
+      if (state.active) {
+        this.suppressActivateUntil = performance.now() + 150;
+        tabStore.move(state.id, this.indexAfterRemoval(state.id, this.dropIndex));
+      }
+      this.endDrag();
+    });
+
+    window.addEventListener("pointercancel", () => this.endDrag());
+  }
+
+  /** 拖动中的 clientX → 原数组插入位置（左半边靠前、右半边靠后） */
+  private computeDropIndex(clientX: number): number {
+    const tabs = [...this.container.querySelectorAll<HTMLElement>(".tab")];
+    for (let i = 0; i < tabs.length; i++) {
+      const rect = tabs[i].getBoundingClientRect();
+      if (clientX < rect.left + rect.width / 2) return i;
+    }
+    return tabs.length;
+  }
+
+  /** 原数组插入位置 → 移除拖拽项后的数组索引（与 tabStore.move 的约定一致） */
+  private indexAfterRemoval(dragId: string, index: number): number {
+    const from = tabStore.list().findIndex((t) => t.id === dragId);
+    if (from < 0) return index;
+    return index > from ? index - 1 : index;
+  }
+
+  /** 指示线吸附到最近的标签间隙（fixed 定位，不受横向滚动影响取错） */
+  private positionMarker(): void {
+    const marker = this.dropMarker;
+    if (!marker) return;
+    const tabs = [...this.container.querySelectorAll<HTMLElement>(".tab")];
+    if (tabs.length === 0) return;
+    const first = tabs[0].getBoundingClientRect();
+    let x: number;
+    if (this.dropIndex <= 0) x = first.left;
+    else if (this.dropIndex >= tabs.length) x = tabs[tabs.length - 1].getBoundingClientRect().right;
+    else x = tabs[this.dropIndex].getBoundingClientRect().left;
+    marker.style.left = `${x - 1}px`;
+    marker.style.top = `${first.top}px`;
+    marker.style.height = `${first.height}px`;
+  }
+
+  private endDrag(): void {
+    const state = this.dragState;
+    if (state?.active) {
+      this.container
+        .querySelector<HTMLElement>(`.tab[data-tab-id="${CSS.escape(state.id)}"]`)
+        ?.classList.remove("dragging");
+    }
+    this.dragState = null;
+    this.dropMarker?.remove();
+    this.dropMarker = null;
   }
 
   private renderSignature(): string {
@@ -91,12 +197,16 @@ export class TabsBar {
     for (const tab of tabStore.list()) {
       const el = document.createElement("div");
       el.className = `tab${tab.id === tabStore.active()?.id ? " active" : ""}`;
+      el.dataset.tabId = tab.id;
 
       const name = document.createElement("span");
       name.className = "tab-name";
       name.textContent = tab.dirty ? `● ${tab.name}` : tab.name;
       name.title = tab.path ?? "未命名";
-      name.addEventListener("click", () => this.callbacks.onActivate(tab.id));
+      name.addEventListener("click", () => {
+        if (performance.now() < this.suppressActivateUntil) return;
+        this.callbacks.onActivate(tab.id);
+      });
 
       const close = document.createElement("span");
       close.className = "tab-close";

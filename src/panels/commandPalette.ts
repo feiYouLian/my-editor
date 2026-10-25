@@ -5,6 +5,8 @@
  * 不含宏录制/回放，故无「运行宏」条目。
  */
 
+import { fuzzyScore } from "../core/fuzzy";
+
 export interface CommandItem {
   id: string;
   title: string;
@@ -140,30 +142,12 @@ export class CommandPalette {
     return cmd.shortcut ?? "";
   }
 
-  /** 简单模糊匹配：子序列匹配 + 连续匹配加分 */
-  private fuzzyMatch(query: string, text: string): number {
-    if (!query) return 1;
-    const q = query.toLowerCase();
-    const t = text.toLowerCase();
-    let score = 0;
-    let ti = 0;
-    let lastMatch = -1;
-    for (const ch of q) {
-      const idx = t.indexOf(ch, ti);
-      if (idx < 0) return 0;
-      score += idx === lastMatch + 1 ? 2 : 1;
-      lastMatch = idx;
-      ti = idx + 1;
-    }
-    return score;
-  }
-
   private renderList(): void {
     if (!this.listEl || !this.input) return;
     const query = this.input.value.trim();
     const recent = this.recentIds();
     const scored = this.commands
-      .map((cmd) => ({ cmd, score: this.fuzzyMatch(query, cmd.title) }))
+      .map((cmd) => ({ cmd, score: fuzzyScore(query, cmd.title) }))
       .filter((s) => s.score > 0)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;

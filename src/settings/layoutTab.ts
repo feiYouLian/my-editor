@@ -111,6 +111,9 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
     checkRow("Tab 插入空格（否则插入制表符）", cfg.insertSpaces, (value) => {
       saveSettings({ insertSpaces: value });
     }),
+    checkRow("保存时自动格式化（大文件跳过）", cfg.formatOnSave, (value) => {
+      saveSettings({ formatOnSave: value });
+    }),
   );
   main.append(editorSection.el);
 

@@ -14,6 +14,10 @@ import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
 import { FileTree } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
+import { QuickOpen } from "./panels/quickOpen";
+import { SearchView } from "./panels/searchView";
+import { OutlineView } from "./panels/outlineView";
+import { SidebarViews } from "./ui/sidebar";
 import { WelcomePanel } from "./panels/welcome";
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
@@ -36,6 +40,7 @@ import { DiffService } from "./app/diffService";
 import { SessionHost } from "./app/sessionHost";
 import { TabSwitcher } from "./app/tabSwitcher";
 import { WindowChrome } from "./app/windowChrome";
+import { DropHost } from "./app/dropHost";
 import { LayoutPane } from "./app/layout";
 import {
   loadWorkspace,
@@ -384,6 +389,9 @@ function insertAtCursor(text: string): void {
   });
 }
 
+/** 超过此行数，格式化前弹确认（保存时自动格式化也用它做上限） */
+const FORMAT_CONFIRM_LINES = 10000;
+
 let editorHandle: EditorHandle;
 let resultsPanel: SearchResultsPanel | null = null;
 const palette = new CommandPalette();
@@ -573,6 +581,7 @@ tabStore.subscribe((kind) => {
   const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
   welcomeView?.setVisible(tabStore.list().length === 0);
+  if (sidebarViews.view === "outline") sidebarOutline.scheduleRefresh();
   breadcrumbView.render();
   statusBar.refresh();
   // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
@@ -621,6 +630,48 @@ const fileTree = new FileTree(fileTreeEl, {
 });
 fileTree.mountGlobalListeners();
 
+// ---- 侧栏多视图：文件 / 搜索 / 大纲 ----
+const sidebarSearch = new SearchView($("sidebar-search"), {
+  getRoot: () => workspaceRoot,
+  getIgnoreDirs: () => getConfig().ignoreDirs,
+  onOpenLocation: (path, line) => void openFileAt(path, line),
+  showMessage: statusBar.showMessage,
+});
+const sidebarOutline = new OutlineView($("sidebar-outline"), {
+  getView: () => editorHandle.view,
+  getLanguage: () => {
+    const tab = activeTab();
+    return tab ? effectiveLanguage(tab) : null;
+  },
+  isAvailable: () => {
+    const tab = activeTab();
+    return !!tab && tab.kind === "text" && !tab.virtual;
+  },
+});
+const sidebarViews = new SidebarViews(
+  $("sidebar-tabs"),
+  {
+    files: $("file-tree"),
+    search: $("sidebar-search"),
+    outline: $("sidebar-outline"),
+  },
+  {
+    initial: "files",
+    onChange: (view) => {
+      statusBar.persistConfig({ layout: { ...getConfig().layout, sidebarView: view } });
+      if (view === "search") sidebarSearch.focusInput();
+      if (view === "outline") sidebarOutline.scheduleRefresh();
+    },
+  },
+);
+
+/** 菜单 / 快捷键：展开侧栏并聚焦工作区搜索 */
+function focusWorkspaceSearch(): void {
+  layout.setSidebarVisible(true);
+  sidebarViews.switch("search");
+  sidebarSearch.focusInput();
+}
+
 btnOpenDir.addEventListener("click", () => void openWorkspaceDir());
 
 // ---- 窗口 chrome（标题栏 / 缩放热区 / 退出清理）：见 app/windowChrome.ts ----
@@ -643,6 +694,7 @@ editorHandle = createEditor($("editor"), {
     resultsPanel?.scheduleRefresh();
     // 未保存内容防抖写入草稿（配置关闭时不写）
     if (t) sessionHost.scheduleDraftSave(t);
+    if (sidebarViews.view === "outline") sidebarOutline.scheduleRefresh();
   },
   onCursorChange: ({ line, col, totalLines, selectedChars }) => {
     statusCursor.textContent =
@@ -738,6 +790,35 @@ const fileService = new FileService({
   pickEncoding: (encodings, current, onPick, note) =>
     runHost.pickEncoding(encodings, current, onPick, note),
   largeHost,
+  // 保存前格式化：单编辑器实例，只处理激活标签；失败不阻塞保存
+  formatBeforeSave: async (tab) => {
+    if (!getConfig().formatOnSave) return "skipped";
+    if (tab.id !== editorHandle.docId()) return "skipped";
+    if (editorHandle.view.state.doc.lines > FORMAT_CONFIRM_LINES) {
+      statusBar.showMessage(`文档超过 ${FORMAT_CONFIRM_LINES} 行，已跳过保存时格式化`);
+      return "skipped";
+    }
+    const lang = effectiveLanguage(tab);
+    if (!supportsFormatting(lang)) return "skipped";
+    const result = await formatDocument(editorHandle.view, lang, tab.path);
+    if (!result.ok) {
+      statusBar.showMessage(
+        `${result.message.split("\n")[0] || "保存时格式化失败"}（已按原内容保存）`,
+        8000,
+      );
+      console.error("[format] on save:", result.message);
+      return "failed";
+    }
+    return result.changed ? "applied" : "skipped";
+  },
+});
+
+// 快速打开（Ctrl+P）：工作区文件模糊过滤 → 打开（含大文件分流）
+const quickOpen = new QuickOpen({
+  getRoot: () => workspaceRoot,
+  getIgnoreDirs: () => getConfig().ignoreDirs,
+  onOpen: (path) => void fileService.openFilePath(path),
+  showMessage: statusBar.showMessage,
 });
 
 // 内置终端编排（懒加载 xterm；打开时让出底部区域给运行输出）
@@ -821,6 +902,31 @@ const windowChrome = new WindowChrome({
     await terminalHost.dispose();
   },
 });
+
+// ---- 窗口拖放：文件直接打开，目录询问后设为工作区 ----
+const dropHost = new DropHost({
+  onHover: (active) =>
+    document.getElementById("app")?.classList.toggle("drag-active", active),
+  showMessage: statusBar.showMessage,
+  onPaths: async (paths) => {
+    for (const path of paths) {
+      let kind: "file" | "dir";
+      try {
+        kind = await invoke<"file" | "dir">("path_kind", { path });
+      } catch (e) {
+        statusBar.showMessage(`无法读取路径: ${String(e).split("\n")[0]}`);
+        continue;
+      }
+      if (kind === "dir") {
+        const ok = await confirmAction(`将「${basenameOf(path)}」设为工作区？`);
+        if (ok) fileTree.setRoot(path);
+        continue;
+      }
+      await fileService.openFilePath(path);
+    }
+  },
+});
+void dropHost.mount();
 
 // 布局（侧栏显隐 / 侧栏宽度 / 双栏分割线）
 const layout = new LayoutPane({
@@ -1029,9 +1135,6 @@ function buildEditorMenu(): MenuEntry[] {
 
 // ---- 格式化（双通道 + 大文件确认 + 选中级）----
 
-/** 超过此行数，格式化前弹确认 */
-const FORMAT_CONFIRM_LINES = 10000;
-
 /** 格式化进行中标志：防止连按快捷键启动两个格式化器互相覆盖 */
 let formatting = false;
 
@@ -1175,6 +1278,7 @@ $<HTMLButtonElement>("btn-devtools").addEventListener("click", () => {
 registerCommands([
   // ---- 文件 ----
   { id: "file.open", title: "打开文件…", section: "文件", defaultKey: "Mod-O", menu: "file", menuOrder: 20, run: () => void fileService.openFileDialog() },
+  { id: "file.quickOpen", title: "快速打开文件…", section: "文件", defaultKey: "Mod-P", menu: "file", menuLabel: "快速打开文件…", menuOrder: 25, run: () => quickOpen.open() },
   { id: "file.new", title: "新建未命名文档", section: "文件", defaultKey: "Mod-N", menu: "file", menuLabel: "新建", menuOrder: 10, run: () => fileService.newUntitled() },
   { id: "file.save", title: "保存", section: "文件", defaultKey: "Mod-S", menu: "file", menuOrder: 50, menuSeparatorBefore: true, run: () => void fileService.saveFile() },
   { id: "file.saveAs", title: "另存为…", section: "文件", defaultKey: "Mod-Shift-S", menu: "file", menuOrder: 60, run: () => void fileService.saveFileAs() },
@@ -1217,6 +1321,7 @@ registerCommands([
   { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", defaultKey: "", run: () => statusBar.toggleWhitespace() },
   // ---- 查找 ----
   { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", menu: "edit", menuOrder: 80, run: () => toggleResultsPanel() },
+  { id: "search.workspace", title: "在文件中查找…（工作区）", section: "查找", defaultKey: "Mod-Shift-F", menu: "edit", menuLabel: "在文件中查找…", menuOrder: 85, run: () => focusWorkspaceSearch() },
   // ---- 工具 ----
   { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", menu: "tools", menuLabel: "Cron 解析 / 生成…", menuOrder: 10, run: () => runHost.toggleCron() },
   { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", menu: "tools", menuLabel: "批量另存为编码…", menuOrder: 30, run: () => runHost.toggleBatchEncoding() },
@@ -1402,6 +1507,8 @@ async function bootstrap(): Promise<void> {
   await loadSettings();
   // 2) 布局项：侧栏显隐按 config.layout 恢复
   layout.applyConfiguredSidebar();
+  // 2.1) 侧栏视图（文件 / 搜索 / 大纲）按配置恢复
+  sidebarViews.restore(getConfig().layout.sidebarView ?? "files");
   // 3) 分栏默认比例：localStorage 无记录时按配置（不写回，留给用户拖动/设置时落盘）
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集

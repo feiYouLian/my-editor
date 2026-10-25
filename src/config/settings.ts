@@ -47,6 +47,8 @@ export interface StatusBarFieldEntry {
 
 export interface LayoutSettings {
   sidebarVisible: boolean;
+  /** 侧栏当前视图：文件 / 搜索 / 大纲 */
+  sidebarView: "files" | "search" | "outline";
   splitRatio: number;
   defaultViewMode: "edit" | "preview" | "split";
   showLineNumbers: boolean;
@@ -220,6 +222,7 @@ export function defaultConfig(): AppConfig {
     keybindings: [],
     layout: {
       sidebarVisible: true,
+      sidebarView: "files",
       splitRatio: 0.5,
       defaultViewMode: "split",
       showLineNumbers: true,

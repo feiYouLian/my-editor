@@ -17,6 +17,7 @@ import {
 import { renderTheme } from "../settings/themeTab";
 import { renderKeybindings } from "../settings/keybindingsTab";
 import { renderLayout } from "../settings/layoutTab";
+import { renderFiles } from "../settings/filesTab";
 
 export type { SettingsPanelCallbacks };
 
@@ -159,6 +160,7 @@ export class SettingsPanel {
     const ctx = this.tabContext();
     if (this.category === "theme") renderTheme(main, ctx);
     else if (this.category === "keybindings") renderKeybindings(main, ctx);
+    else if (this.category === "files") renderFiles(main, ctx);
     else renderLayout(main, ctx);
   }
 }

@@ -24,7 +24,8 @@ import {
 import { onFileChanged, watchFiles } from "../services/fsWatch";
 import { confirmAction } from "../ui/dialogs";
 import { openStatusMenu } from "../ui/statusMenu";
-import { pad2 } from "../core/format";
+import { pickDraftsToRecover, type DraftRow } from "../panels/draftRecovery";
+import { formatSize, pad2 } from "../core/format";
 import type { FileContent } from "../types/app";
 
 export interface SessionHostDeps {
@@ -327,7 +328,7 @@ export class SessionHost {
     return tab;
   }
 
-  /** 启动时处理草稿：原文件未变 →「恢复 / 丢弃」；原文件已变 →「另存为」 */
+  /** 启动时处理草稿：统一列表勾选 → 批量恢复（原文件已变 → 另存为新文档） */
   async offerDraftRecovery(): Promise<void> {
     let drafts: DraftInfo[];
     try {
@@ -335,38 +336,57 @@ export class SessionHost {
     } catch {
       return;
     }
-    let applied = false;
+    if (drafts.length === 0) return;
+
+    // 先读内容：列表要展示体积，恢复时不再重复读
+    const contents = new Map<string, string>();
+    const rows: DraftRow[] = [];
     for (const draft of drafts) {
       const payload = await readDraft(draft.key).catch(() => null);
+      if (!payload?.content) {
+        // 读取失败 / 空草稿：直接清掉，避免下次启动重复出现
+        await deleteDraft(draft.key).catch(() => {});
+        continue;
+      }
+      contents.set(draft.key, payload.content);
+      rows.push({
+        key: draft.key,
+        name: draft.name,
+        savedAt: this.draftTime(draft.savedAt),
+        sizeText: formatSize(new Blob([payload.content]).size),
+        stale: draft.stale,
+      });
+    }
+    if (rows.length === 0) return;
+
+    const picked = await pickDraftsToRecover(rows);
+    if (picked === null) return; // 稍后处理：草稿保留，下次启动再提示
+    if (picked.length === 0) {
+      for (const draft of drafts) await deleteDraft(draft.key).catch(() => {});
+      this.deps.showMessage("已丢弃全部草稿");
+      return;
+    }
+
+    const selected = new Set(picked);
+    let applied = false;
+    for (const draft of drafts) {
+      if (!selected.has(draft.key)) continue;
+      const content = contents.get(draft.key) ?? "";
+      if (!content) continue;
       if (draft.stale) {
-        const ok = await confirmAction(
-          `「${draft.name}」的原文件已被修改，草稿（${this.draftTime(draft.savedAt)}）已过期。是否另存为新的未命名文档？`,
-          "另存为",
-        );
-        if (!ok || !payload?.content) {
-          await deleteDraft(draft.key).catch(() => {});
-          continue;
-        }
+        // 原文件已变：只能新建未命名文档承载草稿内容
         const tab = this.deps.onNewUntitled(draft.name);
-        tabStore.applyDraft(tab.id, payload.content);
+        tabStore.applyDraft(tab.id, content);
         applied = true;
       } else {
-        const ok = await confirmAction(
-          `「${draft.name}」存在未保存的草稿（${this.draftTime(draft.savedAt)}），是否恢复？`,
-          "恢复",
-        );
-        if (!ok || !payload?.content) {
-          await deleteDraft(draft.key).catch(() => {});
-          continue;
-        }
         const tab = await this.ensureTabForDraft(draft);
         if (!tab) continue;
-        tabStore.applyDraft(tab.id, payload.content);
+        tabStore.applyDraft(tab.id, content);
         applied = true;
         // 内容已接管：以新 key 立即重落草稿，避免中途丢失
         void this.persistDraft(tab.id);
       }
-      // 原草稿已消费，删除以免下次启动重复提示
+      // 已消费的草稿删除，避免下次启动重复提示
       await deleteDraft(draft.key).catch(() => {});
     }
     if (applied) {

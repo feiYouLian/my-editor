@@ -54,7 +54,16 @@
               <button id="btn-sidebar-toggle" type="button" class="icon-btn" title="隐藏侧栏 (Ctrl+B)" aria-label="隐藏侧栏">&#9776;</button>
             </div>
           </div>
-          <div id="file-tree" class="file-tree"></div>
+          <div class="sidebar-tabs" id="sidebar-tabs">
+            <button type="button" class="sidebar-tab active" data-view="files">文件</button>
+            <button type="button" class="sidebar-tab" data-view="search">搜索</button>
+            <button type="button" class="sidebar-tab" data-view="outline">大纲</button>
+          </div>
+          <div class="sidebar-body">
+            <div id="file-tree" class="file-tree sidebar-view"></div>
+            <div id="sidebar-search" class="sidebar-view hidden"></div>
+            <div id="sidebar-outline" class="sidebar-view hidden"></div>
+          </div>
         </aside>
         <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整侧栏宽度（双击复位）"></div>
         <section class="editor-column">

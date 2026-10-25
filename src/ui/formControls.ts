@@ -107,6 +107,28 @@ export function numberRow(
   return row;
 }
 
+/** 文本行（逗号分隔列表 / shell 路径等）：失焦或回车提交 */
+export function textRow(
+  label: string,
+  value: string,
+  placeholder: string,
+  onCommit: (value: string) => void,
+): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const labelEl = document.createElement("span");
+  labelEl.className = "settings-row-label";
+  labelEl.textContent = label;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "settings-text";
+  input.value = value;
+  input.placeholder = placeholder;
+  input.addEventListener("change", () => onCommit(input.value.trim()));
+  row.append(labelEl, input);
+  return row;
+}
+
 export function selectRow<T extends string>(
   label: string,
   options: { value: T; label: string }[],

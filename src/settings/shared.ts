@@ -13,7 +13,7 @@ import {
   type ThemeSetting,
 } from "../config/settings";
 
-export type Category = "theme" | "keybindings" | "layout";
+export type Category = "theme" | "keybindings" | "layout" | "files";
 
 export type ViewMode = "edit" | "preview" | "split";
 
@@ -61,9 +61,10 @@ export function saveSettings(patch: Parameters<typeof updateSettings>[0]): void 
 }
 
 export const CATEGORY_LABELS: { id: Category; label: string }[] = [
-  { id: "theme", label: "主题" },
+  { id: "theme", label: "外观主题" },
+  { id: "layout", label: "编辑器与布局" },
+  { id: "files", label: "文件与会话" },
   { id: "keybindings", label: "快捷键" },
-  { id: "layout", label: "页面布局" },
 ];
 
 export const THEME_OPTIONS: { value: ThemeSetting; label: string }[] = [

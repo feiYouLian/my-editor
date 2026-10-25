@@ -53,6 +53,7 @@ const GROUPS: Group[] = [
       { key: "showLineNumbers / showActiveLine", meaning: "行号 / 当前行高亮开关", effect: "即时" },
       { key: "editorFontSize", meaning: "编辑器字号（px，10–24）", effect: "即时" },
       { key: "statusBarFields", meaning: "状态栏字段显隐与排序（id + visible 数组）", effect: "即时" },
+      { key: "sidebarView", meaning: "侧栏当前视图：files / search / outline", effect: "即时" },
     ],
   },
   {
@@ -67,7 +68,7 @@ const GROUPS: Group[] = [
       { key: "fetch.allowPrivateNetwork", meaning: "允许「从网址抓取网页」访问内网 / 本机地址（默认 false）", effect: "即时" },
       { key: "terminal.shell", meaning: "内置终端 shell（空 = 自动：Windows 优先 pwsh，否则 PowerShell）；下次新建终端生效", effect: "即时" },
       { key: "globalReplace", meaning: "批量替换前是否生成 .bak 备份", effect: "预留" },
-      { key: "ignoreDirs", meaning: "全局搜索忽略的目录", effect: "预留" },
+      { key: "ignoreDirs", meaning: "工作区搜索 / 快速打开忽略的目录名", effect: "即时" },
       { key: "fileEncodingMemory", meaning: "按文件名 / 通配符记忆编码", effect: "预留" },
       { key: "formatters", meaning: "CLI 格式化工具与参数（后端按语言键读取；新增语言只需改这里）", effect: "即时" },
       { key: "ai", meaning: "AI 提供商 / 模型 / 启用开关", effect: "预留" },

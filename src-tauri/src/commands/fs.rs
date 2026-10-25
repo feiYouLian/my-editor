@@ -39,6 +39,18 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+/// 路径类型探测（窗口拖放：判定文件 / 目录）。
+/// 只读 metadata，不触碰作用域状态：拖入路径在打开/设为工作区时才登记。
+#[tauri::command]
+pub async fn path_kind(path: String) -> Result<&'static str, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = fs::metadata(&path).map_err(|e| format!("读取路径失败: {e}"))?;
+        Ok(if meta.is_dir() { "dir" } else { "file" })
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
 /// 新建文件或目录（已存在则报错）。
 /// 安全：仅允许已登记工作区根目录之内（文件树 UI 的可见范围）。
 #[tauri::command]

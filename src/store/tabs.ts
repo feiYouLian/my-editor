@@ -166,6 +166,21 @@ class TabStore {
     return this.tabs;
   }
 
+  /**
+   * 移动标签到指定索引（拖拽排序）。
+   * toIndex 是“移除后数组”的目标索引（调用方已根据原位置换算）。
+   * 顺序变更属于结构帧：订阅方会重新渲染标签栏并持久化会话。
+   */
+  move(id: string, toIndex: number): void {
+    const from = this.tabs.findIndex((t) => t.id === id);
+    if (from < 0) return;
+    const target = Math.max(0, Math.min(this.tabs.length - 1, toIndex));
+    if (from === target) return;
+    const [tab] = this.tabs.splice(from, 1);
+    this.tabs.splice(target, 0, tab);
+    this.emitStructure();
+  }
+
   active(): Tab | null {
     return this.tabs.find((t) => t.id === this.activeId) ?? null;
   }

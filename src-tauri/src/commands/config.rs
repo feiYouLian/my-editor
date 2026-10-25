@@ -122,6 +122,8 @@ pub struct LayoutSettings {
     pub editor_font_size: u32,
     /// 状态栏字段（数组顺序即展示顺序）
     pub status_bar_fields: Vec<StatusBarFieldEntry>,
+    /// 侧栏当前视图：files / search / outline
+    pub sidebar_view: String,
 }
 
 impl Default for LayoutSettings {
@@ -134,6 +136,7 @@ impl Default for LayoutSettings {
             show_active_line: true,
             editor_font_size: 13,
             status_bar_fields: default_status_bar_fields(),
+            sidebar_view: "files".into(),
         }
     }
 }

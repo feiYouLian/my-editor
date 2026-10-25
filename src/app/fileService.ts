@@ -44,6 +44,8 @@ export interface FileServiceDeps {
   ) => void;
   /** 大文件宿主（分流 / 虚拟视图） */
   largeHost: LargeFileHost;
+  /** 保存前格式化（仅激活标签；failed 也会继续保存原内容） */
+  formatBeforeSave?: (tab: Tab) => Promise<"applied" | "skipped" | "failed">;
 }
 
 /** 编码回退列表（与状态栏编码菜单共用） */
@@ -286,6 +288,8 @@ export class FileService {
 
   /** 调 Rust 保存命令：保留换行符与 BOM（原子替换在 Rust 侧） */
   async writeTo(tab: Tab, path: string, encodingOverride?: string): Promise<void> {
+    // 保存前格式化（配置开启且是激活标签时）；失败不阻塞保存
+    await this.deps.formatBeforeSave?.(tab);
     // 经 snapshotOf 取内容：激活标签会先把编辑器里的最新内容落回（惰性快照）
     const encoding = encodingOverride ?? tab.encoding;
     const newline = tab.newline;

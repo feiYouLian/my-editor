@@ -9,6 +9,7 @@ pub mod fs;
 pub mod large;
 pub mod paths;
 pub mod run;
+pub mod search;
 pub mod session;
 pub mod terminal;
 pub mod watch;
