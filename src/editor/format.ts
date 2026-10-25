@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { EditorView } from "@codemirror/view";
 import { cliFormatters, installHints } from "../config/formatters";
+import { getConfig } from "../config/settings";
 
 /**
  * 代码格式化（双通道）：
@@ -107,7 +108,10 @@ const jsFormatters: Record<string, (text: string) => Promise<string>> = {
 function withInstallHint(raw: string, tool: string): string {
   if (!raw.includes("未找到格式化工具")) return raw;
   const hint = installHints[tool];
-  if (!hint) return raw;
+  if (!hint) {
+    // 自定义工具（config.json.formatters 新增语言）没有内置安装指引：给通用下一步
+    return `${raw}\n可在 config.json 的 formatters 中把该语言的 tool / args 指向已安装的命令`;
+  }
   const [command] = hint.split("\n");
   return `未找到格式化工具「${tool}」：${command}\n${raw}\n安装指引: ${hint}`;
 }
@@ -116,6 +120,7 @@ function withInstallHint(raw: string, tool: string): string {
 export function supportsFormatting(languageKey: string | null): boolean {
   if (!languageKey) return false;
   return (
+    languageKey in getConfig().formatters ||
     languageKey in cliFormatters ||
     languageKey in jsFormatters ||
     languageKey in parserByLanguage
@@ -128,8 +133,11 @@ export async function formatText(
   languageKey: string | null,
   filePath: string | null,
 ): Promise<FormatResult> {
-  // CLI 通道优先（Prettier 不覆盖的语言）
-  const cli = languageKey ? cliFormatters[languageKey] : undefined;
+  // CLI 通道优先（Prettier 不覆盖的语言）。
+  // 工具与参数以后端 config.json 为准：用户新增语言只需改配置，前端不再用内置表否决。
+  const cli = languageKey
+    ? (getConfig().formatters[languageKey] ?? cliFormatters[languageKey])
+    : undefined;
   if (cli) {
     try {
       // 工具与参数在后端按语言键从 config.json 解析（前端不可指定可执行文件）；

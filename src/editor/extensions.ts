@@ -4,7 +4,7 @@
  */
 
 import { Compartment, EditorState, type Extension, type StateEffect } from "@codemirror/state";
-import { bracketMatching, indentUnit } from "@codemirror/language";
+import { bracketMatching, codeFolding, foldGutter, indentUnit } from "@codemirror/language";
 import {
   EditorView,
   crosshairCursor,
@@ -39,6 +39,7 @@ export interface EditorCompartments {
   theme: Compartment;
   chrome: Compartment;
   wrap: Compartment;
+  folding: Compartment;
 }
 
 export function createCompartments(): EditorCompartments {
@@ -56,6 +57,7 @@ export function createCompartments(): EditorCompartments {
     theme: new Compartment(),
     chrome: new Compartment(),
     wrap: new Compartment(),
+    folding: new Compartment(),
   };
 }
 
@@ -138,6 +140,23 @@ export function wrapExtension(on: boolean): Extension {
   return on ? EditorView.lineWrapping : [];
 }
 
+/** 代码折叠：行内折叠区间 + gutter 折叠标记（键位在 keymap 里，始终可用） */
+function foldingExtensions(): Extension[] {
+  if (!settings.codeFolding) return [];
+  return [
+    codeFolding(),
+    foldGutter({
+      markerDOM: (open) => {
+        const span = document.createElement("span");
+        span.className = `cm-fold-marker${open ? " open" : " closed"}`;
+        span.textContent = open ? "⌄" : "›";
+        span.title = open ? "折叠" : "展开";
+        return span;
+      },
+    }),
+  ];
+}
+
 /** 各 Compartment 的初始内容 */
 export function initialExtensions(
   c: EditorCompartments,
@@ -158,6 +177,7 @@ export function initialExtensions(
     c.occurrence.of(settings.occurrenceHighlight ? occurrences() : []),
     c.whitespace.of(whitespaceExtension(opts.whitespaceOn)),
     c.wrap.of(wrapExtension(opts.wordWrapOn)),
+    c.folding.of(foldingExtensions()),
     c.readOnly.of(readOnlyExtensions(opts.readonly)),
     c.language.of([]),
     c.theme.of(themeExtensions()),
@@ -182,6 +202,7 @@ export function dynamicEffects(
     c.occurrence.reconfigure(settings.occurrenceHighlight ? occurrences() : []),
     c.whitespace.reconfigure(whitespaceExtension(opts.whitespaceOn)),
     c.wrap.reconfigure(wrapExtension(opts.wordWrapOn)),
+    c.folding.reconfigure(foldingExtensions()),
     c.readOnly.reconfigure(readOnlyExtensions(opts.readonly)),
     c.theme.reconfigure(themeExtensions()),
   ];

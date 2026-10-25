@@ -9,6 +9,8 @@ export interface CommandItem {
   id: string;
   title: string;
   section?: string;
+  /** 快捷键展示文本（函数形式：渲染时求值，改键位后无需重注册） */
+  shortcut?: string | (() => string);
   run: () => void;
 }
 
@@ -19,6 +21,10 @@ export class CommandPalette {
   private listEl: HTMLElement | null = null;
   private selectedIndex = 0;
   private visible: CommandItem[] = [];
+
+  /** 最近使用的命令 id（localStorage 持久化，跨会话保留） */
+  private static readonly RECENT_KEY = "my-editor.palette.recent";
+  private static readonly RECENT_LIMIT = 8;
 
   register(cmd: CommandItem): void {
     this.commands = this.commands.filter((c) => c.id !== cmd.id);
@@ -84,10 +90,7 @@ export class CommandPalette {
     } else if (e.key === "Enter") {
       e.preventDefault();
       const cmd = this.visible[this.selectedIndex];
-      if (cmd) {
-        this.close();
-        cmd.run();
-      }
+      if (cmd) this.invoke(cmd);
     } else if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
       e.preventDefault();
       this.move(1);
@@ -101,6 +104,40 @@ export class CommandPalette {
     if (this.visible.length === 0) return;
     this.selectedIndex = (this.selectedIndex + delta + this.visible.length) % this.visible.length;
     this.renderList();
+  }
+
+  /** 执行命令并记录到「最近使用」 */
+  private invoke(cmd: CommandItem): void {
+    this.close();
+    this.remember(cmd.id);
+    cmd.run();
+  }
+
+  private recentIds(): string[] {
+    try {
+      const raw = localStorage.getItem(CommandPalette.RECENT_KEY);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private remember(id: string): void {
+    const next = [id, ...this.recentIds().filter((v) => v !== id)].slice(
+      0,
+      CommandPalette.RECENT_LIMIT,
+    );
+    try {
+      localStorage.setItem(CommandPalette.RECENT_KEY, JSON.stringify(next));
+    } catch {
+      // 隐私模式 / 存储受限：最近使用失效不影响命令执行
+    }
+  }
+
+  private shortcutText(cmd: CommandItem): string {
+    if (typeof cmd.shortcut === "function") return cmd.shortcut();
+    return cmd.shortcut ?? "";
   }
 
   /** 简单模糊匹配：子序列匹配 + 连续匹配加分 */
@@ -124,10 +161,17 @@ export class CommandPalette {
   private renderList(): void {
     if (!this.listEl || !this.input) return;
     const query = this.input.value.trim();
+    const recent = this.recentIds();
     const scored = this.commands
       .map((cmd) => ({ cmd, score: this.fuzzyMatch(query, cmd.title) }))
       .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        // 同分时（含空查询）最近使用优先；未用过的按注册序保持稳定
+        const ra = recent.indexOf(a.cmd.id);
+        const rb = recent.indexOf(b.cmd.id);
+        return (ra < 0 ? Number.MAX_SAFE_INTEGER : ra) - (rb < 0 ? Number.MAX_SAFE_INTEGER : rb);
+      });
 
     this.visible = scored.map((s) => s.cmd);
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.visible.length - 1));
@@ -144,11 +188,17 @@ export class CommandPalette {
     this.visible.forEach((cmd, i) => {
       const item = document.createElement("div");
       item.className = `palette-item${i === this.selectedIndex ? " selected" : ""}`;
-      item.textContent = cmd.section ? `${cmd.section}: ${cmd.title}` : cmd.title;
-      item.addEventListener("click", () => {
-        this.close();
-        cmd.run();
-      });
+      const label = document.createElement("span");
+      label.textContent = cmd.section ? `${cmd.section}: ${cmd.title}` : cmd.title;
+      item.append(label);
+      const shortcut = this.shortcutText(cmd);
+      if (shortcut) {
+        const key = document.createElement("span");
+        key.className = "palette-shortcut";
+        key.textContent = shortcut;
+        item.append(key);
+      }
+      item.addEventListener("click", () => this.invoke(cmd));
       item.addEventListener("mouseenter", () => {
         if (this.selectedIndex !== i) {
           this.selectedIndex = i;

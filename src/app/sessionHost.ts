@@ -23,6 +23,7 @@ import {
 } from "../services/session";
 import { onFileChanged, watchFiles } from "../services/fsWatch";
 import { confirmAction } from "../ui/dialogs";
+import { openStatusMenu } from "../ui/statusMenu";
 import { pad2 } from "../core/format";
 import type { FileContent } from "../types/app";
 
@@ -39,6 +40,8 @@ export interface SessionHostDeps {
   onNewUntitled: (name: string) => Tab;
   /** 占位标签载入（草稿恢复用） */
   onLoadPendingTab: (tab: Tab) => Promise<boolean>;
+  /** 当前标签与磁盘内容比较（外部修改提示用；不要求有未保存改动） */
+  onDiffDisk: () => void;
 }
 
 export class SessionHost {
@@ -86,9 +89,35 @@ export class SessionHost {
       );
     }).catch((e) => console.warn("[watch] 订阅失败", e));
 
-    this.externalBadgeEl.addEventListener("click", () => {
+    this.externalBadgeEl.addEventListener("click", (e) => {
       const tab = this.deps.getActiveTab();
-      if (tab) void this.reloadFromDisk(tab);
+      if (!tab || !tab.path) return;
+      if (!tab.externallyChanged) {
+        this.deps.showMessage("当前文件没有外部修改");
+        return;
+      }
+      // 三选：重新载入 / 对比后决定 / 忽略本次
+      openStatusMenu<null>({
+        anchor: { x: e.clientX, y: e.clientY },
+        header: `「${tab.name}」已被外部修改`,
+        options: [],
+        actions: [
+          { label: "重新载入磁盘内容", run: () => void this.reloadFromDisk(tab) },
+          { label: "与磁盘内容比较", run: () => this.deps.onDiffDisk() },
+          {
+            label: "忽略本次修改",
+            run: () => {
+              tabStore.markExternal(tab.id, false);
+              this.deps.refreshStatus();
+              this.deps.showMessage("已忽略外部修改提示（编辑器内容未变）");
+            },
+          },
+        ],
+        current: null,
+        tabId: tab.id,
+        onMessage: this.deps.showMessage,
+        onPick: () => {},
+      });
     });
   }
 

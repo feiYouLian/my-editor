@@ -18,6 +18,16 @@ import { placeMenu } from "./menu";
 export interface StatusMenuOption<T> {
   value: T;
   label: string;
+  /** 该项前插入分隔线（用于分组） */
+  separatorBefore?: boolean;
+}
+
+/** 额外动作项：不参与「当前值 ✓」逻辑，点击后直接执行 */
+export interface StatusMenuAction {
+  label: string;
+  run: () => void;
+  /** 动作前插入分隔线 */
+  separatorBefore?: boolean;
 }
 
 export interface StatusMenuConfig<T> {
@@ -25,6 +35,8 @@ export interface StatusMenuConfig<T> {
   /** 顶部说明行（展示当前值） */
   header: string;
   options: StatusMenuOption<T>[];
+  /** 额外动作（如编码菜单的「另存为编码…」），排在选项之后 */
+  actions?: StatusMenuAction[];
   /** 当前值（命中项加 ✓） */
   current: T;
   /** 打开时的标签 id（apply 前校验其仍是激活标签） */
@@ -57,7 +69,14 @@ export function openStatusMenu<T>(config: StatusMenuConfig<T>): void {
   header.textContent = config.header;
   menu.append(header);
 
+  const appendSeparator = (): void => {
+    const sep = document.createElement("div");
+    sep.className = "context-menu-separator";
+    menu.append(sep);
+  };
+
   for (const option of config.options) {
+    if (option.separatorBefore) appendSeparator();
     const el = document.createElement("div");
     el.className = "context-menu-item";
     el.textContent = option.value === config.current ? `${option.label} ✓` : option.label;
@@ -70,6 +89,23 @@ export function openStatusMenu<T>(config: StatusMenuConfig<T>): void {
         return;
       }
       config.onPick(option.value);
+    });
+    menu.append(el);
+  }
+
+  for (const action of config.actions ?? []) {
+    if (action.separatorBefore) appendSeparator();
+    const el = document.createElement("div");
+    el.className = "context-menu-item";
+    el.textContent = action.label;
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeStatusMenu();
+      if (tabStore.active()?.id !== config.tabId) {
+        config.onMessage("标签已切换，操作已取消");
+        return;
+      }
+      action.run();
     });
     menu.append(el);
   }

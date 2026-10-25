@@ -81,6 +81,9 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
     checkRow("自动换行（长行按编辑区宽度折行）", cfg.editorEnhancements.wordWrap, (value) => {
       saveSettings({ editorEnhancements: { ...editorEnhancements(), wordWrap: value } });
     }),
+    checkRow("代码折叠（Ctrl+Shift+[ / ]）", cfg.editorEnhancements.codeFolding, (value) => {
+      saveSettings({ editorEnhancements: { ...editorEnhancements(), codeFolding: value } });
+    }),
     checkRow("启用列选择", cfg.editorEnhancements.columnSelection, (value) => {
       saveSettings({
         editorEnhancements: { ...editorEnhancements(), columnSelection: value },

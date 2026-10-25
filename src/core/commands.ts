@@ -62,6 +62,7 @@ const MENU_LABELS: Record<string, string> = {
   select: "选择",
   go: "转到",
   compare: "比较",
+  tools: "工具",
   settings: "设置",
 };
 

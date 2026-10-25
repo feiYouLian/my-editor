@@ -54,6 +54,8 @@ export interface RunHostDeps {
   onOpenLocation: (path: string, line: number) => void;
   /** 输出面板即将显示（用于隐藏终端，避免底部区域被两个面板挤满） */
   onBeforeRun?: () => void;
+  /** 保存当前标签（「保存并运行」用）；返回是否成功 */
+  onSaveTab?: (tab: Tab) => Promise<boolean>;
 }
 
 export class RunHost {
@@ -129,11 +131,12 @@ export class RunHost {
       this.runnerFor(tab) !== null;
     this.runBtn.classList.remove("running");
     this.runBtn.textContent = "▶ 运行";
-    this.runBtn.disabled = !canRun || tab?.dirty === true;
+    // 有未保存改动仍可运行：点击后先保存再执行（不再要求用户先手动保存）
+    this.runBtn.disabled = !canRun;
     this.runBtn.title = !canRun
       ? "当前文件不支持运行（支持 Python / JS / Java / cURL，且需已保存为磁盘文件）"
       : tab?.dirty
-        ? "有未保存改动：运行时执行的是磁盘内容，请先保存（Ctrl+S）"
+        ? `保存并运行 ${tab?.name ?? ""}（F5）`
         : `运行 ${tab?.name ?? ""}（F5）`;
   }
 
@@ -150,8 +153,8 @@ export class RunHost {
     return null;
   }
 
-  /** 运行当前文件（执行的是磁盘内容，故要求无未保存改动） */
-  runCurrentFile(): void {
+  /** 运行当前文件：有未保存改动时先保存再运行（执行的是磁盘内容） */
+  async runCurrentFile(): Promise<void> {
     const tab = this.deps.getActiveTab();
     if (!tab || tab.kind !== "text" || !tab.path) {
       this.deps.showMessage("请先保存为磁盘文件再运行");
@@ -162,8 +165,8 @@ export class RunHost {
       return;
     }
     if (tab.dirty) {
-      this.deps.showMessage("有未保存改动：运行时执行的是磁盘内容，请先保存（Ctrl+S）");
-      return;
+      const saved = await this.deps.onSaveTab?.(tab);
+      if (!saved) return;
     }
     const runner = this.runnerFor(tab);
     if (!runner) {
@@ -174,8 +177,8 @@ export class RunHost {
     void this.runPanel.start(tab.path, runner, dirnameOf(tab.path));
   }
 
-  /** 在终端运行当前文件（保存 / 脏检查与 F5 一致） */
-  runInTerminal(): void {
+  /** 在终端运行当前文件（有未保存改动时先保存，语义与 F5 一致） */
+  async runInTerminal(): Promise<void> {
     const tab = this.deps.getActiveTab();
     if (!tab || tab.kind !== "text" || !tab.path) {
       this.deps.showMessage("请先保存为磁盘文件再运行");
@@ -186,8 +189,8 @@ export class RunHost {
       return;
     }
     if (tab.dirty) {
-      this.deps.showMessage("有未保存改动：终端运行的是磁盘内容，请先保存（Ctrl+S）");
-      return;
+      const saved = await this.deps.onSaveTab?.(tab);
+      if (!saved) return;
     }
     const runner = this.runnerFor(tab);
     if (!runner) {

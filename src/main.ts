@@ -14,6 +14,7 @@ import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
 import { FileTree } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
+import { WelcomePanel } from "./panels/welcome";
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
@@ -57,8 +58,10 @@ import {
 } from "./config/keybindings";
 import {
   commandPaletteItems,
+  getCommand,
   menuModel,
   registerCommands,
+  type CommandDef,
 } from "./core/commands";
 import { CONVERT_TARGET_LABELS, type ConvertTarget } from "./core/convert";
 import type { SettingsPanel } from "./panels/settingsPanel";
@@ -244,6 +247,14 @@ function showEncodingMenu(x: number, y: number): void {
     options: (tab.encodingCandidates.length ? tab.encodingCandidates : FALLBACK_ENCODINGS).map(
       (enc) => ({ value: enc, label: enc }),
     ),
+    // 两类编码操作同框但语义不同：上面只改解读方式，下面是真正转码写新文件
+    actions: [
+      {
+        label: "另存为编码…（转码写入新文件）",
+        separatorBefore: true,
+        run: () => void fileService.saveAsWithEncoding(),
+      },
+    ],
     current: tab.encoding,
     tabId: tab.id,
     onMessage: statusBar.showMessage,
@@ -376,6 +387,8 @@ function insertAtCursor(text: string): void {
 let editorHandle: EditorHandle;
 let resultsPanel: SearchResultsPanel | null = null;
 const palette = new CommandPalette();
+/** 首屏引导（无标签时显示）；构造晚于文件服务/运行宿主，故延迟赋值 */
+let welcomeView: WelcomePanel | null = null;
 
 /** 工作区根目录（root/expanded 由文件树维护并落 workspace.json） */
 let workspaceRoot: string | null = null;
@@ -461,11 +474,86 @@ async function closeTab(id: string): Promise<void> {
 
 /** 标签移除后的统一清理（单条关闭与批量关闭共用） */
 tabStore.onTabClosed((tab) => {
+  rememberClosedTab(tab);
   editorHandle.forgetDocument(tab.id);
   preview.forget(tab.id);
   sessionHost.forgetDraft(tab.id);
   void largeHost.release(tab);
 });
+
+// ---- 最近关闭的标签（Ctrl+Shift+T 重开） ----
+
+interface ClosedTabRecord {
+  path: string;
+  name: string;
+}
+
+const recentlyClosed: ClosedTabRecord[] = [];
+const RECENT_CLOSED_LIMIT = 10;
+
+/** 关闭前记一笔（仅磁盘上的可编辑文本；未命名/虚拟视图无法可靠重开） */
+function rememberClosedTab(tab: Tab): void {
+  if (!tab.path || tab.virtual || tab.kind !== "text") return;
+  recentlyClosed.unshift({ path: tab.path, name: tab.name });
+  if (recentlyClosed.length > RECENT_CLOSED_LIMIT) recentlyClosed.pop();
+}
+
+async function reopenClosedTab(): Promise<void> {
+  const record = recentlyClosed.shift();
+  if (!record) {
+    statusBar.showMessage("没有可重新打开的标签");
+    return;
+  }
+  await fileService.openFilePath(record.path, { silent: true });
+}
+
+// ---- 批量保存 / 重新载入 ----
+
+/** 全部保存：只处理有磁盘路径的脏标签；未命名文档提示改用另存为 */
+async function saveAllFiles(): Promise<void> {
+  const dirty = tabStore
+    .list()
+    .filter((t) => t.dirty && t.kind === "text" && !t.virtual);
+  const saved = dirty.filter((t): t is Tab & { path: string } => Boolean(t.path));
+  const untitled = dirty.length - saved.length;
+  if (saved.length === 0) {
+    statusBar.showMessage(
+      untitled > 0 ? "未命名文档请用「另存为」保存" : "没有需要保存的文件",
+    );
+    return;
+  }
+  let ok = 0;
+  const failed: string[] = [];
+  for (const tab of saved) {
+    try {
+      await fileService.writeTo(tab, tab.path);
+      ok += 1;
+    } catch {
+      failed.push(tab.name);
+    }
+  }
+  const extra = untitled > 0 ? `；另有 ${untitled} 个未命名文档未保存` : "";
+  statusBar.showMessage(
+    failed.length > 0
+      ? `已保存 ${ok} 个，失败 ${failed.length} 个: ${failed.join("、")}${extra}`
+      : `已保存 ${ok} 个文件${extra}`,
+    failed.length > 0 ? 8000 : 3000,
+  );
+}
+
+/** 重新载入当前文件：丢弃未保存修改前先确认（复用会话宿主的磁盘重载） */
+async function reloadCurrentFile(): Promise<void> {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    statusBar.showMessage("当前标签不是磁盘上的文本文件");
+    return;
+  }
+  if (tab.virtual) {
+    await reloadActiveTab();
+    return;
+  }
+  await sessionHost.reloadFromDisk(tab);
+}
 
 /**
  * 批量关闭（关闭左侧/右侧/其他/全部）：先把脏标签的未保存内容落草稿，
@@ -484,6 +572,7 @@ async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
 tabStore.subscribe((kind) => {
   const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
+  welcomeView?.setVisible(tabStore.list().length === 0);
   breadcrumbView.render();
   statusBar.refresh();
   // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
@@ -517,6 +606,8 @@ const btnOpenDir = $<HTMLButtonElement>("btn-open-dir");
 const fileTree = new FileTree(fileTreeEl, {
   onOpenFile: (path) => void fileService.openFilePath(path),
   onCompareFile: (path) => void diffService.compareWithPath(path),
+  // terminalHost 在下文构造：回调运行时才访问（闭包，无 TDZ 风险）
+  onOpenTerminal: (dir) => void terminalHost.openAt(dir),
   onNotify: (message) => statusBar.showMessage(message),
   onWorkspaceStateChange: (state) => {
     workspaceRoot = state.root;
@@ -553,8 +644,11 @@ editorHandle = createEditor($("editor"), {
     // 未保存内容防抖写入草稿（配置关闭时不写）
     if (t) sessionHost.scheduleDraftSave(t);
   },
-  onCursorChange: ({ line, col, totalLines }) => {
-    statusCursor.textContent = `行 ${line}，列 ${col}`;
+  onCursorChange: ({ line, col, totalLines, selectedChars }) => {
+    statusCursor.textContent =
+      selectedChars > 0
+        ? `行 ${line}，列 ${col}（选中 ${selectedChars} 字符）`
+        : `行 ${line}，列 ${col}`;
     statusLines.textContent = `共 ${totalLines} 行`;
     const tab = activeTab();
     // 同上：编辑器文档与激活标签不一致时丢弃，避免光标串台
@@ -667,9 +761,29 @@ const runHost = new RunHost(runBtn, {
   runCurlInTerminal: (script) => void terminalHost.runCurlScript(script),
   onOpenLocation: (path, line) => void openFileAt(path, line),
   onBeforeRun: () => terminalHost.hide(),
+  // F5 / 在终端运行：未保存时先落盘（writeTo 负责脏标记与草稿语义）
+  onSaveTab: async (tab) => {
+    if (!tab.path) return false;
+    try {
+      await fileService.writeTo(tab, tab.path);
+      return true;
+    } catch (e) {
+      statusBar.showMessage(`保存失败: ${String(e).split("\n")[0]}`);
+      return false;
+    }
+  },
 });
 runHostRef = runHost;
 refreshRunButton = () => runHost.refreshRunButton();
+
+// 首屏引导（无标签时显示）：入口全部转发到已有动作
+welcomeView = new WelcomePanel($("welcome"), {
+  onOpenFile: () => void fileService.openFileDialog(),
+  onNewFile: () => fileService.newUntitled(),
+  onOpenDirectory: () => void openWorkspaceDir(),
+  onRecent: () => runHost.toggleRecentFiles(),
+});
+welcomeView.setVisible(tabStore.list().length === 0);
 
 // 网页抓取编排（默认目录 / PathGuard 登记 / 抓取后打开）
 const fetchHost = new FetchHost({
@@ -726,6 +840,7 @@ const sessionHost = new SessionHost(
     onOpenFile: (path) => fileService.openFilePath(path, { silent: true }),
     onNewUntitled: (name) => fileService.newUntitled(name),
     onLoadPendingTab: (tab) => largeHost.loadPendingTab(tab),
+    onDiffDisk: () => void diffService.diffUnsaved({ allowClean: true }),
   },
   statusDraft,
   statusExternal,
@@ -1063,6 +1178,9 @@ registerCommands([
   { id: "file.new", title: "新建未命名文档", section: "文件", defaultKey: "Mod-N", menu: "file", menuLabel: "新建", menuOrder: 10, run: () => fileService.newUntitled() },
   { id: "file.save", title: "保存", section: "文件", defaultKey: "Mod-S", menu: "file", menuOrder: 50, menuSeparatorBefore: true, run: () => void fileService.saveFile() },
   { id: "file.saveAs", title: "另存为…", section: "文件", defaultKey: "Mod-Shift-S", menu: "file", menuOrder: 60, run: () => void fileService.saveFileAs() },
+  { id: "file.saveAll", title: "全部保存", section: "文件", defaultKey: "Mod-Alt-S", menu: "file", menuLabel: "全部保存", menuOrder: 55, run: () => void saveAllFiles() },
+  { id: "file.reload", title: "重新载入当前文件（丢弃未保存修改）", section: "文件", menu: "file", menuLabel: "重新载入当前文件", menuOrder: 65, run: () => void reloadCurrentFile() },
+  { id: "file.reopenClosed", title: "重新打开关闭的标签", section: "文件", defaultKey: "Mod-Shift-T", menu: "file", menuLabel: "重新打开关闭的标签", menuOrder: 75, run: () => void reopenClosedTab() },
   { id: "file.closeTab", title: "关闭当前标签", section: "文件", defaultKey: "Mod-W", menu: "file", menuLabel: "关闭标签", menuOrder: 70, menuSeparatorBefore: true, run: () => {
       const tab = activeTab();
       if (tab) void closeTab(tab.id);
@@ -1100,11 +1218,11 @@ registerCommands([
   // ---- 查找 ----
   { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", menu: "edit", menuOrder: 80, run: () => toggleResultsPanel() },
   // ---- 工具 ----
-  { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", run: () => runHost.toggleCron() },
-  { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", run: () => runHost.toggleBatchEncoding() },
-  { id: "tools.regex", title: "正则测试器", section: "工具", run: () => runHost.toggleRegexTester() },
+  { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", menu: "tools", menuLabel: "Cron 解析 / 生成…", menuOrder: 10, run: () => runHost.toggleCron() },
+  { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", menu: "tools", menuLabel: "批量另存为编码…", menuOrder: 30, run: () => runHost.toggleBatchEncoding() },
+  { id: "tools.regex", title: "正则测试器", section: "工具", menu: "tools", menuLabel: "正则测试器…", menuOrder: 20, run: () => runHost.toggleRegexTester() },
   // 格式转换（面板 + 高频单步直转）
-  { id: "convert.open", title: "格式转换…（面板）", section: "工具", run: () => runHost.openConvertPanel() },
+  { id: "convert.open", title: "格式转换…（面板）", section: "工具", menu: "tools", menuLabel: "格式转换…", menuOrder: 40, menuSeparatorBefore: true, run: () => runHost.openConvertPanel() },
   { id: "convert.json2yaml", title: "转换：JSON → YAML", section: "转换", run: () => void runHost.convertDirect("json2yaml") },
   { id: "convert.yaml2json", title: "转换：YAML → JSON", section: "转换", run: () => void runHost.convertDirect("yaml2json") },
   { id: "convert.properties2yaml", title: "转换：Properties → YAML", section: "转换", run: () => void runHost.convertDirect("properties2yaml") },
@@ -1134,13 +1252,13 @@ registerCommands([
   { id: "insert.time", title: "插入时间（HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().time) },
   { id: "insert.uuid", title: "插入 UUID（v4）", section: "插入", run: () => insertAtCursor(newUuid()) },
   // ---- 编码 / 运行 ----
-  { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", run: () => detectMojibakeManually() },
+  { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", menu: "tools", menuLabel: "检测乱码并建议编码", menuOrder: 50, menuSeparatorBefore: true, run: () => detectMojibakeManually() },
   { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", run: () => runHost.runCurrentFile() },
   { id: "run.curlScript", title: "执行 cURL 脚本（选区/整篇，无需保存）", section: "运行", run: () => runHost.runCurlScript() },
   { id: "terminal.toggle", title: "切换终端（Ctrl+`）", section: "终端", defaultKey: "Mod-`", run: () => void terminalHost.toggle() },
   { id: "code.runInTerminal", title: "在终端运行当前文件（Ctrl+F5）", section: "运行", defaultKey: "Mod-F5", run: () => runHost.runInTerminal() },
   { id: "code.runCurlInTerminal", title: "在终端执行 cURL 脚本", section: "运行", run: () => runHost.runCurlInTerminal() },
-  { id: "output.show", title: "显示运行输出面板", section: "运行", run: () => {
+  { id: "output.show", title: "显示运行输出面板", section: "运行", menu: "tools", menuLabel: "显示运行输出面板", menuOrder: 60, menuSeparatorBefore: true, run: () => {
       terminalHost.hide();
       runHost.showOutputPanel();
     } },
@@ -1185,17 +1303,25 @@ registerCommands([
   { id: "edit.moveLineDown", title: "下移当前行", section: "编辑", defaultKey: "Alt-Down", fixed: true, hidden: true, run: () => {} },
 ]);
 
-// 命令面板与菜单栏由同一注册表派生
-palette.registerAll(commandPaletteItems());
-new MenuBar(
-  $("menubar"),
-  menuModel((cmd) => {
-    const raw =
-      cmd.menuShortcut ??
-      (cmd.defaultKey !== undefined ? resolveKey(cmd, getConfig()) : "");
-    return raw ? formatKey(raw) : "";
-  }),
+// 命令面板与菜单栏由同一注册表派生，快捷键展示也走同一解析
+function shortcutText(cmd: CommandDef): string {
+  const raw =
+    cmd.menuShortcut ??
+    (cmd.defaultKey !== undefined ? resolveKey(cmd, getConfig()) : "");
+  return raw ? formatKey(raw) : "";
+}
+
+palette.registerAll(
+  commandPaletteItems().map((item) => ({
+    ...item,
+    // 函数形式：每次渲染时按当前配置解析，改键位后无需重新注册
+    shortcut: () => {
+      const def = getCommand(item.id);
+      return def ? shortcutText(def) : "";
+    },
+  })),
 );
+new MenuBar($("menubar"), menuModel((cmd) => shortcutText(cmd)));
 
 async function openWorkspaceDir(): Promise<void> {
   const dir = await pickDirectory();

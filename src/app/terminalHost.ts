@@ -182,6 +182,24 @@ export class TerminalHost {
     this.panel?.hide();
   }
 
+  /**
+   * 在指定目录打开终端（文件树 / 面包屑右键「在终端中打开」）。
+   * 已有会话且目录相同：只显示并聚焦；目录不同：先关旧会话再新开，
+   * 保证终端 cwd 与用户所指目录一致（而不是在旧会话里静默 alter）。
+   */
+  async openAt(cwd: string): Promise<void> {
+    try {
+      if (this.id && !this.exited && this.cwd === cwd) {
+        await this.ensureOpen(cwd);
+        return;
+      }
+      if (this.id && !this.exited) await this.closeSession();
+      await this.ensureOpen(cwd);
+    } catch {
+      // ensurePanel / ensureOpen 已提示
+    }
+  }
+
   /** 确保终端可见且有活动会话，返回会话 id */
   async ensureOpen(cwd: string): Promise<string | null> {
     if (this.id && !this.exited) {

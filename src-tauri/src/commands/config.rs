@@ -33,6 +33,8 @@ pub struct EditorEnhancements {
     pub rainbow_brackets: bool,
     /// 自动换行：长行按编辑区宽度折行
     pub word_wrap: bool,
+    /// 代码折叠：gutter 折叠标记 + 折叠快捷键
+    pub code_folding: bool,
 }
 
 impl Default for EditorEnhancements {
@@ -47,6 +49,7 @@ impl Default for EditorEnhancements {
             indent_guides: true,
             rainbow_brackets: true,
             word_wrap: false,
+            code_folding: true,
         }
     }
 }

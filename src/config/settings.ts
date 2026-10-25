@@ -30,6 +30,8 @@ export interface EditorEnhancements {
   rainbowBrackets: boolean;
   /** 自动换行：长行按编辑区宽度折行显示 */
   wordWrap: boolean;
+  /** 代码折叠：gutter 折叠标记 + 折叠快捷键 */
+  codeFolding: boolean;
 }
 
 export interface KeybindingEntry {
@@ -162,6 +164,7 @@ export interface EditorSettings {
   showLineNumbers: boolean;
   showActiveLine: boolean;
   wordWrap: boolean;
+  codeFolding: boolean;
 }
 
 /** 状态栏字段默认显隐顺序（与 index.html data-field 对应） */
@@ -212,6 +215,7 @@ export function defaultConfig(): AppConfig {
       indentGuides: true,
       rainbowBrackets: true,
       wordWrap: false,
+      codeFolding: true,
     },
     keybindings: [],
     layout: {
@@ -281,6 +285,7 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     showLineNumbers: cfg.layout.showLineNumbers,
     showActiveLine: cfg.layout.showActiveLine,
     wordWrap: e.wordWrap,
+    codeFolding: e.codeFolding,
   };
 }
 

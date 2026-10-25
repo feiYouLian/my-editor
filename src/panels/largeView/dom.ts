@@ -6,6 +6,7 @@
 import { ENCODINGS } from "./constants";
 
 export interface LargeViewDom {
+  titleEl: HTMLSpanElement;
   metaEl: HTMLSpanElement;
   indexEl: HTMLSpanElement;
   scrollEl: HTMLDivElement;
@@ -41,7 +42,8 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
 
   const title = document.createElement("span");
   title.className = "lv-title";
-  title.textContent = "日志视图";
+  // 具体是日志还是普通大文件由 open() 按扩展名覆盖
+  title.textContent = "大文件视图";
   const metaEl = document.createElement("span");
   metaEl.className = "lv-meta";
 
@@ -118,6 +120,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   host.append(bar, body, statusEl);
 
   return {
+    titleEl: title,
     metaEl,
     indexEl,
     scrollEl,

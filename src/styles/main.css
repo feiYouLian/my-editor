@@ -311,6 +311,8 @@ body {
   min-height: 0;
   display: flex;
   min-width: 0;
+  /* 欢迎页（#welcome）用绝对定位覆盖编辑区 */
+  position: relative;
 }
 
 /* ---------- 预览面板 ---------- */
@@ -1365,9 +1367,21 @@ button:disabled:hover {
 }
 
 .palette-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
   padding: 8px 14px;
   cursor: pointer;
   font-size: 13px;
+}
+
+/* 命令面板右侧快捷键（改键位后即时反映，见 panels/commandPalette.ts） */
+.palette-shortcut {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .palette-item.selected {
@@ -3034,4 +3048,112 @@ button.settings-kb-key:hover {
   margin: 0 0 8px;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* ---------- 代码折叠（foldGutter 自绘标记） ---------- */
+.cm-fold-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.cm-fold-marker:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.cm-fold-marker.closed {
+  color: var(--accent);
+}
+
+/* ---------- 标签栏「新建」按钮 ---------- */
+.tab-add {
+  flex: none;
+  margin-bottom: 4px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---------- 欢迎页（无标签时的首屏引导） ---------- */
+.welcome {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-app);
+}
+
+.welcome.hidden {
+  display: none;
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 560px;
+  padding: 24px;
+  text-align: center;
+}
+
+.welcome-title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-primary);
+}
+
+.welcome-subtitle {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.welcome-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 8px;
+  width: 100%;
+  margin: 12px 0 4px;
+}
+
+.welcome-action {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.welcome-action:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.welcome-action-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.welcome-tips {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.85;
 }

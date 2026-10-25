@@ -22,6 +22,8 @@ export interface FileTreeCallbacks {
   onOpenFile: (path: string) => void;
   /** 右键文件时「与当前文件比较」 */
   onCompareFile?: (path: string) => void;
+  /** 右键「在终端中打开」（目录用自身，文件用父目录） */
+  onOpenTerminal?: (dir: string) => void;
   /** 状态栏瞬时消息（复制文件路径成功提示等） */
   onNotify?: (message: string) => void;
   onWorkspaceStateChange: (state: WorkspaceState) => void;
@@ -71,17 +73,22 @@ export class FileTree {
     void this.loadChildren(this.root, children, 0);
   }
 
-  /** 目录加载代际：快速展开/折叠/刷新时丢弃过期结果，防止重复节点 */
-  private loadToken = 0;
+  /**
+   * 目录加载代际：按目录维度记令牌（不能用实例级单一计数）。
+   * render() 会对每个已展开目录并发调用本方法，若共用同一个计数器，
+   * 后发起的调用会让先发起的全部作废——表现为“展开多个目录时只有最后一个有内容”。
+   */
+  private loadTokens = new Map<string, number>();
 
   private async loadChildren(dir: string, container: HTMLElement, depth: number): Promise<void> {
-    const token = ++this.loadToken;
+    const token = (this.loadTokens.get(dir) ?? 0) + 1;
+    this.loadTokens.set(dir, token);
     let entries: DirEntry[];
     try {
       entries = await invoke<DirEntry[]>("list_dir", { path: dir });
     } catch (e) {
       // 过期加载（期间已折叠/刷新）不显示错误；textContent 防 HTML 注入
-      if (token !== this.loadToken || !container.isConnected) return;
+      if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
       const err = document.createElement("div");
       err.className = "tree-error";
       err.textContent = `读取失败: ${String(e).split("\n")[0]}`;
@@ -89,7 +96,7 @@ export class FileTree {
       return;
     }
     // 过期结果直接丢弃：否则会与后一次加载的节点叠加成重复行
-    if (token !== this.loadToken || !container.isConnected) return;
+    if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
     for (const entry of entries) {
       container.append(this.createNode(entry, depth));
     }
@@ -247,6 +254,11 @@ export class FileTree {
     if (!entry.is_dir && compare) {
       items.push({ label: "与当前文件比较", action: () => compare(entry.path) });
     }
+    const openTerminal = this.callbacks.onOpenTerminal;
+    if (openTerminal) {
+      const dir = entry.is_dir ? entry.path : this.parentOf(entry.path);
+      items.push({ label: "在终端中打开", action: () => openTerminal(dir) });
+    }
     items.push({ label: "复制文件路径", action: () => void this.copyPath(entry.path) });
     items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
     items.push({ label: "删除", action: () => void this.deleteEntry(entry) });
@@ -308,6 +320,8 @@ export class FileTree {
       await invoke("create_entry", { path: target, isDir });
       this.expanded.add(dir);
       this.render();
+      // 新建文件后直接打开：省掉“建完还要在树里找一次”的多余操作
+      if (!isDir) this.callbacks.onOpenFile(target);
     } catch (e) {
       this.callbacks.onNotify?.(`创建失败: ${String(e).split("\n")[0]}`);
     }
@@ -319,7 +333,8 @@ export class FileTree {
     const target = `${this.parentOf(entry.path)}${entry.path.includes("\\") ? "\\" : "/"}${name}`;
     try {
       await invoke("rename_path", { from: entry.path, to: target });
-      this.render();
+      // 重命名后展开祖先目录并选中新名称，避免用户自己再找一遍
+      this.revealPath(target);
     } catch (e) {
       this.callbacks.onNotify?.(`重命名失败: ${String(e).split("\n")[0]}`);
     }

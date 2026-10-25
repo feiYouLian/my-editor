@@ -25,6 +25,23 @@ export class TabsBar {
   private signature = "";
   private menu: HTMLElement | null = null;
 
+  /** 标签栏右侧常驻「新建」按钮（双击空白仍可用，此处只为发现性） */
+  private ensureAddButton(): void {
+    const parent = this.container.parentElement;
+    if (!parent || parent.querySelector(".tab-add")) return;
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "icon-btn tab-add";
+    add.title = "新建未命名文档（Ctrl+N）";
+    add.setAttribute("aria-label", "新建文档");
+    add.textContent = "+";
+    add.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.callbacks.onNewTab();
+    });
+    this.container.after(add);
+  }
+
   constructor(
     private container: HTMLElement,
     private callbacks: TabsBarCallbacks,
@@ -47,6 +64,8 @@ export class TabsBar {
       if (target.closest(".tab") || target.closest("button")) return;
       callbacks.onNewTab();
     });
+
+    this.ensureAddButton();
 
     document.addEventListener("click", () => this.closeMenu());
     document.addEventListener("keydown", (e) => {

@@ -11,6 +11,7 @@ import {
   indentWithTab,
 } from "@codemirror/commands";
 import { keymap, type EditorView, type KeyBinding } from "@codemirror/view";
+import { foldKeymap } from "@codemirror/language";
 import { settings } from "../config/settings";
 import { openColumnEditor } from "./columnEditor";
 import { bookmarkKeymap } from "./bookmarks";
@@ -45,6 +46,7 @@ export function buildKeymap() {
   return keymap.of([
     indentWithTab,
     ...lineEditKeys(),
+    ...foldKeymap,
     ...defaultKeymap,
     ...historyKeymap,
     ...bookmarkKeymap,

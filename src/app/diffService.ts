@@ -199,14 +199,17 @@ export class DiffService {
     void this.compareWithPath(other.path);
   }
 
-  /** 场景一：当前文件 磁盘内容 ⇄ 编辑中内容 */
-  async diffUnsaved(): Promise<void> {
+  /**
+   * 场景一：当前文件 磁盘内容 ⇄ 编辑中内容。
+   * allowClean：外部修改提示用（未编辑、不脏时也允许比较）。
+   */
+  async diffUnsaved(opts: { allowClean?: boolean } = {}): Promise<void> {
     const tab = this.deps.getActiveTab();
     if (!tab || tab.kind !== "text") {
       this.deps.showMessage("请先打开一个文本文件");
       return;
     }
-    if (!tab.dirty) {
+    if (!tab.dirty && !opts.allowClean) {
       this.deps.showMessage("当前文件没有未保存改动");
       return;
     }

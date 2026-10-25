@@ -111,6 +111,8 @@ export class LargeView {
     this.density = [];
     this.cache.clear();
     this.host.classList.remove("hidden");
+    // 标题按文件类型区分：.log 显示“日志视图”，其余大文件统称“大文件视图”
+    this.el.titleEl.textContent = /\.log$/i.test(info.path) ? "日志视图" : "大文件视图";
     this.el.encodingSelect.value = ENCODINGS.includes(info.encoding) ? info.encoding : "UTF-8";
     this.el.filterInput.value = "";
     this.updateMeta();

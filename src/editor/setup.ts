@@ -26,11 +26,23 @@ import {
 } from "./extensions";
 import { DocumentStateCache } from "./stateCache";
 
+/** 选区字符数（多选区求和；列选择会产生多个 range） */
+function countSelectedChars(state: EditorState): number {
+  let total = 0;
+  for (const range of state.selection.ranges) total += range.to - range.from;
+  return total;
+}
+
 export interface EditorCallbacks {
   /** 文档内容变化（用户输入或撤销/重做） */
   onDocChange?: () => void;
-  /** 光标位置变化 */
-  onCursorChange?: (info: { line: number; col: number; totalLines: number }) => void;
+  /** 光标位置变化（selectedChars：所有选区字符数之和，列选择时为多选区） */
+  onCursorChange?: (info: {
+    line: number;
+    col: number;
+    totalLines: number;
+    selectedChars: number;
+  }) => void;
   /** 高亮因性能保护被禁用时通知一次 */
   onHighlightDisabled?: (reason: "lines" | "longLine") => void;
 }
@@ -117,6 +129,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
               line: line.number,
               col: head - line.from + 1,
               totalLines: update.state.doc.lines,
+              selectedChars: countSelectedChars(update.state),
             });
           }
         }),
@@ -170,6 +183,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       line: line.number,
       col: head - line.from + 1,
       totalLines: state.doc.lines,
+      selectedChars: countSelectedChars(state),
     });
   }
 
