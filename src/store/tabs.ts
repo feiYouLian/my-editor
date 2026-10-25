@@ -1,5 +1,4 @@
 import type { FileContent } from "../types/app";
-import { confirmAction } from "../ui/dialogs";
 
 /**
  * 多标签页状态。
@@ -110,6 +109,14 @@ class TabStore {
   /** 编辑器内容提供者（main.ts 注入）：惰性快照的唯一读取入口 */
   private provider: ContentProvider | null = null;
   private listeners = new Set<(kind: TabChangeKind) => void>();
+  /** 批量关闭确认（由 main.ts 注入，避免 store → ui 依赖） */
+  private confirmHandler: ((message: string) => Promise<boolean>) | null = null;
+
+  /** 注入确认对话框（main.ts 启动时调用一次） */
+  setConfirmHandler(fn: (message: string) => Promise<boolean>): void {
+    this.confirmHandler = fn;
+  }
+
   /** 标签被移除（关闭 / 被虚拟视图取代）时通知，供宿主做统一清理 */
   private closeListeners = new Set<(tab: Tab) => void>();
   /** 内容变更的按帧合并：rAF 句柄与待通知标记 */
@@ -469,7 +476,10 @@ class TabStore {
     if (ids.length === 0) return;
     const dirtyCount = this.tabs.filter((t) => ids.includes(t.id) && t.dirty).length;
     if (dirtyCount > 0) {
-      const ok = await confirmAction(`有 ${dirtyCount} 个未保存的标签将被关闭，确定？`);
+      // 未注入确认回调时直接关闭（启动早期不会触发批量关闭）
+      const ok = this.confirmHandler
+        ? await this.confirmHandler(`有 ${dirtyCount} 个未保存的标签将被关闭，确定？`)
+        : true;
       if (!ok) return;
     }
     for (const id of ids) this.close(id);

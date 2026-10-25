@@ -54,15 +54,39 @@
               <button id="btn-sidebar-toggle" type="button" class="icon-btn" title="隐藏侧栏 (Ctrl+B)" aria-label="隐藏侧栏">&#9776;</button>
             </div>
           </div>
-          <div class="sidebar-tabs" id="sidebar-tabs">
-            <button type="button" class="sidebar-tab active" data-view="files">文件</button>
-            <button type="button" class="sidebar-tab" data-view="search">搜索</button>
-            <button type="button" class="sidebar-tab" data-view="outline">大纲</button>
-          </div>
-          <div class="sidebar-body">
-            <div id="file-tree" class="file-tree sidebar-view"></div>
-            <div id="sidebar-search" class="sidebar-view hidden"></div>
-            <div id="sidebar-outline" class="sidebar-view hidden"></div>
+          <div class="sidebar-sections" id="sidebar-sections">
+            <div class="sidebar-section">
+              <button type="button" class="sidebar-section-head" data-view="open" aria-expanded="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M5 2.5h4.5L12 5v8.5H5z"/><path d="M3.5 5v8.5h7"/></svg>
+                <span>正在打开的文件</span>
+                <span class="chevron">&#8250;</span>
+              </button>
+              <div id="sidebar-open" class="sidebar-section-body hidden"></div>
+            </div>
+            <div class="sidebar-section">
+              <button type="button" class="sidebar-section-head active" data-view="files" aria-expanded="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/></svg>
+                <span>文件</span>
+                <span class="chevron">&#8964;</span>
+              </button>
+              <div id="file-tree" class="file-tree sidebar-section-body"></div>
+            </div>
+            <div class="sidebar-section">
+              <button type="button" class="sidebar-section-head" data-view="search" aria-expanded="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M10.2 10.2L13 13"/></svg>
+                <span>搜索</span>
+                <span class="chevron">&#8250;</span>
+              </button>
+              <div id="sidebar-search" class="sidebar-section-body hidden"></div>
+            </div>
+            <div class="sidebar-section">
+              <button type="button" class="sidebar-section-head" data-view="outline" aria-expanded="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M5 8h8M7 12h6"/></svg>
+                <span>大纲</span>
+                <span class="chevron">&#8250;</span>
+              </button>
+              <div id="sidebar-outline" class="sidebar-section-body hidden"></div>
+            </div>
           </div>
         </aside>
         <div id="sidebar-resizer" class="sidebar-resizer" title="拖动调整侧栏宽度（双击复位）"></div>

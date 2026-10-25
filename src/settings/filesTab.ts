@@ -67,6 +67,9 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
         saveSettings({ ignoreDirs: list });
       },
     ),
+    checkRow("保留替换历史（可在侧栏撤销）", cfg.globalReplace.backup, (value) => {
+      saveSettings({ globalReplace: { ...getConfig().globalReplace, backup: value } });
+    }),
   );
   main.append(searchSection.el);
 

@@ -3,7 +3,7 @@
  *
  * 取代逐个 confirm（多草稿时连续弹窗、且"稍后处理"与"丢弃"语义混在一起）。
  * 返回值约定：
- * - string[]：用户勾选的草稿 key（空数组 = 全部忽略，调用方删除全部草稿）
+ * - string[]：用户勾选的草稿 key（空数组 = 全部丢弃，调用方删除全部草稿）
  * - null：关闭 / 稍后处理（不删除任何草稿，下次启动再提示）
  */
 
@@ -13,7 +13,7 @@ export interface DraftRow {
   /** 已格式化的写入时间 */
   savedAt: string;
   sizeText: string;
-  /** 原文件是否已变化（变化后只能另存为新的未命名文档） */
+  /** 原文件是否已变化（变化后只能另存为副本） */
   stale: boolean;
 }
 
@@ -30,9 +30,10 @@ export function pickDraftsToRecover(rows: DraftRow[]): Promise<string[] | null> 
     const title = document.createElement("h3");
     title.textContent = `发现 ${rows.length} 个未保存草稿`;
 
+    // 仅当存在"原文件已变化"的草稿时才提示另存规则，标题已说明草稿数量，无需重复引导
     const hint = document.createElement("p");
     hint.className = "dialog-text";
-    hint.textContent = "勾选要恢复的草稿；原文件已变化的草稿将另存为新的未命名文档。";
+    hint.textContent = "原文件已变化的草稿将另存为副本。";
 
     const list = document.createElement("div");
     list.className = "draft-list";
@@ -68,8 +69,8 @@ export function pickDraftsToRecover(rows: DraftRow[]): Promise<string[] | null> 
 
     const ignore = document.createElement("button");
     ignore.type = "button";
-    ignore.textContent = "全部忽略";
-    ignore.title = "丢弃全部草稿（不可撤销）";
+    ignore.textContent = "全部丢弃";
+    ignore.title = "不可撤销";
 
     const later = document.createElement("button");
     later.type = "button";
@@ -84,14 +85,16 @@ export function pickDraftsToRecover(rows: DraftRow[]): Promise<string[] | null> 
 
     const refresh = (): void => {
       const n = selected().length;
-      recover.textContent = n > 0 ? `恢复选中（${n}）` : "恢复选中";
+      recover.textContent = n > 0 ? `恢复（${n}）` : "恢复";
       recover.disabled = n === 0;
     };
     checks.forEach((c) => c.addEventListener("change", refresh));
     refresh();
 
     actions.append(ignore, later, recover);
-    dialog.append(title, hint, list, actions);
+    dialog.append(title);
+    if (rows.some((row) => row.stale)) dialog.append(hint);
+    dialog.append(list, actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
 

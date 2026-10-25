@@ -47,8 +47,8 @@ export interface StatusBarFieldEntry {
 
 export interface LayoutSettings {
   sidebarVisible: boolean;
-  /** 侧栏当前视图：文件 / 搜索 / 大纲 */
-  sidebarView: "files" | "search" | "outline";
+  /** 侧栏当前视图：打开的文件 / 文件 / 搜索 / 大纲 */
+  sidebarView: "open" | "files" | "search" | "outline";
   splitRatio: number;
   defaultViewMode: "edit" | "preview" | "split";
   showLineNumbers: boolean;

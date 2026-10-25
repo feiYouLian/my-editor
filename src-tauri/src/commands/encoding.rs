@@ -148,16 +148,40 @@ pub fn guess(bytes: &[u8]) -> EncodingGuess {
 
 /// 按指定编码名解码（宽松替换无法映射的字符，并处理该编码的 BOM）
 pub fn decode(bytes: &[u8], name: &str) -> Result<String, String> {
+    decode_impl(bytes, name, false)
+}
+
+/// 严格解码：遇到无法映射的字节返回错误（批量替换用，避免回写时丢字）
+pub fn decode_checked(bytes: &[u8], name: &str) -> Result<String, String> {
+    decode_impl(bytes, name, true)
+}
+
+fn decode_impl(bytes: &[u8], name: &str, strict: bool) -> Result<String, String> {
     let enc = lookup(name).ok_or_else(|| format!("不支持的编码: {name}"))?;
-    let (text, _used, _had_errors) = enc.decode(bytes);
+    let (text, _used, had_errors) = enc.decode(bytes);
+    if strict && had_errors {
+        return Err("文件包含无法按当前编码解码的字节".to_string());
+    }
     Ok(text.into_owned())
 }
 
 /// 按指定编码名编码为字节
 /// bom=true 且编码为 UTF-8 时前置 UTF-8 BOM；UTF-16 LE/BE 的 BOM 由 encoding_rs 自动写入
 pub fn encode(text: &str, name: &str, bom: bool) -> Result<Vec<u8>, String> {
+    encode_impl(text, name, bom, false)
+}
+
+/// 严格编码：目标编码无法表示某些字符时返回错误（不静默替换为 ?）
+pub fn encode_checked(text: &str, name: &str, bom: bool) -> Result<Vec<u8>, String> {
+    encode_impl(text, name, bom, true)
+}
+
+fn encode_impl(text: &str, name: &str, bom: bool, strict: bool) -> Result<Vec<u8>, String> {
     let enc = lookup(name).ok_or_else(|| format!("不支持的编码: {name}"))?;
-    let (bytes, _used, _had_errors) = enc.encode(text);
+    let (bytes, _used, had_errors) = enc.encode(text);
+    if strict && had_errors {
+        return Err("目标编码无法表示部分字符".to_string());
+    }
     let mut out = bytes.into_owned();
     if bom && enc == encoding_rs::UTF_8 && !out.starts_with(&[0xEF, 0xBB, 0xBF]) {
         let mut with_bom = Vec::with_capacity(out.len() + 3);

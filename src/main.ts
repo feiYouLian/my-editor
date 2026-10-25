@@ -2,34 +2,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { createEditor, type EditorHandle } from "./editor/setup";
 import { SearchResultsPanel } from "./editor/searchPanel";
-import { languageDisplayNames, languageKeyFromPath } from "./editor/languages";
-import {
-  formatDocument,
-  formatSelection,
-  supportsFormatting,
-} from "./editor/format";
-import { openColumnEditor } from "./editor/columnEditor";
-import { toggleBookmark, gotoBookmark } from "./editor/bookmarks";
-import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel } from "@codemirror/search";
 import { FileTree } from "./panels/fileTree";
 import { CommandPalette } from "./panels/commandPalette";
 import { QuickOpen } from "./panels/quickOpen";
 import { SearchView } from "./panels/searchView";
 import { OutlineView } from "./panels/outlineView";
+import { OpenEditorsView } from "./panels/openEditorsView";
 import { SidebarViews } from "./ui/sidebar";
 import { WelcomePanel } from "./panels/welcome";
+import { showAboutDialog } from "./panels/aboutDialog";
+import { showShortcutsDialog, type ShortcutRow } from "./panels/shortcutsDialog";
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
 import { confirmAction, confirmCloseDirty } from "./ui/dialogs";
-import { showSettingsHelp } from "./ui/settingsHelp";
-import { openStatusMenu } from "./ui/statusMenu";
 import { createStatusBar } from "./ui/statusBar";
 import { TabsBar } from "./ui/tabsBar";
 import { Breadcrumb } from "./ui/breadcrumb";
 import { EditorContextMenu, type MenuEntry } from "./ui/editorMenu";
-import { copyFromEditor, pasteIntoEditor } from "./editor/clipboard";
 import { PreviewController } from "./app/previewHost";
 import { LargeFileHost } from "./app/largeFileHost";
 import { FileService, FALLBACK_ENCODINGS, readDiskAs } from "./app/fileService";
@@ -41,6 +32,10 @@ import { SessionHost } from "./app/sessionHost";
 import { TabSwitcher } from "./app/tabSwitcher";
 import { WindowChrome } from "./app/windowChrome";
 import { DropHost } from "./app/dropHost";
+import { StatusActions } from "./app/statusActions";
+import { FormatHost } from "./app/formatHost";
+import { buildEditorMenu } from "./app/menuContent";
+import { buildCommandTable } from "./app/commandTable";
 import { LayoutPane } from "./app/layout";
 import {
   loadWorkspace,
@@ -62,16 +57,14 @@ import {
   setExtraReservedKeys,
 } from "./config/keybindings";
 import {
+  allCommands,
   commandPaletteItems,
   getCommand,
   menuModel,
   registerCommands,
   type CommandDef,
 } from "./core/commands";
-import { CONVERT_TARGET_LABELS, type ConvertTarget } from "./core/convert";
 import type { SettingsPanel } from "./panels/settingsPanel";
-import { CASE_LABELS, type CaseMode } from "./editor/transforms";
-import { localStamps, newUuid } from "./core/stamps";
 import { basenameOf } from "./core/paths";
 import { effectiveLanguage, languageLabel } from "./editor/languages";
 
@@ -84,6 +77,9 @@ const $ = <T extends HTMLElement>(id: string): T => {
   if (!el) throw new Error(`missing element #${id}`);
   return el as T;
 };
+
+// 批量关闭确认由 UI 层注入（store 不反向依赖 ui）
+tabStore.setConfirmHandler(confirmAction);
 
 const breadcrumbEl = $<HTMLDivElement>("breadcrumb");
 const editorArea = document.querySelector<HTMLElement>(".editor-area")!;
@@ -105,16 +101,6 @@ const statusWrap = $<HTMLSpanElement>("status-wrap");
 const statusReadonly = $<HTMLSpanElement>("status-readonly");
 const statusDraft = $<HTMLSpanElement>("status-draft");
 const statusExternal = $<HTMLSpanElement>("status-external");
-
-/** 格式转换目标（按源格式分组：JSON / YAML / Properties / Java） */
-const CONVERT_TARGETS: ConvertTarget[] = [
-  "json2yaml",
-  "json2java",
-  "yaml2json",
-  "yaml2properties",
-  "properties2yaml",
-  "java2json",
-];
 
 /** 状态栏（渲染 / 主题 / 字段显隐 / 分栏 / 消息 / 两个持久化开关） */
 const statusBar = createStatusBar(
@@ -146,233 +132,31 @@ const statusBar = createStatusBar(
 statusWhitespace.addEventListener("click", () => statusBar.toggleWhitespace());
 statusWrap.addEventListener("click", () => statusBar.toggleWordWrap());
 
-// ---- 状态栏弹出菜单（换行符 / 语言 / 编码：统一工厂，见 ui/statusMenu.ts）----
+// ---- 状态栏弹出菜单（换行符 / 语言 / 编码）：领域动作见 app/statusActions.ts ----
 
-const NEWLINE_OPTIONS: { value: string; label: string }[] = [
-  { value: "LF", label: "LF（Unix / macOS）" },
-  { value: "CRLF", label: "CRLF（Windows）" },
-  { value: "CR", label: "CR（老式 Mac）" },
-];
-
-function showNewlineMenu(x: number, y: number): void {
-  const tab = activeTab();
-  if (!tab || tab.kind !== "text" || !tab.path) {
-    statusBar.showMessage("当前文件不支持切换换行符");
-    return;
-  }
-  openStatusMenu({
-    anchor: { x, y },
-    header: `当前换行符：${tab.newline}`,
-    options: NEWLINE_OPTIONS,
-    current: tab.newline,
-    tabId: tab.id,
-    onMessage: statusBar.showMessage,
-    onPick: (value) => applyNewline(tab.id, value),
-  });
-}
-
-/** 应用换行符：仅改内存状态并标脏，由用户手动保存落盘 */
-function applyNewline(tabId: string, newline: string): void {
-  tabStore.setNewline(tabId, newline);
-  statusBar.refresh();
-  statusBar.showMessage(`换行符已切换为 ${newline}（未保存，Ctrl+S 保存）`);
-}
-
-statusNewline.title = "点击切换换行符（LF / CRLF / CR）";
-statusNewline.style.cursor = "pointer";
-statusNewline.addEventListener("click", (e) => {
-  e.stopPropagation();
-  showNewlineMenu(e.clientX, e.clientY);
+const statusActions = new StatusActions({
+  getActiveTab: activeTab,
+  showMessage: statusBar.showMessage,
+  refreshStatus: () => statusBar.refresh(),
+  reloadActiveTab: () => tabSwitcher.load(),
+  setEditorLanguage: (override) => editorHandle.setLanguage(override),
+  saveAsWithEncoding: () => void fileService.saveAsWithEncoding(),
+  readDiskAs,
+  fallbackEncodings: FALLBACK_ENCODINGS,
 });
 
-// ---- 状态栏语言菜单（手动覆盖高亮语言）----
-// effectiveLanguage / languageLabel 实现见 editor/languages.ts
 
-function showLanguageMenu(x: number, y: number): void {
-  const tab = activeTab();
-  if (!tab || tab.kind !== "text") {
-    statusBar.showMessage("当前文件不支持切换语言");
-    return;
-  }
-  if (tab.virtual) {
-    statusBar.showMessage("大文件只读视图不支持切换语言");
-    return;
-  }
-  // 自动项 + 纯文本 + 全部已注册语言
-  const auto = tab.path ? languageKeyFromPath(tab.path) : null;
-  openStatusMenu({
-    anchor: { x, y },
-    header: `当前语言：${languageLabel(tab)}`,
-    options: [
-      { value: undefined, label: `自动（${auto ? (languageDisplayNames[auto] ?? auto) : "纯文本"}）` },
-      { value: null, label: "纯文本" },
-      ...Object.keys(languageDisplayNames)
-        .filter((key) => key !== "plaintext")
-        .map((key) => ({ value: key as string | null, label: languageDisplayNames[key] })),
-    ],
-    current: tab.languageOverride,
-    tabId: tab.id,
-    onMessage: statusBar.showMessage,
-    onPick: (value) => void applyLanguageOverride(tab.id, value),
-  });
-}
 
-/** 应用语言模式：更新标签状态 + 编辑器高亮（不重载内容） */
-async function applyLanguageOverride(
-  tabId: string,
-  override: string | null | undefined,
-): Promise<void> {
-  tabStore.setLanguageOverride(tabId, override);
-  const tab = tabStore.findById(tabId);
-  if (!tab) return;
-  if (tabStore.active()?.id === tabId) await editorHandle.setLanguage(override);
-  statusBar.refresh();
-  statusBar.showMessage(`语言模式：${languageLabel(tab)}`);
-}
 
-statusLanguage.title = "点击切换高亮语言";
-statusLanguage.style.cursor = "pointer";
-statusLanguage.addEventListener("click", (e) => {
-  e.stopPropagation();
-  showLanguageMenu(e.clientX, e.clientY);
-});
 
-// ---- 状态栏编码菜单（「重新打开为」，只改解读方式、不写盘）----
-// FALLBACK_ENCODINGS 见 app/fileService.ts（与另存为编码共用）
 
-function showEncodingMenu(x: number, y: number): void {
-  const tab = activeTab();
-  if (!tab || tab.kind !== "text" || !tab.path) {
-    statusBar.showMessage("当前文件不支持切换编码");
-    return;
-  }
-  openStatusMenu({
-    anchor: { x, y },
-    header: `当前编码：${tab.encoding}`,
-    options: (tab.encodingCandidates.length ? tab.encodingCandidates : FALLBACK_ENCODINGS).map(
-      (enc) => ({ value: enc, label: enc }),
-    ),
-    // 两类编码操作同框但语义不同：上面只改解读方式，下面是真正转码写新文件
-    actions: [
-      {
-        label: "另存为编码…（转码写入新文件）",
-        separatorBefore: true,
-        run: () => void fileService.saveAsWithEncoding(),
-      },
-    ],
-    current: tab.encoding,
-    tabId: tab.id,
-    onMessage: statusBar.showMessage,
-    onPick: (enc) => void reopenWithEncoding(tab.id, enc),
-  });
-}
 
-/** 重新打开为：按新编码重新解读磁盘字节（不写盘） */
-async function reopenWithEncoding(tabId: string, encoding: string): Promise<void> {
-  const tab = tabStore.findById(tabId);
-  if (!tab || !tab.path) return;
-  if (
-    tab.dirty &&
-    !(await confirmAction(
-      `「${tab.name}」有未保存修改，重新打开将丢弃这些修改。是否继续？`,
-    ))
-  ) {
-    return;
-  }
-  try {
-    const data = await readDiskAs(tab.path, encoding);
-    tabStore.reopenWith(tabId, data);
-    // 编码已变更：旧结论失效，按新解读重新检测
-    tabStore.setMojibake(tabId, "", "");
-    if (tabStore.active()?.id === tabId) {
-      await tabSwitcher.load();
-      void checkMojibake(tabId);
-    } else {
-      statusBar.refresh();
-    }
-    statusBar.showMessage(
-      tabStore.findById(tabId)?.dirty
-        ? `编码已切换为 ${data.encoding}（未保存，Ctrl+S 转码保存）`
-        : `已重新打开为 ${data.encoding}`,
-    );
-  } catch (e) {
-    statusBar.showMessage(`重新打开失败: ${String(e).split("\n")[0]}`);
-  }
-}
 
-// ---- 乱码检测（打开文件后自动诊断；只提示，不改文件、不自动切编码）----
 
-/** 自动检测的文件体积上限（更大文件跳过，避免重复读盘） */
-const MOJIBAKE_MAX_BYTES = 5 * 1024 * 1024;
-
-interface MojibakeReport {
-  suspicious: boolean;
-  suggested: string;
-  severity: number;
-  reason: string;
-}
-
-/** 对标签做一次乱码检测并记录结论；只读标签同样适用（检测不改内容） */
-async function checkMojibake(tabId: string): Promise<void> {
-  const tab = tabStore.findById(tabId);
-  if (!tab || tab.kind !== "text" || !tab.path || tab.pending || tab.virtual) return;
-  if (tab.size > MOJIBAKE_MAX_BYTES) return;
-  try {
-    const report = await invoke<MojibakeReport>("detect_mojibake", {
-      path: tab.path,
-      text: tabStore.snapshotOf(tab),
-      current: tab.encoding,
-    });
-    const current = tabStore.findById(tabId);
-    if (!current) return;
-    tabStore.setMojibake(
-      tabId,
-      report.suspicious ? report.suggested : "",
-      report.suspicious ? report.reason : "",
-    );
-    if (report.suspicious && tabStore.active()?.id === tabId) {
-      statusBar.showMessage(report.reason);
-    }
-  } catch (e) {
-    console.warn("[mojibake] 检测失败", e);
-  }
-}
-
-/** 命令面板入口：对当前标签立即重检并给出可选建议 */
-function detectMojibakeManually(): void {
-  const tab = activeTab();
-  if (!tab || tab.kind !== "text" || !tab.path) {
-    statusBar.showMessage("请先打开一个磁盘上的文本文件");
-    return;
-  }
-  if (tab.virtual) {
-    statusBar.showMessage("大文件只读视图不支持乱码检测");
-    return;
-  }
-  void (async () => {
-    await checkMojibake(tab.id);
-    const fresh = tabStore.findById(tab.id);
-    if (!fresh) return;
-    if (!fresh.mojibakeReason) {
-      statusBar.showMessage("未检测到乱码");
-      return;
-    }
-    if (fresh.mojibakeSuggested) {
-      const ok = await confirmAction(
-        `${fresh.mojibakeReason}。是否立即重新打开为 ${fresh.mojibakeSuggested}？`,
-        "重新打开",
-      );
-      if (ok) await reopenWithEncoding(fresh.id, fresh.mojibakeSuggested);
-    } else {
-      statusBar.showMessage(fresh.mojibakeReason);
-    }
-  })();
-}
-
-statusEncoding.style.cursor = "pointer";
-statusEncoding.addEventListener("click", (e) => {
-  e.stopPropagation();
-  showEncodingMenu(e.clientX, e.clientY);
+statusActions.bind({
+  newline: statusNewline,
+  language: statusLanguage,
+  encoding: statusEncoding,
 });
 
 // ---- 插入时间戳 / UUID：实现见 core/stamps.ts ----
@@ -388,9 +172,6 @@ function insertAtCursor(text: string): void {
     scrollIntoView: true,
   });
 }
-
-/** 超过此行数，格式化前弹确认（保存时自动格式化也用它做上限） */
-const FORMAT_CONFIRM_LINES = 10000;
 
 let editorHandle: EditorHandle;
 let resultsPanel: SearchResultsPanel | null = null;
@@ -580,6 +361,7 @@ async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
 tabStore.subscribe((kind) => {
   const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
+  openEditors.refresh();
   welcomeView?.setVisible(tabStore.list().length === 0);
   if (sidebarViews.view === "outline") sidebarOutline.scheduleRefresh();
   breadcrumbView.render();
@@ -635,6 +417,33 @@ const sidebarSearch = new SearchView($("sidebar-search"), {
   getRoot: () => workspaceRoot,
   getIgnoreDirs: () => getConfig().ignoreDirs,
   onOpenLocation: (path, line) => void openFileAt(path, line),
+  isDirtyPath: (path) => tabStore.findByPath(path)?.dirty === true,
+  // 批量替换已写盘：重载已打开的标签 + 重建文件树（新增 .bak 也要可见）
+  onFilesReplaced: async (paths) => {
+    // Windows 路径大小写 / 分隔符不敏感：统一归一化后再与标签 path 比较
+    const norm = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
+    const replaced = new Set(paths.map(norm));
+    const affected = tabStore
+      .list()
+      .filter((t) => t.kind === "text" && !t.virtual && t.path !== null && replaced.has(norm(t.path)));
+    for (const tab of affected) {
+      const path = tab.path;
+      // 替换前已筛掉脏标签；这里双保险，避免把未保存编辑盖掉
+      if (!path || tab.dirty) continue;
+      try {
+        const data = await readDiskAs(path, tab.encoding);
+        tabStore.reopenWith(tab.id, data);
+        tabStore.setMojibake(tab.id, "", "");
+        tabStore.markExternal(tab.id, false);
+      } catch (e) {
+        console.warn("[replace] 重新载入失败", e);
+      }
+    }
+    if (affected.some((t) => t.id === activeTab()?.id)) await reloadActiveTab();
+    fileTree.refresh();
+    sessionHost.refreshWatched();
+    statusBar.refresh();
+  },
   showMessage: statusBar.showMessage,
 });
 const sidebarOutline = new OutlineView($("sidebar-outline"), {
@@ -648,9 +457,26 @@ const sidebarOutline = new OutlineView($("sidebar-outline"), {
     return !!tab && tab.kind === "text" && !tab.virtual;
   },
 });
+// 侧栏「正在打开的文件」：点击激活 / 关闭（含未保存确认）+ 右键菜单
+const openEditors = new OpenEditorsView($("sidebar-open"), {
+  onActivate: (id) => tabStore.activate(id),
+  onClose: (id) => void closeTab(id),
+  onCloseOthers: (id) => void closeTabsBulk(() => tabStore.closeOthers(id)),
+  onCloseAll: () => void closeTabsBulk(() => tabStore.closeAll()),
+  onCompare: (id) => diffService.compareTabs(id),
+  onCopyPath: (path) => {
+    void navigator.clipboard.writeText(path).then(
+      () => statusBar.showMessage("已复制文件路径"),
+      () => statusBar.showMessage("复制文件路径失败"),
+    );
+  },
+  onReveal: (path) => void invoke("reveal_in_file_manager", { path }),
+});
+openEditors.refresh();
 const sidebarViews = new SidebarViews(
-  $("sidebar-tabs"),
+  $("sidebar-sections"),
   {
+    open: $("sidebar-open"),
     files: $("file-tree"),
     search: $("sidebar-search"),
     outline: $("sidebar-outline"),
@@ -659,17 +485,47 @@ const sidebarViews = new SidebarViews(
     initial: "files",
     onChange: (view) => {
       statusBar.persistConfig({ layout: { ...getConfig().layout, sidebarView: view } });
+      if (view === "open") openEditors.refresh();
       if (view === "search") sidebarSearch.focusInput();
       if (view === "outline") sidebarOutline.scheduleRefresh();
     },
   },
 );
 
-/** 菜单 / 快捷键：展开侧栏并聚焦工作区搜索 */
-function focusWorkspaceSearch(): void {
+/** 菜单 / 快捷键：展开侧栏并切到指定视图 */
+function showSidebarView(view: "open" | "files" | "search" | "outline"): void {
   layout.setSidebarVisible(true);
-  sidebarViews.switch("search");
-  sidebarSearch.focusInput();
+  sidebarViews.switch(view);
+  if (view === "open") openEditors.refresh();
+  if (view === "search") sidebarSearch.focusInput();
+  if (view === "outline") sidebarOutline.scheduleRefresh();
+}
+
+/** 菜单 / 快捷键：展开侧栏并聚焦工作区搜索；编辑器有选区时带入关键词 */
+function focusWorkspaceSearch(): void {
+  showSidebarView("search");
+  const selection = selectedSearchText();
+  if (selection) sidebarSearch.setQuery(selection);
+  else sidebarSearch.focusInput();
+}
+
+/**
+ * 取编辑器当前选区作为搜索关键词：多行只取首行，超长截断 200 字符。
+ * 无选区 / 非文本标签 / 大文件虚拟视图时返回 null（保持“仅聚焦”）。
+ */
+function selectedSearchText(): string | null {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || tab.virtual) return null;
+  if (editorHandle.docId() !== tab.id) return null;
+  const view = editorHandle.view;
+  const sel = view.state.selection.main;
+  if (sel.empty) return null;
+  const firstLine = view.state
+    .sliceDoc(sel.from, sel.to)
+    .split(/\r?\n/)[0]
+    .trim();
+  if (!firstLine) return null;
+  return firstLine.slice(0, 200);
 }
 
 btnOpenDir.addEventListener("click", () => void openWorkspaceDir());
@@ -735,7 +591,7 @@ subscribeSettings(() => {
 });
 
 // 编辑器右键菜单（条目由 buildEditorMenu 按当前状态构建）
-new EditorContextMenu(editorHandle.view.dom, buildEditorMenu);
+new EditorContextMenu(editorHandle.view.dom, editorMenuEntryPoint);
 
 // 预览编排（模式 / 联动 / 导出）
 const preview = new PreviewController($("preview-pane"), modeBar, editorArea, {
@@ -772,8 +628,18 @@ let reloadActiveTab: () => Promise<void> = async () => {};
 // 大文件只读虚拟视图宿主（分流 / 会话 / 逃生门）
 const largeHost = new LargeFileHost({
   showMessage: statusBar.showMessage,
-  onCheckMojibake: (tabId) => void checkMojibake(tabId),
+  onCheckMojibake: (tabId) => void statusActions.checkMojibake(tabId),
   onReloadActiveTab: () => reloadActiveTab(),
+});
+
+// 格式化编排（文档级 / 选中级 / 保存前自动格式化）
+const formatHost = new FormatHost({
+  getActiveTab: activeTab,
+  getView: () => editorHandle.view,
+  getDocId: () => editorHandle.docId(),
+  blockIfReadonly,
+  showMessage: statusBar.showMessage,
+  refreshStatus: () => statusBar.refresh(),
 });
 
 // 文件操作服务（打开 / 保存 / 另存 / 插入图片 / 配置）
@@ -781,7 +647,7 @@ const fileService = new FileService({
   getActiveTab: activeTab,
   blockIfReadonly,
   showMessage: statusBar.showMessage,
-  onCheckMojibake: (tabId) => void checkMojibake(tabId),
+  onCheckMojibake: (tabId) => void statusActions.checkMojibake(tabId),
   onDiscardDraft: (tabId) => void sessionHost.discardDraft(tabId),
   onPersistDraft: (tabId) => void sessionHost.persistDraft(tabId),
   insertAtCursor,
@@ -791,26 +657,7 @@ const fileService = new FileService({
     runHost.pickEncoding(encodings, current, onPick, note),
   largeHost,
   // 保存前格式化：单编辑器实例，只处理激活标签；失败不阻塞保存
-  formatBeforeSave: async (tab) => {
-    if (!getConfig().formatOnSave) return "skipped";
-    if (tab.id !== editorHandle.docId()) return "skipped";
-    if (editorHandle.view.state.doc.lines > FORMAT_CONFIRM_LINES) {
-      statusBar.showMessage(`文档超过 ${FORMAT_CONFIRM_LINES} 行，已跳过保存时格式化`);
-      return "skipped";
-    }
-    const lang = effectiveLanguage(tab);
-    if (!supportsFormatting(lang)) return "skipped";
-    const result = await formatDocument(editorHandle.view, lang, tab.path);
-    if (!result.ok) {
-      statusBar.showMessage(
-        `${result.message.split("\n")[0] || "保存时格式化失败"}（已按原内容保存）`,
-        8000,
-      );
-      console.error("[format] on save:", result.message);
-      return "failed";
-    }
-    return result.changed ? "applied" : "skipped";
-  },
+  formatBeforeSave: (tab) => formatHost.beforeSave(tab),
 });
 
 // 快速打开（Ctrl+P）：工作区文件模糊过滤 → 打开（含大文件分流）
@@ -986,145 +833,24 @@ function openReplaceInDoc(): void {
 
 // ---- 剪贴板（编辑器右键菜单的剪切 / 复制 / 粘贴）：见 editor/clipboard.ts ----
 
-// ---- 编辑器右键菜单内容（对齐常用编辑器：编辑 + 剪贴板 + 查找 + 格式化）----
-// 菜单机器（子菜单/定位/关闭）在 ui/editorMenu.ts；此处只构建条目——
-// 哪些条目可见取决于只读 / 选区 / 语言等领域状态。
+// ---- 编辑器右键菜单内容：见 app/menuContent.ts ----
 
-function buildEditorMenu(): MenuEntry[] {
-  const view = editorHandle.view;
-  const readonly = view.state.readOnly;
-  const tab = activeTab();
-  const lang = tab ? effectiveLanguage(tab) : null;
-  const hasSelection = !view.state.selection.main.empty;
-  const canFormat = supportsFormatting(lang);
-  const canRun =
-    tab !== null && tab.kind === "text" && Boolean(tab.path) && runHost.runnerFor(tab) !== null;
-  // cURL 入口只在当前选区/文档确实像 curl 命令时出现（避免 Python 等文件误显）
-  const canScript = runHost.looksLikeCurlScript();
-  const cut = (): void => void copyFromEditor(view, true, statusBar.showMessage);
-  const copy = (): void => void copyFromEditor(view, false, statusBar.showMessage);
-  const paste = (): void => void pasteIntoEditor(view, statusBar.showMessage);
-
-  // 顶层保持短小：常用编辑命令平铺，其余收进二级菜单
-  const top: MenuEntry[] = [];
-  if (!readonly) {
-    top.push({ label: "撤销", shortcut: "Ctrl+Z", run: () => void undo(view) });
-    top.push({ label: "重做", shortcut: "Ctrl+Shift+Z", run: () => void redo(view) });
-    top.push({ separator: true });
-    top.push({ label: "剪切", shortcut: "Ctrl+X", run: cut });
-  }
-  top.push({ label: "复制", shortcut: "Ctrl+C", run: copy });
-  if (!readonly) top.push({ label: "粘贴", shortcut: "Ctrl+V", run: paste });
-  top.push({
-    label: "全选",
-    shortcut: "Ctrl+A",
-    run: () => view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }),
+/** 每次右键时构建条目（可见性依赖只读 / 选区 / 语言等实时状态） */
+function editorMenuEntryPoint(): MenuEntry[] {
+  return buildEditorMenu({
+    getView: () => editorHandle.view,
+    getActiveTab: activeTab,
+    showMessage: statusBar.showMessage,
+    insertAtCursor,
+    openFind: openFindInDoc,
+    openReplace: openReplaceInDoc,
+    toggleResults: toggleResultsPanel,
+    formatDocument: () => void formatHost.formatCurrent(),
+    formatSelection: () => void formatHost.formatSelectionCurrent(),
+    insertClipboardImage: () => void fileService.insertClipboardImage(),
+    diffUnsaved: () => void diffService.diffUnsaved(),
+    runHost,
   });
-
-  // 查找与书签（二级菜单）
-  const find: MenuEntry[] = [
-    { label: "查找…", shortcut: "Ctrl+F", run: () => openFindInDoc() },
-  ];
-  if (!readonly) find.push({ label: "替换…", shortcut: "Ctrl+H", run: () => openReplaceInDoc() });
-  find.push({ label: "查找结果面板", run: () => toggleResultsPanel() });
-  if (!readonly) {
-    find.push({ separator: true });
-    find.push({ label: "切换书签", shortcut: "Ctrl+F2", run: () => toggleBookmark(view) });
-    find.push({ label: "下一个书签", shortcut: "F2", run: () => gotoBookmark(view, 1) });
-  }
-  top.push({ separator: true });
-  top.push({ label: "查找与书签", submenu: find });
-
-  // 代码：格式化 / 运行 / 列编辑
-  const code: MenuEntry[] = [];
-  if (!readonly && canFormat) {
-    code.push({ label: "格式化文档", shortcut: "Shift+Alt+F", run: () => void formatCurrent() });
-    if (hasSelection) {
-      code.push({ label: "格式化选中内容", run: () => void formatSelectionCurrent() });
-    }
-  }
-  if (canRun) code.push({ label: "运行当前文件", shortcut: "F5", run: () => runHost.runCurrentFile() });
-  if (canRun) code.push({ label: "在终端运行当前文件", shortcut: "Ctrl+F5", run: () => runHost.runInTerminal() });
-  if (runHost.isRunning) code.push({ label: "停止运行", run: () => runHost.stop() });
-  if (canScript) code.push({ label: "执行 cURL 脚本", run: () => runHost.runCurlScript() });
-  if (canScript) code.push({ label: "在终端执行 cURL 脚本", run: () => runHost.runCurlInTerminal() });
-  if (!readonly) {
-    if (code.length > 0) code.push({ separator: true });
-    code.push({ label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) });
-  }
-  if (code.length > 0) top.push({ label: "代码", submenu: code });
-  // 语言专属：仅 JSON / Markdown
-  if (!readonly && lang === "json") {
-    top.push({
-      label: "JSON",
-      submenu: [
-        { label: "JSON 美化", run: () => runHost.runJson(false) },
-        { label: "JSON 压缩", run: () => runHost.runJson(true) },
-      ],
-    });
-  } else if (!readonly && lang === "markdown") {
-    top.push({
-      label: "Markdown",
-      submenu: [
-        { label: "加粗", run: () => runHost.runWrap("**", "加粗：") },
-        { label: "斜体", run: () => runHost.runWrap("*", "斜体：") },
-        { label: "高亮", run: () => runHost.runWrap("==", "高亮：") },
-        { label: "插入表格…", run: () => runHost.toggleTableDialog() },
-      ],
-    });
-  }
-
-  // 格式转换：面板始终可开（只读禁替换）；直转仅在可写时列出
-  if (tab && tab.kind === "text" && !tab.virtual) {
-    const convertItems: MenuEntry[] = [
-      { label: "打开转换面板…", run: () => runHost.openConvertPanel() },
-    ];
-    if (!readonly) {
-      convertItems.push({ separator: true });
-      for (const target of CONVERT_TARGETS) {
-        convertItems.push({
-          label: CONVERT_TARGET_LABELS[target],
-          run: () => void runHost.convertDirect(target),
-        });
-      }
-    }
-    top.push({ label: "格式转换", submenu: convertItems });
-  }
-
-  // 文本转换（子菜单，需选中文本）
-  if (!readonly && hasSelection) {
-    top.push({
-      label: "文本转换",
-      submenu: (Object.keys(CASE_LABELS) as CaseMode[]).map((mode) => ({
-        label: CASE_LABELS[mode],
-        run: () => runHost.runCase(mode),
-      })),
-    });
-  }
-
-  // 插入（二级菜单）
-  if (!readonly) {
-    const insert: MenuEntry[] = [
-      { label: "本地时间", run: () => insertAtCursor(localStamps().local) },
-      { label: "ISO 时间戳", run: () => insertAtCursor(localStamps().iso) },
-      { label: "Unix 时间戳", run: () => insertAtCursor(localStamps().unix) },
-      { label: "日期", run: () => insertAtCursor(localStamps().date) },
-      { label: "时间", run: () => insertAtCursor(localStamps().time) },
-      { label: "UUID（v4）", run: () => insertAtCursor(newUuid()) },
-    ];
-    if (tab?.path) {
-      insert.push({ separator: true });
-      insert.push({ label: "剪贴板图片", run: () => void fileService.insertClipboardImage() });
-    }
-    top.push({ label: "插入", submenu: insert });
-  }
-
-  // 比较：仅有未保存改动时提供
-  if (tab?.path && tab.dirty && !tab.virtual) {
-    top.push({ separator: true });
-    top.push({ label: "与磁盘内容比较（未保存改动）", run: () => void diffService.diffUnsaved() });
-  }
-  return top;
 }
 
 // ---- 外部修改检测（Rust 侧监听，前端仅提示、不自动重载）：见 app/sessionHost.ts ----
@@ -1133,71 +859,7 @@ function buildEditorMenu(): MenuEntry[] {
 
 // ---- 文件操作（打开/保存/另存/插入图片/配置）：见 app/fileService.ts ----
 
-// ---- 格式化（双通道 + 大文件确认 + 选中级）----
-
-/** 格式化进行中标志：防止连按快捷键启动两个格式化器互相覆盖 */
-let formatting = false;
-
-async function formatCurrent(): Promise<void> {
-  const tab = activeTab();
-  if (!tab) return;
-  if (blockIfReadonly()) return;
-  if (formatting) {
-    statusBar.showMessage("正在格式化，请稍候…");
-    return;
-  }
-  const key = effectiveLanguage(tab);
-  if (editorHandle.view.state.doc.lines > FORMAT_CONFIRM_LINES) {
-    const ok = await confirmAction(
-      `文档超过 ${FORMAT_CONFIRM_LINES} 行，格式化可能耗时较久，继续？`,
-    );
-    if (!ok) return;
-  }
-  formatting = true;
-  try {
-    const result = await formatDocument(editorHandle.view, key, tab.path);
-    // await 期间可能切换了标签：结果已由 format.ts 做文档指纹校验，
-    // 这里仅跳过过期标签上的消息刷新
-    if (tabStore.active()?.id !== tab.id) return;
-    if (!result.ok) {
-      // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行
-      // （首行已含安装命令，见 format.ts 的 withInstallHint）+ 控制台完整输出；
-      // 错误停留 8s，留出阅读与照做的时间
-      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
-      console.error("[format]", result.message);
-      return;
-    }
-    statusBar.showMessage(result.message);
-    statusBar.refresh();
-  } finally {
-    formatting = false;
-  }
-}
-
-async function formatSelectionCurrent(): Promise<void> {
-  const tab = activeTab();
-  if (!tab) return;
-  if (blockIfReadonly()) return;
-  if (formatting) {
-    statusBar.showMessage("正在格式化，请稍候…");
-    return;
-  }
-  const key = effectiveLanguage(tab);
-  formatting = true;
-  try {
-    const result = await formatSelection(editorHandle.view, key, tab.path);
-    if (tabStore.active()?.id !== tab.id) return;
-    if (!result.ok) {
-      statusBar.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
-      console.error("[format]", result.message);
-      return;
-    }
-    statusBar.showMessage(result.message);
-    statusBar.refresh();
-  } finally {
-    formatting = false;
-  }
-}
+// ---- 格式化编排：见 app/formatHost.ts ----
 
 // ---- 查找结果面板开关（菜单/命令面板共用）----
 function toggleResultsPanel(): void {
@@ -1275,138 +937,42 @@ $<HTMLButtonElement>("btn-devtools").addEventListener("click", () => {
 // 菜单栏 / 命令面板 / 快捷键 / 设置中心键位页全部由本表派生。
 // 字段语义见 core/commands.ts：menu* 控制菜单栏，defaultKey 控制快捷键，
 // hidden 控制是否进命令面板，menuOrder 控制菜单内顺序。
-registerCommands([
-  // ---- 文件 ----
-  { id: "file.open", title: "打开文件…", section: "文件", defaultKey: "Mod-O", menu: "file", menuOrder: 20, run: () => void fileService.openFileDialog() },
-  { id: "file.quickOpen", title: "快速打开文件…", section: "文件", defaultKey: "Mod-P", menu: "file", menuLabel: "快速打开文件…", menuOrder: 25, run: () => quickOpen.open() },
-  { id: "file.new", title: "新建未命名文档", section: "文件", defaultKey: "Mod-N", menu: "file", menuLabel: "新建", menuOrder: 10, run: () => fileService.newUntitled() },
-  { id: "file.save", title: "保存", section: "文件", defaultKey: "Mod-S", menu: "file", menuOrder: 50, menuSeparatorBefore: true, run: () => void fileService.saveFile() },
-  { id: "file.saveAs", title: "另存为…", section: "文件", defaultKey: "Mod-Shift-S", menu: "file", menuOrder: 60, run: () => void fileService.saveFileAs() },
-  { id: "file.saveAll", title: "全部保存", section: "文件", defaultKey: "Mod-Alt-S", menu: "file", menuLabel: "全部保存", menuOrder: 55, run: () => void saveAllFiles() },
-  { id: "file.reload", title: "重新载入当前文件（丢弃未保存修改）", section: "文件", menu: "file", menuLabel: "重新载入当前文件", menuOrder: 65, run: () => void reloadCurrentFile() },
-  { id: "file.reopenClosed", title: "重新打开关闭的标签", section: "文件", defaultKey: "Mod-Shift-T", menu: "file", menuLabel: "重新打开关闭的标签", menuOrder: 75, run: () => void reopenClosedTab() },
-  { id: "file.closeTab", title: "关闭当前标签", section: "文件", defaultKey: "Mod-W", menu: "file", menuLabel: "关闭标签", menuOrder: 70, menuSeparatorBefore: true, run: () => {
-      const tab = activeTab();
-      if (tab) void closeTab(tab.id);
-    } },
-  { id: "file.quit", title: "退出", section: "文件", defaultKey: "Mod-Q", menu: "file", menuOrder: 80, hidden: true, run: () => windowChrome.close() },
-  { id: "file.recent", title: "最近打开的文件…", section: "文件", menu: "file", menuLabel: "最近打开…", menuOrder: 40, run: () => runHost.toggleRecentFiles() },
-  { id: "fetch.open", title: "从网址抓取网页…", section: "文件", defaultKey: "Mod-Shift-U", menu: "file", menuLabel: "从网址抓取网页…", menuOrder: 45, run: () => fetchHost.open() },
-  { id: "file.saveAsEncoding", title: "另存为指定编码…", section: "文件", run: () => fileService.saveAsWithEncoding() },
-  { id: "file.exportMarkdown", title: "导出 Markdown（当前 HTML 文件）", section: "文件", run: () => {
-      const tab = activeTab();
-      if (!tab || pathKindOf(tab.path) !== "html") {
-        statusBar.showMessage("当前文件不是 HTML，无法导出 Markdown");
-        return;
-      }
-      void preview.export(tab, "md");
-    } },
-  { id: "workspace.openDir", title: "打开目录（工作区）", section: "工作区", menu: "file", menuLabel: "打开目录（工作区）…", menuOrder: 30, run: () => void openWorkspaceDir() },
-  // ---- 比较 ----
-  { id: "diff.unsaved", title: "比较：与磁盘内容（未保存改动）", section: "比较", menu: "compare", menuLabel: "与磁盘内容比较（未保存改动）", menuOrder: 10, run: () => void diffService.diffUnsaved() },
-  { id: "diff.pickFile", title: "比较：与文件…", section: "比较", menu: "compare", menuLabel: "与文件…比较", menuOrder: 20, run: () => void diffService.compareWithPickedFile() },
-  { id: "diff.gitHead", title: "比较：与 Git HEAD", section: "比较", menu: "compare", menuLabel: "与 Git HEAD 比较", menuOrder: 30, menuSeparatorBefore: true, run: () => void diffService.diffWithGit("worktree") },
-  { id: "diff.gitIndex", title: "比较：与 Git 暂存区", section: "比较", menu: "compare", menuLabel: "与 Git 暂存区比较", menuOrder: 40, run: () => void diffService.diffWithGit("index") },
-  // ---- 设置 ----
-  { id: "settings.open", title: "打开设置…", section: "设置", defaultKey: "Mod-,", menu: "settings", menuLabel: "设置中心…", menuOrder: 10, run: () => openSettings() },
-  { id: "settings.openKeybindings", title: "设置：快捷键", section: "设置", run: () => openSettings("keybindings") },
-  { id: "settings.openLayout", title: "设置：页面布局", section: "设置", run: () => openSettings("layout") },
-  { id: "config.openFile", title: "打开配置文件（config.json）", section: "设置", menu: "settings", menuOrder: 30, run: () => void fileService.openConfigFile() },
-  { id: "config.reload", title: "重新加载配置（config.json）", section: "设置", menu: "settings", menuLabel: "重新加载配置", menuOrder: 40, run: () => void fileService.reloadConfig() },
-  { id: "help.settings", title: "配置说明（字段含义与生效方式）", section: "设置", menu: "settings", menuLabel: "配置说明", menuOrder: 20, menuSeparatorBefore: true, run: () => showSettingsHelp() },
-  // ---- 编辑 ----
-  { id: "edit.format", title: "格式化文档（Shift+Alt+F）", section: "编辑", defaultKey: "Shift-Alt-F", altKeys: ["Mod-Shift-L"], menu: "edit", menuLabel: "格式化文档", menuOrder: 90, menuSeparatorBefore: true, run: () => void formatCurrent() },
-  { id: "edit.formatSelection", title: "格式化选中内容", section: "编辑", menu: "edit", menuOrder: 100, run: () => void formatSelectionCurrent() },
-  { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", defaultKey: "Alt-C", fixed: true, menu: "edit", menuLabel: "列编辑器", menuOrder: 110, run: () => { if (!blockIfReadonly()) openColumnEditor(editorHandle.view); } },
-  { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", defaultKey: "", run: () => statusBar.toggleWhitespace() },
-  // ---- 查找 ----
-  { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", menu: "edit", menuOrder: 80, run: () => toggleResultsPanel() },
-  { id: "search.workspace", title: "在文件中查找…（工作区）", section: "查找", defaultKey: "Mod-Shift-F", menu: "edit", menuLabel: "在文件中查找…", menuOrder: 85, run: () => focusWorkspaceSearch() },
-  // ---- 工具 ----
-  { id: "tools.cron", title: "Cron 表达式解析 / 生成", section: "工具", menu: "tools", menuLabel: "Cron 解析 / 生成…", menuOrder: 10, run: () => runHost.toggleCron() },
-  { id: "tools.batchEncoding", title: "批量另存为编码…", section: "工具", menu: "tools", menuLabel: "批量另存为编码…", menuOrder: 30, run: () => runHost.toggleBatchEncoding() },
-  { id: "tools.regex", title: "正则测试器", section: "工具", menu: "tools", menuLabel: "正则测试器…", menuOrder: 20, run: () => runHost.toggleRegexTester() },
-  // 格式转换（面板 + 高频单步直转）
-  { id: "convert.open", title: "格式转换…（面板）", section: "工具", menu: "tools", menuLabel: "格式转换…", menuOrder: 40, menuSeparatorBefore: true, run: () => runHost.openConvertPanel() },
-  { id: "convert.json2yaml", title: "转换：JSON → YAML", section: "转换", run: () => void runHost.convertDirect("json2yaml") },
-  { id: "convert.yaml2json", title: "转换：YAML → JSON", section: "转换", run: () => void runHost.convertDirect("yaml2json") },
-  { id: "convert.properties2yaml", title: "转换：Properties → YAML", section: "转换", run: () => void runHost.convertDirect("properties2yaml") },
-  { id: "convert.yaml2properties", title: "转换：YAML → Properties", section: "转换", run: () => void runHost.convertDirect("yaml2properties") },
-  { id: "convert.json2java", title: "转换：JSON → Java 代码", section: "转换", run: () => void runHost.convertDirect("json2java") },
-  { id: "convert.java2json", title: "转换：Java → JSON", section: "转换", run: () => void runHost.convertDirect("java2json") },
-  // 文本变换（作用于选区）
-  ...(Object.keys(CASE_LABELS) as CaseMode[]).map((mode) => ({
-    id: `text.case.${mode}`,
-    title: `转换大小写：${CASE_LABELS[mode]}`,
-    section: "文本",
-    run: () => runHost.runCase(mode),
-  })),
-  { id: "text.json.pretty", title: "JSON 美化", section: "文本", run: () => runHost.runJson(false) },
-  { id: "text.json.minify", title: "JSON 压缩", section: "文本", run: () => runHost.runJson(true) },
-  // Markdown 增强（作用于选区；表格为对话框）
-  { id: "md.bold", title: "Markdown：加粗（包裹 ** **）", section: "Markdown", run: () => runHost.runWrap("**", "加粗：") },
-  { id: "md.italic", title: "Markdown：斜体（包裹 * *）", section: "Markdown", run: () => runHost.runWrap("*", "斜体：") },
-  { id: "md.highlight", title: "Markdown：高亮（包裹 == ==）", section: "Markdown", run: () => runHost.runWrap("==", "高亮：") },
-  { id: "md.table", title: "Markdown：插入表格…", section: "Markdown", run: () => runHost.toggleTableDialog() },
-  // ---- 插入 ----
-  { id: "insert.clipboardImage", title: "插入剪贴板图片（存为 .assets 并插入引用）", section: "插入", run: () => void fileService.insertClipboardImage() },
-  { id: "insert.localTime", title: "插入本地时间（YYYY-MM-DD HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().local) },
-  { id: "insert.isoTime", title: "插入 ISO 时间戳", section: "插入", run: () => insertAtCursor(localStamps().iso) },
-  { id: "insert.unixTime", title: "插入 Unix 时间戳", section: "插入", run: () => insertAtCursor(localStamps().unix) },
-  { id: "insert.date", title: "插入日期（YYYY-MM-DD）", section: "插入", run: () => insertAtCursor(localStamps().date) },
-  { id: "insert.time", title: "插入时间（HH:mm:ss）", section: "插入", run: () => insertAtCursor(localStamps().time) },
-  { id: "insert.uuid", title: "插入 UUID（v4）", section: "插入", run: () => insertAtCursor(newUuid()) },
-  // ---- 编码 / 运行 ----
-  { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", menu: "tools", menuLabel: "检测乱码并建议编码", menuOrder: 50, menuSeparatorBefore: true, run: () => detectMojibakeManually() },
-  { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", run: () => runHost.runCurrentFile() },
-  { id: "run.curlScript", title: "执行 cURL 脚本（选区/整篇，无需保存）", section: "运行", run: () => runHost.runCurlScript() },
-  { id: "terminal.toggle", title: "切换终端（Ctrl+`）", section: "终端", defaultKey: "Mod-`", run: () => void terminalHost.toggle() },
-  { id: "code.runInTerminal", title: "在终端运行当前文件（Ctrl+F5）", section: "运行", defaultKey: "Mod-F5", run: () => runHost.runInTerminal() },
-  { id: "code.runCurlInTerminal", title: "在终端执行 cURL 脚本", section: "运行", run: () => runHost.runCurlInTerminal() },
-  { id: "output.show", title: "显示运行输出面板", section: "运行", menu: "tools", menuLabel: "显示运行输出面板", menuOrder: 60, menuSeparatorBefore: true, run: () => {
-      terminalHost.hide();
-      runHost.showOutputPanel();
-    } },
-  { id: "code.stop", title: "停止运行", section: "运行", run: () => runHost.stop() },
-  { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(editorHandle.view) },
-  { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(editorHandle.view, 1) },
-  { id: "search.prevBookmark", title: "上一个书签（Shift+F2）", section: "查找", defaultKey: "Shift-F2", fixed: true, menu: "go", menuLabel: "上一个书签", menuOrder: 20, hidden: true, run: () => gotoBookmark(editorHandle.view, -1) },
-  // ---- 查找 / 替换（CM6 面板；仅菜单与快捷键，不进命令面板）----
-  { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", menu: "edit", menuLabel: "查找…", menuOrder: 60, menuSeparatorBefore: true, hidden: true, run: () => {
-      // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，故全局兜底放行
-      if (activeTab()?.kind !== "text") return;
-      openSearchPanel(editorHandle.view);
-    } },
-  { id: "search.replace", title: "替换（当前文档）", section: "查找", defaultKey: "Mod-H", menu: "edit", menuLabel: "替换…", menuOrder: 70, hidden: true, run: () => {
-      const tab = activeTab();
-      if (tab?.kind !== "text") return;
-      openSearchPanel(editorHandle.view);
-      // 面板内替换框（只读文档不渲染替换框，退化为仅查找）
-      editorHandle.view.dom.querySelector<HTMLInputElement>('input[name="replace"]')?.focus();
-    } },
-  // ---- 视图 ----
-  { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", menu: "edit", menuOrder: 120, menuSeparatorBefore: true, hidden: true, run: () => palette.toggle() },
-  { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", hidden: true, run: () => layout.toggleSidebar() },
-  { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
-  { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
-  // ---- 纯菜单项（系统/CM6 内置行为，仅展示）----
-  { id: "edit.undo", title: "撤销", section: "编辑", defaultKey: "Mod-Z", fixed: true, menu: "edit", menuOrder: 10, hidden: true, run: () => void undo(editorHandle.view) },
-  { id: "edit.redo", title: "重做", section: "编辑", defaultKey: "Mod-Shift-Z", fixed: true, menu: "edit", menuOrder: 20, hidden: true, run: () => void redo(editorHandle.view) },
-  { id: "clipboard.cut", title: "剪切", section: "编辑", menu: "edit", menuLabel: "剪切", menuOrder: 30, menuShortcut: "Mod-X", menuSeparatorBefore: true, hidden: true, run: () => void copyFromEditor(editorHandle.view, true, statusBar.showMessage) },
-  { id: "clipboard.copy", title: "复制", section: "编辑", menu: "edit", menuOrder: 40, menuShortcut: "Mod-C", hidden: true, run: () => void copyFromEditor(editorHandle.view, false, statusBar.showMessage) },
-  { id: "clipboard.paste", title: "粘贴", section: "编辑", menu: "edit", menuOrder: 50, menuShortcut: "Mod-V", hidden: true, run: () => void pasteIntoEditor(editorHandle.view, statusBar.showMessage) },
-  { id: "select.all", title: "全选", section: "选择", menu: "select", menuOrder: 10, menuShortcut: "Mod-A", hidden: true, run: () => {
-      const len = editorHandle.view.state.doc.length;
-      editorHandle.view.dispatch({ selection: { anchor: 0, head: len } });
-    } },
-  // ---- 以下为编辑器内置（CM6）绑定，仅展示不可重绑 ----
-  { id: "edit.comment", title: "切换注释", section: "编辑", defaultKey: "Mod-/", fixed: true, hidden: true, run: () => {} },
-  { id: "edit.deleteLine", title: "删除当前行", section: "编辑", defaultKey: "Mod-D", fixed: true, hidden: true, run: () => {} },
-  { id: "edit.copyLineUp", title: "复制行到上方", section: "编辑", defaultKey: "Mod-Alt-Up", fixed: true, hidden: true, run: () => {} },
-  { id: "edit.copyLineDown", title: "复制行到下方", section: "编辑", defaultKey: "Mod-Alt-Down", fixed: true, hidden: true, run: () => {} },
-  { id: "edit.moveLineUp", title: "上移当前行", section: "编辑", defaultKey: "Alt-Up", fixed: true, hidden: true, run: () => {} },
-  { id: "edit.moveLineDown", title: "下移当前行", section: "编辑", defaultKey: "Alt-Down", fixed: true, hidden: true, run: () => {} },
-]);
+// ---- 命令注册表（唯一命令来源）：数据见 app/commandTable.ts ----
+// 菜单栏 / 命令面板 / 快捷键 / 设置中心键位页全部由本表派生。
+registerCommands(
+  buildCommandTable({
+    fileService,
+    quickOpen,
+    fetchHost,
+    preview,
+    diffService,
+    runHost,
+    terminalHost,
+    windowChrome,
+    layout,
+    palette,
+    tabSwitcher,
+    formatHost,
+    statusActions,
+    statusBar,
+    getActiveTab: activeTab,
+    getView: () => editorHandle.view,
+    openSettings,
+    openWorkspaceDir,
+    closeTab,
+    saveAllFiles,
+    reloadCurrentFile,
+    reopenClosedTab,
+    blockIfReadonly,
+    insertAtCursor,
+    toggleResultsPanel,
+    focusWorkspaceSearch,
+    showSidebarView,
+    showShortcuts: () => showShortcutsDialog(shortcutRows()),
+    showAbout: () =>
+      void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
+  }),
+);
 
 // 命令面板与菜单栏由同一注册表派生，快捷键展示也走同一解析
 function shortcutText(cmd: CommandDef): string {
@@ -1414,6 +980,14 @@ function shortcutText(cmd: CommandDef): string {
     cmd.menuShortcut ??
     (cmd.defaultKey !== undefined ? resolveKey(cmd, getConfig()) : "");
   return raw ? formatKey(raw) : "";
+}
+
+/** 快捷键速查数据：只取已绑定键位的命令（含 fixed 展示项） */
+function shortcutRows(): ShortcutRow[] {
+  return allCommands()
+    .filter((c) => c.defaultKey !== undefined)
+    .map((c) => ({ section: c.section, title: c.title, shortcut: shortcutText(c) }))
+    .filter((row) => row.shortcut !== "");
 }
 
 palette.registerAll(
@@ -1468,6 +1042,19 @@ function isModalOpen(): boolean {
 }
 
 /**
+ * WebView2 默认会处理的“编辑无关”快捷键（Ctrl+S 保存网页 / Ctrl+P 打印等）。
+ * 命令未消费时必须主动阻止默认行为，否则会弹出与编辑器无关的系统对话框。
+ * 注意：只 preventDefault、不 stopPropagation——模态内部（如键位录制）仍需收到按键。
+ */
+const BROWSER_DEFAULT_KEYS = new Set(["KeyS", "KeyP", "KeyO", "KeyN", "KeyF", "KeyG"]);
+
+function blockBrowserDefault(e: KeyboardEvent): void {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && BROWSER_DEFAULT_KEYS.has(e.code)) {
+    e.preventDefault();
+  }
+}
+
+/**
  * 模态关闭后恢复焦点。
  * 对话框被移除后焦点会落到 body，用户再按 Ctrl+S / Ctrl+F 等依赖编辑器
  * 焦点的快捷键全部失效，必须手动点回编辑区。
@@ -1489,10 +1076,18 @@ new MutationObserver(() => {
 window.addEventListener(
   "keydown",
   (e) => {
-    // 模态 / 面板打开期间不派发全局命令（仅放行 Esc 由各面板自行处理）
-    if (isModalOpen()) return;
+    // 模态 / 面板打开期间不派发全局命令（仅放行 Esc 由各面板自行处理）；
+    // 但仍要阻止 WebView2 的默认快捷键，否则 Ctrl+S 会弹“保存网页”对话框
+    if (isModalOpen()) {
+      blockBrowserDefault(e);
+      return;
+    }
     const cmd = matchKeyCommand(e, getConfig());
-    if (!cmd) return;
+    if (!cmd) {
+      // 未被命令占用（用户改键位 / 无激活标签等）：不让它落到浏览器默认行为
+      blockBrowserDefault(e);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     cmd.run();
@@ -1529,6 +1124,8 @@ async function bootstrap(): Promise<void> {
 
   // 过期草稿清理（保留天数取自配置，0 表示不清理）
   void cleanupDrafts(getConfig().session.draftRetentionDays).catch(() => {});
+  // 过期替换历史清理（保留最近 10 批 / 7 天；历史存于应用配置目录）
+  void invoke("cleanup_replace_history", { keep: 10, days: 7 }).catch(() => {});
 
   // 恢复会话：打开文件列表 + 光标位置 + 分栏比例（可在配置中关闭）
   if (getConfig().session.restoreOnStartup) {

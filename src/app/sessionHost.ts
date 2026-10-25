@@ -328,7 +328,7 @@ export class SessionHost {
     return tab;
   }
 
-  /** 启动时处理草稿：统一列表勾选 → 批量恢复（原文件已变 → 另存为新文档） */
+  /** 启动时处理草稿：统一列表勾选 → 批量恢复（原文件已变 → 另存为副本） */
   async offerDraftRecovery(): Promise<void> {
     let drafts: DraftInfo[];
     try {
@@ -363,35 +363,46 @@ export class SessionHost {
     if (picked === null) return; // 稍后处理：草稿保留，下次启动再提示
     if (picked.length === 0) {
       for (const draft of drafts) await deleteDraft(draft.key).catch(() => {});
-      this.deps.showMessage("已丢弃全部草稿");
+      // 数量取 rows：与对话框标题用户看到的条目数一致（读取失败的草稿已在上面清掉）
+      this.deps.showMessage(`已丢弃 ${rows.length} 个草稿`);
       return;
     }
 
     const selected = new Set(picked);
-    let applied = false;
+    let restored = 0;
     for (const draft of drafts) {
       if (!selected.has(draft.key)) continue;
       const content = contents.get(draft.key) ?? "";
       if (!content) continue;
       if (draft.stale) {
-        // 原文件已变：只能新建未命名文档承载草稿内容
-        const tab = this.deps.onNewUntitled(draft.name);
+        // 原文件已变：新建未命名文档承载草稿内容；命名加后缀避免与原文件混淆
+        const tab = this.deps.onNewUntitled(`${draft.name}（副本）`);
         tabStore.applyDraft(tab.id, content);
-        applied = true;
+        // 内容已接管：原草稿即将删除，立即以新 key 重落一份兜底
+        void this.persistDraft(tab.id);
+        restored++;
       } else {
         const tab = await this.ensureTabForDraft(draft);
         if (!tab) continue;
         tabStore.applyDraft(tab.id, content);
-        applied = true;
+        restored++;
         // 内容已接管：以新 key 立即重落草稿，避免中途丢失
         void this.persistDraft(tab.id);
       }
       // 已消费的草稿删除，避免下次启动重复提示
       await deleteDraft(draft.key).catch(() => {});
     }
-    if (applied) {
+    // 反馈只说结果数量：未恢复的草稿未删除，下次启动仍会提示
+    const failed = selected.size - restored;
+    if (restored > 0) {
       if (this.deps.getActiveTab()) await this.deps.onReloadActiveTab();
-      this.deps.showMessage("已恢复草稿内容（未保存，Ctrl+S 保存）");
+      this.deps.showMessage(
+        failed > 0
+          ? `已恢复 ${restored} 个草稿，${failed} 个未能恢复，Ctrl+S 保存`
+          : `已恢复 ${restored} 个草稿，Ctrl+S 保存`,
+      );
+    } else if (failed > 0) {
+      this.deps.showMessage(`${failed} 个草稿未能恢复`);
     }
   }
 

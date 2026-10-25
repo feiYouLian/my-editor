@@ -55,6 +55,11 @@ export class FileTree {
     return this.root;
   }
 
+  /** 外部写盘（如批量替换生成 .bak）后重建当前树（保留展开状态） */
+  refresh(): void {
+    this.render();
+  }
+
   private render(): void {
     this.container.innerHTML = "";
     this.nodes.clear();

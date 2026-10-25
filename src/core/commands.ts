@@ -61,6 +61,7 @@ const MENU_LABELS: Record<string, string> = {
   edit: "编辑",
   select: "选择",
   go: "转到",
+  view: "视图",
   compare: "比较",
   tools: "工具",
   settings: "设置",
