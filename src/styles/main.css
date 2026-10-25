@@ -1014,10 +1014,11 @@ button:disabled:hover {
 }
 
 /* ---------- 侧栏分区（VS Code 折叠列表） ---------- */
-/* 参考 VS Code 的高度分配：
-   展开区各自内部滚动，收起区只占标题行；内容少的展开区按内容给高度，
-   内容多的均分吸收剩余高度，因此内容不会被挤出视口（无整栏滚动）。
-   overflow 仅作极端窗口高度下的兜底。 */
+/* 双段式布局（详见 src/ui/sidebar.ts）：
+   以「最后一个展开的分区」为锚点，锚点及其上方贴顶、其后整体沉底；
+   展开区各自内部滚动，收起区只占 30px 标题行。
+   每个分区的高度由 sidebar.ts 用内联 flex 逐个设定（锁定区固定 / 填充区吸收），
+   这里只给默认值，不参与分配决策。overflow 仅作极端窗口高度下的兜底。 */
 .sidebar-sections {
   display: flex;
   flex: 1;
@@ -1030,13 +1031,17 @@ button:disabled:hover {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  /* 收起态高度 = 标题行（30px），展开后由 flex 再分配 */
+  /* 收起态高度 = 标题行（30px），展开高度由内联 flex 覆盖 */
   min-height: 30px;
 }
 
-/* 展开的分区参与剩余高度分配：多个同时展开时按份等分 */
-.sidebar-section.expanded {
-  flex: 1 1 0;
+/* 沉底段的起始位置吸收上方全部剩余空间，其后分区自然跟随贴底。
+   挂点优先是沉底段之前的那根分隔线（线随段一起下沉，不会孤零零留在中间），
+   没有线的极端情况才回退到分区本身。
+   若填充区（文件）已吃满剩余空间，auto margin 归零，效果同样是贴底。 */
+.sidebar-sash.is-sunk-first,
+.sidebar-section.is-sunk-first {
+  margin-top: auto;
 }
 
 /* 分区之间的分隔线：可上下拖拽调整相邻分区高度（VS Code 的 sash），双击复位。
@@ -1074,11 +1079,17 @@ button:disabled:hover {
   left: 0;
 }
 
-/* hover / 拖动中：线加粗成 accent 色，明确「这里能拖」 */
+/* hover / 拖动中 / 键盘聚焦：线加粗成 accent 色，明确「这里能拖」 */
 .sidebar-sash.draggable:hover::after,
-.sidebar-sash.dragging::after {
+.sidebar-sash.dragging::after,
+.sidebar-sash.draggable:focus-visible::after {
   height: 2px;
   background: var(--accent);
+}
+
+/* 键盘可达：分隔线用 tab 聚焦，聚焦环不占布局（::before 已扩好命中区） */
+.sidebar-sash.draggable:focus-visible {
+  outline: none;
 }
 
 /* 最后一个分区保留底边线（其余边界由分隔线承担） */

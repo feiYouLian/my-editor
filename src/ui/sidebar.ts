@@ -2,13 +2,16 @@
  * 侧栏分区（VS Code 风格折叠列表）：
  * 「正在打开的文件 / 文件 / 搜索 / 大纲 / 源代码管理」标题纵向排列。
  *
- * 布局规则：
- * - 展开区分两种高度：内容够小按内容给（不抢其它分区的空间），内容比可用空间
- *   大则保持均分、吸收剩余高度；收起区只占标题行，侧栏不再整体滚动；
- * - 分区之间的分隔线可上下拖拽：两侧都展开时在二者之间分配高度，
- *   多个分区展开时只有一侧展开的那条线也可拖（只调整该侧）；
- *   唯一展开的分区铺满剩余空间，不开放拖拽；双击按内容复位；
- * - 分区高度 / 展开组合写回 config.json，启动时按此恢复（
+ * 布局规则（双段式，锚点 = 最后一个展开的分区）：
+ * - 锚点及其上方贴顶，锚点之后整体沉底（沉底段由首元素 margin-top:auto 吸住）；
+ *   全部分区收起时没有锚点，一律 30px 标题行从顶部依次吸附；
+ * - 「正在打开的文件」高度按内容实时计算（有上限，不挤掉其它展开区），
+ *   与「文件」一起锁定：不可拖拽、不写回配置；
+ * - 「文件」（未展开时退化为锚点分区）作为填充区吸收上方剩余空间，
+ *   把沉底段压到最底部；锚点分区一旦被手拖过就改用固定高度；
+ * - 「搜索 / 大纲 / 源代码管理」展开后高度可拖：两侧都可调时在二者之间分配，
+ *   只有一侧可调时只改那一侧；双击按内容复位；↑ / ↓ 微调；
+ * - 展开组合 / 手调高度写回 config.json，启动时按此恢复（
  *   config.layout.sidebarView 仍记录当前分区）。
  */
 
@@ -17,8 +20,26 @@ export type SidebarView = "open" | "git" | "files" | "search" | "outline";
 /** 全部合法分区 id（用于校验 config.json 这类外部输入） */
 const SIDEBAR_VIEWS: readonly SidebarView[] = ["open", "git", "files", "search", "outline"];
 
-/** 分区最小高度：标题行 30px + 至少一行内容 */
+/** 锁定分区：高度由计算得出，不响应拖拽、不写回配置 */
+const LOCKED_VIEWS: readonly SidebarView[] = ["open", "files"];
+
+/** 分区标题行高度（与 main.css 的 .sidebar-section-head 一致） */
+const HEAD_H = 30;
+
+/** 分隔线高度（与 main.css 的 .sidebar-sash 一致） */
+const SASH_H = 4;
+
+/** 可拖分区最小高度：标题行 + 至少一行内容 */
 const MIN_SECTION_PX = 60;
+
+/** 「文件」分区保底高度：它吸收剩余空间，但不能被挤没 */
+const FILES_MIN_PX = 80;
+
+/** 可拖分区首次展开、内容还量不出高度时的兜底值 */
+const DEFAULT_SECTION_PX = 150;
+
+/** 「正在打开的文件」最多占侧栏可用高度的比例 */
+const OPEN_MAX_RATIO = 0.5;
 
 /** 未配置时的默认展开组合 */
 const DEFAULT_EXPANDED: readonly SidebarView[] = ["files"];
@@ -45,6 +66,11 @@ function knownViews(values: readonly string[] | undefined): SidebarView[] {
     if (SIDEBAR_VIEWS.includes(view) && !out.includes(view)) out.push(view);
   }
   return out;
+}
+
+/** 分区高度是否由计算得出（不响应拖拽、不写回配置） */
+function isLocked(view: SidebarView): boolean {
+  return LOCKED_VIEWS.includes(view);
 }
 
 /** 从分区容器元素取视图标识（分隔线等非分区元素返回 null） */
@@ -90,10 +116,26 @@ function contentHeight(el: HTMLElement): number {
   return sum;
 }
 
+/** 一次布局计算所需的几何信息（避免各处重复推导锚点与分组） */
+interface SidebarGeometry {
+  /** DOM 顺序的分区 id */
+  order: SidebarView[];
+  /** 锚点：最后一个展开分区在 order 里的下标（全收起为 -1） */
+  anchor: number;
+  /** 贴顶段：order[0..anchor] */
+  topViews: SidebarView[];
+  /** 沉底段：order(anchor..] */
+  sunk: SidebarView[];
+  /** 贴顶段里展开的分区 */
+  topExpanded: SidebarView[];
+  /** 贴顶段展开分区可用的总高度 */
+  topAvail: number;
+}
+
 export interface SidebarViewsDeps {
   /** 用户操作后通知（写回 config.layout.sidebarView + 刷新对应视图） */
   onChange: (view: SidebarView) => void;
-  /** 布局变化（展开组合 / 高度 / 底部固定）→ 写回 config.json */
+  /** 布局变化（展开组合 / 高度）→ 写回 config.json */
   onLayout: (patch: SidebarLayoutPatch) => void;
 }
 
@@ -104,20 +146,27 @@ export class SidebarViews {
   private lastActive: SidebarView = "files";
   /** 视图 → 分区容器（标题 + 内容）：分隔线拖拽与高度计算都要用 */
   private readonly sections = new Map<SidebarView, HTMLElement>();
-  /** 手调 / 按内容计算的分区高度（px）：未记录的分区均分剩余高度 */
+  /** 手调高度（px）：只对可拖分区有意义 */
   private readonly sizes = new Map<SidebarView, number>();
   /** 用户手拖过的分区：高度只认用户设定，内容变化时不再自动贴合 */
   private readonly manual = new Set<SidebarView>();
+  /** 可拖分区按内容算出的自然高度（缓存：拖拽每帧都要读，不能每帧量 DOM） */
+  private readonly natural = new Map<SidebarView, number>();
+  /** 「正在打开的文件」内容高度缓存（同上，拖拽每帧读，内容变化时由观察器刷新） */
+  private openContentH = 0;
 
-  /** 分隔线拖拽中的状态（mousemove / mouseup 挂在 window 上） */
+  /** 分隔线拖拽中的状态（pointermove / pointerup 挂在 window 上） */
   private drag: {
-    /** 分隔线上侧 / 下侧展开的分区（收起侧为 null） */
-    above: SidebarView | null;
-    below: SidebarView | null;
+    /** 上侧可调分区（锁定或收起为 null） */
+    upper: SidebarView | null;
+    /** 下侧可调分区（锁定或收起为 null） */
+    lower: SidebarView | null;
+    /** 两侧都可调：在二者之间分配高度，总高不变 */
+    pair: boolean;
     startY: number;
-    abovePx: number;
-    belowPx: number;
-    /** 可调高度的上限：两侧分配时为两区之和，单侧时为该区上限 */
+    upperPx: number;
+    lowerPx: number;
+    /** 可调高度的上限 */
     budget: number;
   } | null = null;
 
@@ -137,7 +186,12 @@ export class SidebarViews {
     });
     this.initSashes();
     // 侧栏高度变化（窗口缩放 / 终端面板开合）：挤不下时按比例收回手调高度
-    new ResizeObserver(() => this.fitSizes()).observe(this.sectionsEl);
+    new ResizeObserver(() => {
+      // 拖拽中收口会和光标抢高度，等松手再统一处理（见 endDrag）
+      if (this.drag) return;
+      this.fitSizes();
+      this.applySizes();
+    }).observe(this.sectionsEl);
     this.observeContent();
     // 配置在 bootstrap 载入后由 restore 覆盖：先用默认布局渲染
     this.restore({});
@@ -158,10 +212,16 @@ export class SidebarViews {
       timer = null;
       let changed = false;
       for (const view of pending) {
-        if (this.measureIfNeeded(view)) changed = true;
+        // 「正在打开的文件」高度实时跟随内容（标签增减、脏标记变化）
+        if (view === "open") {
+          if (this.measureOpen()) changed = true;
+          continue;
+        }
+        if (this.manual.has(view)) continue;
+        if (this.measure(view)) changed = true;
       }
       pending.clear();
-      if (changed) this.apply();
+      if (changed) this.applySizes();
     };
     for (const [view, body] of Object.entries(this.panes) as [SidebarView, HTMLElement][]) {
       new MutationObserver(() => {
@@ -194,8 +254,11 @@ export class SidebarViews {
     this.expanded = new Set(expanded.length > 0 ? expanded : DEFAULT_EXPANDED);
     this.sizes.clear();
     this.manual.clear();
+    this.natural.clear();
     for (const [id, px] of Object.entries(cfg.sidebarSizes ?? {})) {
       const view = id as SidebarView;
+      // open / files 的高度是算出来的：旧配置里的残留值直接丢弃，避免带着过期高度启动
+      if (isLocked(view)) continue;
       if (!this.expanded.has(view) || !Number.isFinite(px) || px <= 0) continue;
       this.sizes.set(view, px);
       // 持久化下来的高度都来自用户手拖（见 persistLayout），恢复后继续尊重
@@ -206,9 +269,10 @@ export class SidebarViews {
       active && this.expanded.has(active)
         ? active
         : (this.domOrder().find((view) => this.expanded.has(view)) ?? "files");
-    // display:none 的分区量不到内容高度：先亮出内容再初始化高度
+    // display:none 的分区量不到内容高度：先亮出内容再测
     for (const view of this.expanded) this.panes[view].classList.remove("hidden");
-    for (const view of this.expanded) this.initSize(view);
+    for (const view of this.expanded) this.measure(view);
+    this.measureOpen();
     this.apply();
   }
 
@@ -216,9 +280,7 @@ export class SidebarViews {
   private toggle(view: SidebarView): void {
     if (this.expanded.has(view)) {
       this.expanded.delete(view);
-      // 收起后丢掉高度与手调标记，再次展开时按内容重新给
-      this.sizes.delete(view);
-      this.manual.delete(view);
+      // 收起只影响布局：手调高度留着，下次展开按记录恢复
       this.apply();
     } else {
       this.lastActive = view;
@@ -228,11 +290,12 @@ export class SidebarViews {
     this.persistLayout();
   }
 
-  /** 展开一个分区：先亮出内容，再按内容给初始高度（内容多则保持均分吸收） */
+  /** 展开一个分区：先亮出内容，再量一次自然高度 */
   private open(view: SidebarView): void {
     this.expanded.add(view);
     this.panes[view].classList.remove("hidden");
-    this.initSize(view);
+    if (view === "open") this.measureOpen();
+    else this.measure(view);
     this.apply();
   }
 
@@ -257,192 +320,284 @@ export class SidebarViews {
     this.fitSizes();
   }
 
-  /** 分区高度：按内容 / 手调的分区用固定像素，富余高度由填充区（见 fillers）均分 */
+  // ---- 几何 ----
+
+  /** 推导锚点 / 贴顶段 / 沉底段 / 可用高度 */
+  private geometry(): SidebarGeometry {
+    const order = this.domOrder();
+    const anchor = this.anchorIndex(order);
+    const topViews = anchor >= 0 ? order.slice(0, anchor + 1) : order;
+    const sunk = anchor >= 0 ? order.slice(anchor + 1) : [];
+    const topExpanded = topViews.filter((view) => this.expanded.has(view));
+    const collapsedInTop = topViews.length - topExpanded.length;
+    const sashH = Math.max(0, order.length - 1) * SASH_H;
+    const topAvail = Math.max(
+      0,
+      this.sectionsEl.clientHeight - sashH - sunk.length * HEAD_H - collapsedInTop * HEAD_H,
+    );
+    return { order, anchor, topViews, sunk, topExpanded, topAvail };
+  }
+
+  /** 锚点 = DOM 序里最后一个展开分区的下标（全收起为 -1，此时整栏贴顶） */
+  private anchorIndex(order: SidebarView[]): number {
+    for (let i = order.length - 1; i >= 0; i -= 1) {
+      if (this.expanded.has(order[i])) return i;
+    }
+    return -1;
+  }
+
+  /**
+   * 填充区（吸收贴顶段剩余空间、把沉底段压到底部）：
+   * - 「文件」展开就优先由它吸收；
+   * - 否则退化为锚点分区（它天然是贴顶段最后一个），但被手拖过就改固定高度；
+   * - 「正在打开的文件」永远不填充（高度由内容实时决定）。
+   */
+  private fillTarget(
+    topExpanded: SidebarView[],
+    order: SidebarView[],
+    anchor: number,
+  ): SidebarView | null {
+    if (topExpanded.includes("files")) return "files";
+    const tail = anchor >= 0 ? order[anchor] : null;
+    if (!tail || tail === "open" || this.manual.has(tail)) return null;
+    return tail;
+  }
+
+  // ---- 高度分配 ----
+
+  /**
+   * 应用高度：
+   * - 收起分区（含整个沉底段）只占标题行，贴顶 / 沉底由 flex 与 margin-top:auto 决定；
+   * - 填充区 flex:1 吸收剩余；
+   * - 其余展开分区用固定像素（手调值或按内容算出的值）。
+   */
   private applySizes(): void {
-    const fillers = this.fillers();
+    const geo = this.geometry();
+    const fill = this.fillTarget(geo.topExpanded, geo.order, geo.anchor);
+    const sunkFirst = geo.sunk[0] ?? null;
+
+    for (const view of geo.order) {
+      const section = this.sections.get(view);
+      if (!section) continue;
+      const first = view === sunkFirst;
+      // auto margin 落在沉底段之前的那根分隔线上：让"线 + 沉底段"一起被推到最底部，
+      // 否则线会孤零零浮在中间（margin 只作用于分区时，它前面的 sash 留在原处）
+      const prev = section.previousElementSibling;
+      const line =
+        prev instanceof HTMLElement && prev.classList.contains("sidebar-sash") ? prev : null;
+      if (line) line.classList.toggle("is-sunk-first", first);
+      section.classList.toggle("is-sunk-first", first && line === null);
+    }
+
     for (const [view, section] of this.sections) {
-      const px = this.expanded.has(view) && !fillers.has(view) ? this.sizes.get(view) : undefined;
-      section.style.flex = px === undefined ? "" : `0 0 ${Math.round(px)}px`;
+      section.style.minHeight = "";
+      if (!this.expanded.has(view) || !geo.topViews.includes(view)) {
+        // 收起分区 / 沉底段分区：只占标题行
+        section.style.flex = "0 0 auto";
+        continue;
+      }
+      if (view === fill) {
+        section.style.flex = "1 1 auto";
+        section.style.minHeight = `${view === "files" ? FILES_MIN_PX : MIN_SECTION_PX}px`;
+        continue;
+      }
+      section.style.flex = `0 0 ${this.heightFor(view, geo)}px`;
     }
     this.syncSashes();
   }
 
+  /** 某个展开分区该占多高（填充区不在此路径） */
+  private heightFor(view: SidebarView, geo: SidebarGeometry): number {
+    if (view === "open") return this.openHeight(geo);
+    const px = this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
+    return Math.round(clamp(px, MIN_SECTION_PX, Math.max(MIN_SECTION_PX, geo.topAvail)));
+  }
+
   /**
-   * 填充区（均分富余高度）：
-   * 1) 还没量过内容 / 内容比可用空间大的展开区；
-   * 2) 只有它一个展开区时（否则内容少的分区只占一小块，中间会留一大片空）。
+   * 「正在打开的文件」高度：按内容实时计算，并受两条上限约束——
+   * 不超过侧栏可用高度的一半；不超过「可用高度 - 其它展开区各自的下限」，
+   * 保证它变高时不会把「文件」和其它展开区挤没。
    */
-  private fillers(): Set<SidebarView> {
-    const implicit = [...this.expanded].filter((view) => !this.sizes.has(view));
-    if (implicit.length > 0) return new Set(implicit);
-    return this.expanded.size <= 1 ? new Set(this.expanded) : new Set();
+  private openHeight(geo: SidebarGeometry): number {
+    const natural = HEAD_H + this.openContentH;
+    let reserved = 0;
+    for (const view of geo.topExpanded) {
+      if (view === "open") continue;
+      reserved +=
+        view === "files"
+          ? FILES_MIN_PX
+          : Math.round(
+              clamp(
+                this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX,
+                MIN_SECTION_PX,
+                Math.max(MIN_SECTION_PX, geo.topAvail),
+              ),
+            );
+    }
+    const cap = Math.max(
+      HEAD_H,
+      Math.min(geo.topAvail * OPEN_MAX_RATIO, geo.topAvail - reserved),
+    );
+    return Math.round(clamp(natural, HEAD_H, cap));
+  }
+
+  /** 可拖分区能占到的最大高度：可用高度扣掉其它可拖分区的固定高度 */
+  private availableHeight(): number {
+    const geo = this.geometry();
+    const openPx = geo.topExpanded.includes("open") ? this.openHeight(geo) : 0;
+    const filesPx = geo.topExpanded.includes("files") ? FILES_MIN_PX : 0;
+    return Math.max(MIN_SECTION_PX, geo.topAvail - openPx - filesPx);
+  }
+
+  /** 「正在打开的文件」内容高度：标签增减 / 列表变化时重算（唯一需要实时跟随的分区） */
+  private measureOpen(): boolean {
+    const next = contentHeight(this.panes.open);
+    if (Math.abs(this.openContentH - next) < 1) return false;
+    this.openContentH = next;
+    return true;
+  }
+
+  /** 量一次按内容的高度并写入缓存；返回是否真的变了 */
+  private measure(view: SidebarView): boolean {
+    // open 实时计算、files 是填充区：两者都不需要按内容的高度
+    if (isLocked(view) || !this.expanded.has(view)) return false;
+    const body = this.panes[view];
+    const content = contentHeight(body);
+    const next = content <= 0 ? DEFAULT_SECTION_PX : HEAD_H + content;
+    const prev = this.natural.get(view);
+    if (prev !== undefined && Math.abs(prev - next) < 1) return false;
+    this.natural.set(view, next);
+    return true;
   }
 
   /**
    * 写回 config.json（展开组合 / 高度），由装配层合并进 layout。
    * 只持久化用户手拖的高度：按内容算出来的高度每次启动重算即可，
-   * 否则内容变化后会带着过期高度出现空行。
+   * 否则内容变化后会带着过期高度出现空行；open / files 是计算值，一律不写。
    */
   private persistLayout(): void {
     this.deps.onLayout({
       sidebarExpanded: this.domOrder().filter((view) => this.expanded.has(view)),
       sidebarSizes: Object.fromEntries(
-        [...this.sizes].filter(([view]) => this.manual.has(view)),
+        [...this.sizes].filter(
+          ([view]) => this.manual.has(view) && !isLocked(view),
+        ),
       ),
-    });
-  }
-
-  /**
-   * 展开分区时给一个初始高度：内容自然高度小于可用空间就按内容给
-   * （不抢其它分区的空间）；内容更多（或还没渲染出内容）则留空，
-   * 继续由 flex 均分吸收剩余高度；唯一展开的分区直接铺满（VS Code 的展开即占满）。
-   */
-  private initSize(view: SidebarView): void {
-    if (this.sizes.has(view)) return;
-    this.measureIfNeeded(view);
-  }
-
-  /** 内容变化 / 首次展开时该不该重算：单区铺满与用户手拖过的分区不参与 */
-  private measureIfNeeded(view: SidebarView): boolean {
-    if (!this.expanded.has(view) || this.manual.has(view)) return false;
-    if (this.expanded.size <= 1) return false;
-    return this.measureSize(view);
-  }
-
-  /**
-   * 按内容重算分区高度（手调标记不在此判断）。
-   * 内容超出可用空间时不设固定高度，交回 flex 均分/吸收；
-   * 否则按内容给（不低于 MIN，不挤掉其它展开区的下限）。
-   * 返回是否真的改变了高度（调用方据此决定要不要重排）。
-   */
-  private measureSize(view: SidebarView): boolean {
-    const section = this.sections.get(view);
-    const body = this.panes[view];
-    if (!section || !body) return false;
-    const content = contentHeight(body);
-    // 内容未渲染（如刚启动的文件树）：量不到高度，保持均分
-    if (content <= 0) return false;
-    const head = section.querySelector<HTMLElement>(".sidebar-section-head");
-    const natural = (head?.offsetHeight ?? 0) + content;
-    const avail = this.availableHeight();
-    const prev = this.sizes.get(view);
-    if (natural >= avail) {
-      if (prev === undefined) return false;
-      this.sizes.delete(view);
-      return true;
-    }
-    const others = [...this.expanded].filter((other) => other !== view);
-    const fixed = others.reduce((sum, other) => sum + (this.sizes.get(other) ?? 0), 0);
-    const flexible = others.filter((other) => !this.sizes.has(other)).length;
-    const cap = avail - fixed - MIN_SECTION_PX * flexible;
-    const next = Math.round(clamp(natural, MIN_SECTION_PX, Math.max(MIN_SECTION_PX, cap)));
-    if (prev !== undefined && Math.abs(prev - next) < 1) return false;
-    this.sizes.set(view, next);
-    return true;
-  }
-
-  /**
-   * 分隔线可拖拽态：
-   * - 两侧都展开：在二者之间分配高度；
-   * - 只有一侧展开：只调整该侧高度（多个分区展开时一律开放——相邻分区往往一开一收，
-   *   旧的「两侧都必须展开」会让文件 + 源代码管理同时展开时一根分隔线都拖不动）；
-   * - 唯一展开的分区不开放：它铺满剩余空间，拖出下方留白没有意义。
-   */
-  private syncSashes(): void {
-    this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-sash").forEach((sash) => {
-      const above = this.expandedViewOf(sash.previousElementSibling);
-      const below = this.expandedViewOf(sash.nextElementSibling);
-      const single = above ?? below;
-      const draggable =
-        above !== null && below !== null
-          ? true
-          : single !== null && this.expanded.size > 1;
-      sash.classList.toggle("draggable", draggable);
     });
   }
 
   // ---- 分隔线拖拽 ----
 
-  private initSashes(): void {
+  /**
+   * 分隔线可拖拽态：
+   * - 两侧都可调（展开且非锁定）：在二者之间分配高度；
+   * - 只有一侧可调：只调整该侧；
+   * - 锁定分区（「正在打开的文件」「文件」）所在侧永不参与，两侧都锁则整条线禁用；
+   * - 唯一展开的分区铺满剩余空间，不开放拖拽。
+   */
+  private syncSashes(): void {
     this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-sash").forEach((sash) => {
-      sash.addEventListener("mousedown", (e) => this.startDrag(sash, e));
-      sash.addEventListener("dblclick", () => this.resetSizes());
+      const { upper, lower } = this.adjustableOf(sash);
+      const draggable = (upper !== null || lower !== null) && this.expanded.size > 1;
+      sash.classList.toggle("draggable", draggable);
+      sash.setAttribute("aria-disabled", String(!draggable));
+      sash.tabIndex = draggable ? 0 : -1;
     });
-    window.addEventListener("mousemove", (e) => this.moveDrag(e));
-    window.addEventListener("mouseup", () => this.endDrag());
   }
 
-  private startDrag(sash: HTMLElement, e: MouseEvent): void {
-    if (e.button !== 0 || !sash.classList.contains("draggable")) return;
+  private initSashes(): void {
+    this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-sash").forEach((sash) => {
+      sash.setAttribute("role", "separator");
+      sash.setAttribute("aria-orientation", "horizontal");
+      sash.addEventListener("pointerdown", (e) => this.startDrag(sash, e));
+      sash.addEventListener("dblclick", () => this.resetSizes());
+      sash.addEventListener("keydown", (e) => this.nudge(sash, e));
+    });
+    window.addEventListener("pointermove", (e) => this.moveDrag(e));
+    window.addEventListener("pointerup", () => this.endDrag());
+    window.addEventListener("pointercancel", () => this.endDrag());
+  }
+
+  /**
+   * 分隔线两侧「可调」的分区（收起侧为 null）。
+   * 紧邻锁定分区（「正在打开的文件」「文件」）的线整体禁用：这两块的高度由计算
+   * 决定，被拖动改写会让它们的位置与内容对不上（需求明确要求这两区不可拖）。
+   */
+  private adjustableOf(sash: HTMLElement): {
+    upper: SidebarView | null;
+    lower: SidebarView | null;
+  } {
     const above = this.expandedViewOf(sash.previousElementSibling);
     const below = this.expandedViewOf(sash.nextElementSibling);
-    if (!above && !below) return;
+    if ((above !== null && isLocked(above)) || (below !== null && isLocked(below))) {
+      return { upper: null, lower: null };
+    }
+    return { upper: above, lower: below };
+  }
+
+  private startDrag(sash: HTMLElement, e: PointerEvent): void {
+    if (e.button !== 0 || !sash.classList.contains("draggable")) return;
+    const { upper, lower } = this.adjustableOf(sash);
+    if (!upper && !lower) return;
     e.preventDefault();
     this.drag = {
-      above,
-      below,
+      upper,
+      lower,
+      pair: upper !== null && lower !== null,
       startY: e.clientY,
-      abovePx: above ? this.heightOf(above) : 0,
-      belowPx: below ? this.heightOf(below) : 0,
+      upperPx: upper ? this.heightOf(upper) : 0,
+      lowerPx: lower ? this.heightOf(lower) : 0,
       budget:
-        above && below
-          ? this.pairBudget(above, below)
-          : this.singleBudget((above ?? below)!),
+        upper && lower
+          ? this.pairBudget(upper, lower)
+          : this.singleBudget((upper ?? lower)!),
     };
+    sash.setPointerCapture?.(e.pointerId);
     sash.classList.add("dragging");
     document.body.classList.add("dragging-row");
   }
 
-  /** 两侧展开时的预算：两区高度之和的上限（扣掉其它手调分区，给仍均分的分区留下限） */
-  private pairBudget(above: SidebarView, below: SidebarView): number {
-    let liftedPx = 0;
-    let liftedCount = 0;
-    for (const [view, px] of this.sizes) {
-      if (!this.expanded.has(view) || view === above || view === below) continue;
-      liftedPx += px;
-      liftedCount += 1;
-    }
-    const poolCount = this.expanded.size - 2 - liftedCount;
-    return (
-      this.availableHeight() - liftedPx - MIN_SECTION_PX * Math.max(0, poolCount)
-    );
-  }
-
-  /** 单侧展开时的预算：目标分区能占到的最大高度（给其它展开区留下限） */
-  private singleBudget(target: SidebarView): number {
-    let liftedPx = 0;
-    let poolCount = 0;
+  /** 两侧都可调时的预算：两区高度之和的上限（扣掉其它可调分区） */
+  private pairBudget(upper: SidebarView, lower: SidebarView): number {
+    let others = 0;
     for (const view of this.expanded) {
-      if (view === target) continue;
-      const px = this.sizes.get(view);
-      if (px === undefined) poolCount += 1;
-      else liftedPx += px;
+      if (view === upper || view === lower || isLocked(view)) continue;
+      others += this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
     }
-    const room = this.availableHeight() - liftedPx - MIN_SECTION_PX * poolCount;
-    return Math.max(MIN_SECTION_PX, room);
+    return Math.max(MIN_SECTION_PX * 2, this.availableHeight() - others);
   }
 
-  private moveDrag(e: MouseEvent): void {
+  /** 单侧可调时的预算：目标分区能占到的最大高度 */
+  private singleBudget(target: SidebarView): number {
+    let others = 0;
+    for (const view of this.expanded) {
+      if (view === target || isLocked(view)) continue;
+      others += this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
+    }
+    return Math.max(MIN_SECTION_PX, this.availableHeight() - others);
+  }
+
+  private moveDrag(e: PointerEvent): void {
     const drag = this.drag;
     if (!drag) return;
     const dy = e.clientY - drag.startY;
     const budget = Math.max(MIN_SECTION_PX, drag.budget);
-    if (drag.above && drag.below) {
-      // 两区展开：只在二者之间分配高度，总高不变，边界始终贴着光标
-      const total = clamp(drag.abovePx + drag.belowPx, MIN_SECTION_PX * 2, budget);
-      const abovePx = clamp(drag.abovePx + dy, MIN_SECTION_PX, total - MIN_SECTION_PX);
-      this.sizes.set(drag.above, abovePx);
-      this.sizes.set(drag.below, total - abovePx);
-      this.manual.add(drag.above);
-      this.manual.add(drag.below);
-    } else if (drag.above) {
-      // 只有上方展开：向下拖 = 变高
-      this.sizes.set(drag.above, clamp(drag.abovePx + dy, MIN_SECTION_PX, budget));
-      this.manual.add(drag.above);
-    } else if (drag.below) {
-      // 只有下方展开：向上拖 = 变高
-      this.sizes.set(drag.below, clamp(drag.belowPx - dy, MIN_SECTION_PX, budget));
-      this.manual.add(drag.below);
+    if (drag.pair && drag.upper && drag.lower) {
+      // 两区都可调：只在二者之间分配高度，总高不变，边界始终贴着光标
+      const total = clamp(drag.upperPx + drag.lowerPx, MIN_SECTION_PX * 2, budget);
+      const upperPx = clamp(drag.upperPx + dy, MIN_SECTION_PX, total - MIN_SECTION_PX);
+      this.sizes.set(drag.upper, upperPx);
+      this.sizes.set(drag.lower, total - upperPx);
+      this.manual.add(drag.upper);
+      this.manual.add(drag.lower);
+    } else if (drag.upper) {
+      // 只有上方可调：向下拖 = 变高
+      this.sizes.set(drag.upper, clamp(drag.upperPx + dy, MIN_SECTION_PX, budget));
+      this.manual.add(drag.upper);
+    } else if (drag.lower) {
+      // 只有下方可调：向上拖 = 变高
+      this.sizes.set(drag.lower, clamp(drag.lowerPx - dy, MIN_SECTION_PX, budget));
+      this.manual.add(drag.lower);
     }
     this.applySizes();
   }
@@ -454,6 +609,35 @@ export class SidebarViews {
       sash.classList.remove("dragging");
     });
     document.body.classList.remove("dragging-row");
+    this.applySizes();
+    this.persistLayout();
+  }
+
+  /** 键盘微调：↑ / ↓ ±10px，Shift + ↑ / ↓ ±50px（可访问性） */
+  private nudge(sash: HTMLElement, e: KeyboardEvent): void {
+    if (!sash.classList.contains("draggable")) return;
+    const up = e.key === "ArrowUp";
+    const down = e.key === "ArrowDown";
+    if (!up && !down) return;
+    const step = (e.shiftKey ? 50 : 10) * (up ? -1 : 1);
+    const { upper, lower } = this.adjustableOf(sash);
+    if (upper) {
+      this.sizes.set(
+        upper,
+        clamp(this.heightOf(upper) + step, MIN_SECTION_PX, this.singleBudget(upper)),
+      );
+      this.manual.add(upper);
+    } else if (lower) {
+      this.sizes.set(
+        lower,
+        clamp(this.heightOf(lower) - step, MIN_SECTION_PX, this.singleBudget(lower)),
+      );
+      this.manual.add(lower);
+    } else {
+      return;
+    }
+    e.preventDefault();
+    this.applySizes();
     this.persistLayout();
   }
 
@@ -461,59 +645,41 @@ export class SidebarViews {
   private resetSizes(): void {
     this.sizes.clear();
     this.manual.clear();
-    for (const view of this.expanded) this.initSize(view);
+    this.natural.clear();
+    for (const view of this.expanded) this.measure(view);
+    this.measureOpen();
     this.apply();
     this.persistLayout();
   }
 
   /**
    * 高度收口（窗口缩放 / 终端开合 / 展开收起后）：
-   * - 有填充区：给它们留出 MIN，不够就按比例收回固定高度；
-   * - 全是固定高度：允许总高小于可用高度（吸附底部的分区上方留白 = 拖拽余量），
-   *   只有溢出可用高度时才按比例收回，保证底部分区不脱底。
+   * 可调分区的固定高度总和超过可用高度时按比例收回（保底 MIN）；
+   * 填充区由 flex 自动收缩（有 min-height 兜底），不在此处理。
    */
   private fitSizes(): void {
-    const fillers = this.fillers();
-    const explicit = [...this.sizes.entries()].filter(
-      ([view]) => this.expanded.has(view) && !fillers.has(view),
-    );
-    if (explicit.length === 0) return; // 全部由 flex 均分，无需干预
+    const geo = this.geometry();
+    const fill = this.fillTarget(geo.topExpanded, geo.order, geo.anchor);
+    const fixed = geo.topExpanded.filter((view) => view !== "open" && view !== fill);
+    if (fixed.length === 0) return;
     const avail = this.availableHeight();
-    const used = explicit.reduce((sum, [, px]) => sum + px, 0);
-    const pool = this.expanded.size - explicit.length;
-    if (pool > 0) {
-      const room = avail - MIN_SECTION_PX * pool;
-      if (used <= room) return;
-      this.scaleSizes(explicit, room <= 0 ? 0 : room / used);
-      return;
-    }
+    const used = fixed.reduce((sum, view) => sum + this.heightFor(view, geo), 0);
     if (used <= avail) return;
-    this.scaleSizes(explicit, avail <= 0 ? 0 : avail / used);
-  }
-
-  /** 按比例缩放手调高度（保底 MIN）后重排 */
-  private scaleSizes(explicit: [SidebarView, number][], factor: number): void {
-    for (const [view, px] of explicit) {
-      this.sizes.set(view, Math.max(MIN_SECTION_PX, px * factor));
+    const factor = avail <= 0 ? 0 : avail / used;
+    for (const view of fixed) {
+      this.sizes.set(
+        view,
+        Math.max(MIN_SECTION_PX, this.heightFor(view, geo) * factor),
+      );
     }
     this.applySizes();
-  }
-
-  /** 可供展开分区使用的高度：侧栏总高 -（收起分区 + 分隔线） */
-  private availableHeight(): number {
-    let fixed = 0;
-    for (const el of this.sectionsEl.children) {
-      const view = viewOfSection(el);
-      if (view === null || !this.expanded.has(view)) fixed += (el as HTMLElement).offsetHeight;
-    }
-    return Math.max(0, this.sectionsEl.clientHeight - fixed);
   }
 
   private heightOf(view: SidebarView): number {
     return this.sections.get(view)?.getBoundingClientRect().height ?? 0;
   }
 
-  /** DOM 顺序的分区（判断「最后一个」用：Map 的插入顺序与界面顺序无关） */
+  /** DOM 顺序的分区（判断「锚点」与「沉底段」用：Map 的插入顺序与界面顺序无关） */
   private domOrder(): SidebarView[] {
     return [...this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-section")]
       .map((el) => viewOfSection(el))
