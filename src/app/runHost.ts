@@ -32,7 +32,7 @@ import {
   type ConvertKind,
   type ConvertTarget,
 } from "../core/convert";
-import { jsonToCode } from "../core/convertCodegen";
+import { jsonToJava } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
 import { dirnameOf } from "../core/paths";
 import { looksLikeCurlScript as isCurlScriptText } from "../core/curlScript";
@@ -221,14 +221,16 @@ export class RunHost {
     this.deps.runCurlInTerminal(script);
   }
 
-  /** 当前选区（优先）或整篇是否像 cURL 命令：右键菜单显隐用，不提示 */
+  /** 当前选区（优先）或整篇是否像 cURL 命令：右键菜单显隐用，不提示。
+   *  无选区时只读文档头部（与 runnerFor 同口径）：右键菜单每次打开都会调用，
+   *  对 20MB 文档做全文 toString 代价过高。 */
   looksLikeCurlScript(): boolean {
     const tab = this.deps.getActiveTab();
     if (!tab || tab.kind !== "text" || tab.virtual) return false;
     const view = this.deps.getView();
     const sel = view.state.selection.main;
     const text = sel.empty
-      ? view.state.doc.toString()
+      ? tabStore.contentHeadOf(tab, 4096)
       : view.state.sliceDoc(sel.from, sel.to);
     return isCurlScriptText(text);
   }
@@ -347,11 +349,8 @@ export class RunHost {
       this.deps.showMessage("只读文件不可替换（可用「格式转换」面板预览后复制）");
       return;
     }
-    const required: ConvertFormat = target.startsWith("json2")
-      ? "json"
-      : target.startsWith("yaml2")
-        ? "yaml"
-        : "properties";
+    // 目标名前缀即源格式（json2java → json，yaml2json → yaml，java2json → java）
+    const required = target.slice(0, target.indexOf("2")) as ConvertFormat;
     const detected = detectFormat(source.text);
     if (detected && detected !== required) {
       this.deps.showMessage(
@@ -367,8 +366,8 @@ export class RunHost {
     }
     try {
       let result: string;
-      if (target === "json2java" || target === "json2ts") {
-        result = jsonToCode(parseJsonText(source.text), target === "json2java" ? "java" : "ts", {
+      if (target === "json2java") {
+        result = jsonToJava(parseJsonText(source.text), {
           className: "Root",
           javaStyle: "class",
           javaLombok: false,
@@ -418,7 +417,11 @@ export class RunHost {
     }
     if (this.deps.blockIfReadonly()) return false;
     const view = this.deps.getView();
-    if (source.to > view.state.doc.length) {
+    if (
+      source.to > view.state.doc.length ||
+      view.state.sliceDoc(source.from, source.to) !== source.text
+    ) {
+      // 仅比较长度不够：异长编辑后长度可能恰好相等，会覆盖用户新输入的内容
       this.deps.showMessage("文档已变化，转换结果未应用");
       return false;
     }

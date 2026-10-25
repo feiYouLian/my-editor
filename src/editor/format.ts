@@ -167,10 +167,10 @@ export async function formatText(
         message: changed ? "格式化完成" : "已是格式化后的内容",
         output,
       };
-      } catch (err) {
+    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, message: `格式化失败: ${msg}`, changed: false };
-      }
+    }
   }
 
   // 前端 Prettier 通道
@@ -201,7 +201,7 @@ export async function formatText(
   }
 }
 
-/** 文档级格式化：全量格式化并替换 */
+/** 文档级格式化：全量格式化并替换（await 后必须校验文档未变，否则会整篇覆盖） */
 export async function formatDocument(
   view: EditorView,
   languageKey: string | null,
@@ -209,12 +209,16 @@ export async function formatDocument(
 ): Promise<FormatResult> {
   const source = view.state.doc.toString();
   const result = await formatText(source, languageKey, filePath);
-  const output = (result as FormatResult & { output?: string }).output;
-  if (result.ok && output !== undefined && output !== source) {
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: output },
-    });
+  const output = result.output;
+  if (!result.ok || output === undefined || output === source) return result;
+  // 格式化期间用户继续输入或切换了标签（单编辑器实例）：全文替换
+  // 会把另一份文档 / 新输入的内容整体覆盖，必须放弃并提示
+  if (view.state.doc.toString() !== source) {
+    return { ok: false, message: "文档已变更（或已切换标签），已取消格式化", changed: false };
   }
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: output },
+  });
   return result;
 }
 

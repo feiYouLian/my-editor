@@ -11,10 +11,11 @@
 import type { AppConfig } from "./settings";
 import {
   bindableCommands,
+  commandsVersion,
   type BindableCommand,
   type CommandDef,
 } from "../core/commands";
-import { normalizeNotation, notationMatches } from "../core/keyNotation";
+import { eventToKeyNotation, normalizeNotation } from "../core/keyNotation";
 
 // 记法工具由使用方按需从 core/keyNotation 导入；此处转发以保持既有导入路径可用
 export {
@@ -112,7 +113,47 @@ export function suspendKeyDispatch(v: boolean): void {
  * CM6 编辑器为 contenteditable div，不在此列，保持既有行为。
  * 保留键（剪贴板 / 撤销 / CM6 内置）即使被手改配置占用也不派发，
  * 否则会连 preventDefault 一起吞掉系统行为。
+ *
+ * 热路径：键盘事件每按键都会调用一次，故按「配置对象 + 注册表版本 +
+ * 保留键」缓存一张「归一化记法 → 命令」的表；按下时只算一次记法再查表，
+ * 不再每次重建命令数组并逐条解析归化（原实现每按键约 O(命令数) 次字符串切分）。
  */
+interface DispatchCache {
+  cfg: AppConfig;
+  version: number;
+  reserved: string;
+  map: Map<string, KeyCommand>;
+}
+
+let dispatchCache: DispatchCache | null = null;
+
+function dispatchMap(cfg: AppConfig): Map<string, KeyCommand> {
+  const version = commandsVersion();
+  const reserved = extraReserved.join("\u0001");
+  if (
+    dispatchCache &&
+    dispatchCache.cfg === cfg &&
+    dispatchCache.version === version &&
+    dispatchCache.reserved === reserved
+  ) {
+    return dispatchCache.map;
+  }
+  const map = new Map<string, KeyCommand>();
+  for (const cmd of keyCommands()) {
+    if (cmd.fixed) continue;
+    for (const key of [resolveKey(cmd, cfg), ...(cmd.altKeys ?? [])]) {
+      if (!key) continue;
+      const notation = normalizeNotation(key);
+      // 保留键优先：设置面板只在校验时用它，分发器这里同样要放过
+      if (isReservedKey(notation, cfg)) continue;
+      // 注册序靠前的命令优先（与原逐条匹配的语义一致）
+      if (!map.has(notation)) map.set(notation, cmd);
+    }
+  }
+  dispatchCache = { cfg, version, reserved, map };
+  return map;
+}
+
 export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): KeyCommand | null {
   if (suspended) return null;
   const target = e.target as HTMLElement | null;
@@ -120,22 +161,9 @@ export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): KeyCommand | 
     const tag = target.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return null;
   }
-  for (const cmd of keyCommands()) {
-    if (cmd.fixed) continue;
-    const keys = [resolveKey(cmd, cfg), ...(cmd.altKeys ?? [])];
-    if (
-      keys.some((k) => {
-        if (!k) return false;
-        const notation = normalizeNotation(k);
-        // 保留键优先：设置面板只在校验时用它，分发器这里同样要放过
-        if (isReservedKey(notation, cfg)) return false;
-        return notationMatches(notation, e);
-      })
-    ) {
-      return cmd;
-    }
-  }
-  return null;
+  const notation = eventToKeyNotation(e);
+  if (!notation) return null;
+  return dispatchMap(cfg).get(notation) ?? null;
 }
 
 /** 查找占用某键位的命令 id（冲突检测用，含固定命令与别名） */

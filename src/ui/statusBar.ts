@@ -44,8 +44,6 @@ export interface StatusBarDeps {
   toggleWhitespace: () => void;
   /** 编辑器设置自动换行 */
   setWordWrap: (on: boolean) => void;
-  /** 运行按钮状态刷新（跨模块：依赖 runnerFor 等领域判断） */
-  refreshRunButton: () => void;
 }
 
 export interface StatusBar {
@@ -72,6 +70,9 @@ export function createStatusBar(
   const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
   let messageTimer: ReturnType<typeof setTimeout> | null = null;
   let configSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 待写入的配置补丁：300ms 内的多次调用合并，不能只保留最后一次
+   *  （否则连续切换空白字符 + 自动换行时，前一个改动会在写盘前被覆盖掉） */
+  let pendingPatch: Partial<AppConfig> = {};
   /** 自动换行同步镜像：配置落库有 300ms 防抖，窗口内防连点互相抵消 */
   let wordWrapOn = getConfig().editorEnhancements.wordWrap;
 
@@ -106,7 +107,6 @@ export function createStatusBar(
     elements.readonly.title = tab?.readonly ? tab.readonlyReason : "";
     refreshWhitespace();
     refreshWordWrap();
-    deps.refreshRunButton();
   }
 
   /** 状态栏瞬时消息（格式化结果等，默认 3 秒后淡出） */
@@ -117,12 +117,30 @@ export function createStatusBar(
     messageTimer = setTimeout(() => elements.message.classList.add("hidden"), durationMs);
   }
 
+  /** 合并两层配置补丁：嵌套对象（layout / editorEnhancements 等）逐层合并 */
+  function mergePatch(
+    base: Partial<AppConfig>,
+    patch: Partial<AppConfig>,
+  ): Partial<AppConfig> {
+    const out: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(patch)) {
+      const prev = out[key];
+      const plain = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      out[key] = plain(prev) && plain(value) ? { ...prev, ...value } : value;
+    }
+    return out as Partial<AppConfig>;
+  }
+
   /** 防抖写回 config.json（界面开关与配置文件保持联动） */
   function persistConfig(patch: Partial<AppConfig>): void {
+    pendingPatch = mergePatch(pendingPatch, patch);
     if (configSaveTimer) clearTimeout(configSaveTimer);
     configSaveTimer = setTimeout(() => {
       configSaveTimer = null;
-      void updateSettings(patch).catch((e) => console.warn("[config] 写回失败", e));
+      const merged = pendingPatch;
+      pendingPatch = {};
+      void updateSettings(merged).catch((e) => console.warn("[config] 写回失败", e));
     }, 300);
   }
 

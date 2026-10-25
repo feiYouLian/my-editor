@@ -592,18 +592,27 @@ class TabStore {
     return cur.a === fp.a && cur.b === fp.b;
   }
 
-  markSaved(id: string): void {
+  /**
+   * 保存成功：以「实际写进磁盘的文本」作为新基线。
+   * 不能先 syncContent 再取基线——保存期间的输入尚未落盘，
+   * 若一并记成基线，闭标签/退出时的脏检查会认为它们已保存（静默丢字）。
+   * meta 为写盘时使用的编码 / 换行符（保存窗口内用户可能又改过内存态）。
+   */
+  markSaved(
+    id: string,
+    written: string,
+    meta?: { encoding?: string; newline?: string },
+  ): void {
     const tab = this.tabs.find((t) => t.id === id);
-    if (tab) {
-      // 保存前确保基线取的是最新内容
-      this.syncContent(id);
-      tab.savedFingerprint = fingerprint(tab.content);
-      tab.savedTrailingNewline = tab.content.endsWith("\n");
-      tab.savedEncoding = tab.encoding;
-      tab.savedNewline = tab.newline;
-      tab.dirty = false;
-      this.emitStructure();
-    }
+    if (!tab) return;
+    tab.savedFingerprint = fingerprint(written);
+    tab.savedTrailingNewline = written.endsWith("\n");
+    tab.savedEncoding = meta?.encoding ?? tab.encoding;
+    tab.savedNewline = meta?.newline ?? tab.newline;
+    // 保存窗口内的新输入落回标签内容，再按基线重算脏标记
+    this.syncContent(id);
+    this.refreshDirty(tab);
+    this.emitStructure();
   }
 
   /** 更新换行符（状态栏切换用）：属内容修改，标脏后由用户手动保存 */

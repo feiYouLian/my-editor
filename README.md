@@ -59,7 +59,7 @@
 
 - 大小写与命名风格：全部大写 / 小写 / 每词首字母大写 / camelCase / PascalCase / snake_case / kebab-case / CONSTANT_CASE
 - JSON 美化 / 压缩（有选区处理选区，无选区处理整篇）
-- 格式转换：JSON ↔ YAML、Properties ↔ YAML（`.` 层级展开 / 拍平，可选标量推断），JSON → Java / TypeScript 代码生成；面板预览 + 命令面板直转
+- 格式转换：JSON ↔ YAML、Properties ↔ YAML（`.` 层级展开 / 拍平，可选标量推断）、Java → JSON 示例，JSON → Java 代码生成；面板预览 + 命令面板直转
 - Markdown：加粗 / 斜体 / 高亮包裹切换、插入 GFM 表格
 - 插入：本地时间 / ISO / Unix 时间戳 / 日期 / 时间 / UUID v4 / 剪贴板图片（存 `.assets` 并插入引用）
 - 正则测试器、Cron 表达式解析与生成（5 / 6 / 7 段，含未来 5 次执行时间与字段说明）
@@ -125,7 +125,7 @@ npm run tauri build
 ```bash
 npm run build            # 前端类型检查 + 生产构建
 cd src-tauri
-cargo test --lib         # Rust 单元测试（当前 53 项）
+cargo test --lib         # Rust 单元测试（当前 85 项）
 ```
 
 E2E（Playwright + tauri-driver）尚未接入。
@@ -141,17 +141,37 @@ npx tauri icon icons/app-icon.png         # 生成 src-tauri/icons/ 全量图标
 
 ```
 src/                          # 前端（原生 TS + Vite）
-├── main.ts                   # 应用编排：标签联动、菜单、命令注册、Code Run、草稿/会话
-├── core/
-│   ├── convert.ts            # 格式转换（JSON / YAML / Properties + 嗅探）
-│   ├── convertCodegen.ts     # JSON → Java / TypeScript 代码生成
-│   └── runOutput.ts          # Code Run 输出分类 / 堆栈位置 / cURL JSON
-├── app/
-│   ├── runHost.ts            # 运行 / 工具 / 格式转换入口编排
+├── main.ts                   # 装配层：依赖组装、命令注册、快捷键分发、bootstrap
+├── app/                      # 跨模块编排 host（构造函数注入 Deps）
+│   ├── fileService.ts        # 打开 / 保存 / 另存 / 插入图片 / 配置文件
+│   ├── sessionHost.ts        # session.json、草稿自动保存与恢复、外部修改
+│   ├── tabSwitcher.ts        # 标签切换状态机（代际令牌 + 回调抑制窗口）
+│   ├── previewHost.ts        # 预览模式、双栏滚动联动、导出流程
+│   ├── largeFileHost.ts      # 大文件分流、虚拟视图会话、逃生门
+│   ├── runHost.ts            # Code Run / 工具面板 / 格式转换入口
 │   ├── terminalHost.ts       # 终端会话生命周期与「在终端运行」编排
-│   └── fetchHost.ts          # 网页抓取编排（默认目录 / 抓取后打开）
-├── editor/
-│   ├── setup.ts              # CodeMirror 实例与扩展开关
+│   ├── diffService.ts        # 四种比较场景与补丁导出
+│   ├── fetchHost.ts          # 网页抓取编排（默认目录 / 抓取后打开）
+│   ├── windowChrome.ts       # 标题栏按钮 / 缩放热区 / 退出清理
+│   └── layout.ts             # 侧栏显隐与宽度、双栏分割线
+├── core/                     # 零依赖纯函数
+│   ├── commands.ts           # 命令注册表（菜单 / 面板 / 快捷键 / 设置同源）
+│   ├── keyNotation.ts        # 键位记法解析、归一化与展示
+│   ├── convert.ts            # 格式转换（JSON / YAML / Properties / Java + 嗅探）
+│   ├── convertCodegen.ts     # JSON → Java / TypeScript 代码生成
+│   ├── javaParse.ts          # Java 源码 → 类型声明 / 字段模型（字段扫描）
+│   ├── javaToJson.ts         # Java 类型模型 → JSON 示例
+│   ├── cron.ts               # Cron 解析与未来执行时间
+│   ├── curlScript.ts         # cURL 脚本识别
+│   ├── runOutput.ts          # Code Run 输出分类 / 堆栈位置 / cURL JSON
+│   ├── paths.ts              # 路径工具（盘符 / UNC / 相对层级）
+│   ├── format.ts             # formatSize / pad2
+│   └── stamps.ts             # 时间戳与 UUID
+├── editor/                   # CodeMirror 6
+│   ├── setup.ts              # 单实例装配、标签载入状态机、语言热切换
+│   ├── extensions.ts         # Compartment 扩展组装
+│   ├── keymap.ts             # CM6 键位表
+│   ├── stateCache.ts         # 每标签 EditorState 缓存
 │   ├── languages.ts          # 语言注册与懒加载
 │   ├── theme.ts              # 编辑器语法主题
 │   ├── search.ts             # 查找面板（中文界面）
@@ -163,16 +183,17 @@ src/                          # 前端（原生 TS + Vite）
 │   ├── format.ts             # Prettier + CLI 格式化
 │   ├── curlLanguage.ts       # cURL 轻量语法高亮
 │   ├── transforms.ts         # 大小写 / JSON 美化压缩
-│   └── markdownTools.ts      # Markdown 包裹与表格
-├── panels/
+│   ├── markdownTools.ts      # Markdown 包裹与表格
+│   └── clipboard.ts          # 剪贴板读写
+├── panels/                   # 功能面板（子目录为内部拆分）
 │   ├── fileTree.ts           # 文件树（SVG 图标、右键操作）
 │   ├── commandPalette.ts     # 命令面板
 │   ├── menubar.ts            # 标题栏菜单
-│   ├── preview.ts            # Markdown / HTML 预览、图片查看器与导出
-│   ├── largeView.ts          # 大文件只读虚拟视图
-│   ├── diffPanel.ts          # 差异比较视图
-│   ├── settingsPanel.ts      # 设置中心
-│   ├── cron.ts / cronPanel.ts# Cron 解析器与生成面板
+│   ├── preview.ts            # 预览宿主 + preview/（管线 / 本地图片 / 导出 / 图片查看器）
+│   ├── largeView.ts          # 大文件只读虚拟视图 + largeView/（行缓存 / 过滤 / Minimap）
+│   ├── diffPanel.ts          # 差异比较视图 + diffPanel/（渲染）
+│   ├── settingsPanel.ts      # 设置中心骨架（分类页在 settings/）
+│   ├── cronPanel.ts          # Cron 生成面板（解析在 core/cron.ts）
 │   ├── batchEncoding.ts      # 批量另存为编码
 │   ├── regexTester.ts        # 正则测试器
 │   ├── tableDialog.ts        # Markdown 表格对话框
@@ -182,19 +203,28 @@ src/                          # 前端（原生 TS + Vite）
 │   ├── fetchPageDialog.ts    # 从网址抓取网页对话框
 │   ├── terminalPanel.ts      # xterm 终端面板（懒加载）
 │   └── runPanel.ts           # Code Run 输出面板
-├── services/
+├── settings/                 # 设置中心分类页
+│   └── themeTab.ts / keybindingsTab.ts / layoutTab.ts / shared.ts
+├── services/                 # 后端服务封装
 │   ├── workspace.ts          # 工作区读写
 │   ├── session.ts            # 会话与草稿
 │   └── fsWatch.ts            # 外部修改事件订阅
 ├── store/
-│   └── tabs.ts               # 多标签状态（内容 / 编码 / 换行 / 脏标记基线）
+│   └── tabs.ts               # 多标签状态（惰性快照、指纹基线、结构/内容双事件）
 ├── config/
 │   ├── settings.ts           # config.json 读写与热更新
-│   ├── keybindings.ts        # 快捷键注册表
-│   └── formatters.ts         # CLI 格式化器定义
+│   ├── keybindings.ts        # 键位覆盖、冲突检测、分发表缓存
+│   └── formatters.ts         # CLI 格式化器定义与安装提示
 ├── ui/
-│   ├── dialogs.ts            # 确认 / 输入对话框
+│   ├── statusBar.ts          # 状态栏渲染 / 主题 / 字段显隐 / 配置写回
+│   ├── statusMenu.ts         # 状态栏弹出菜单工厂（换行 / 语言 / 编码）
+│   ├── tabsBar.ts            # 标签栏渲染与右键菜单
+│   ├── breadcrumb.ts         # 面包屑与目录下钻
+│   ├── editorMenu.ts         # 编辑器右键菜单机器
 │   ├── menu.ts               # 弹出菜单定位（视口钳制）
+│   ├── dialogs.ts            # 确认 / 输入对话框
+│   ├── formControls.ts       # 设置中心控件工厂
+│   ├── icons.ts              # 文件图标工厂
 │   └── settingsHelp.ts       # 配置说明
 ├── types/
 │   └── app.ts                # 前后端共享类型
@@ -267,7 +297,7 @@ scripts/                      # 开发辅助脚本（图标生成）
 - **全局搜索与 TODO 列表已按需求舍去**：保留当前文档查找 / 替换与查找结果面板
 - **AI 辅助（B11）与 OCR（B12）** 尚未实现
 - 批量转换原文件（就地改写）已舍去，仅提供非破坏式的「批量另存为编码」
-- 格式转换本期只做 JSON ↔ YAML 与 Properties ↔ YAML；JSON ↔ XML / CSV 延期
+- 格式转换本期只做 JSON ↔ YAML、Properties ↔ YAML 与 Java → JSON；JSON ↔ XML / CSV 延期
 - 网页抓取只保存原始 HTML，不下载 / 重写图片、CSS、JS 等子资源；重定向后的最终地址 v1 不再复查（私网默认拦截 + CSP 主防线）
 - 内置终端是任意命令执行入口、非沙箱；终端内命令不受 Code Run 的 30s / 1MB 限制。单会话，不随会话恢复
 - `cmd.exe` 暂不支持「在终端运行」（请使用 PowerShell）；终端主题 ANSI 16 色沿用 xterm 默认

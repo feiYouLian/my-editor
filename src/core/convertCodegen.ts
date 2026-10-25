@@ -1,15 +1,13 @@
 /**
- * JSON → Java / TypeScript 代码生成（纯字符串模板，无第三方依赖）。
+ * JSON → Java 代码生成（纯字符串模板，无第三方依赖）。
  *
  * 规则（与《新增功能_技术设计文档》3.3 一致）：
- * - number：整数 → long / number，小数 → double / number
- * - 数组 → List<T> / T[]；空数组 → List<Object> / unknown[]
- * - 对象 → 嵌套 static class / 嵌套 interface
- * - 混合类型数组 → Object / unknown，并附 `// mixed: …` 注释
+ * - number：整数 → long，小数 → double
+ * - 数组 → List<T>；空数组 → List<Object>
+ * - 对象 → 嵌套 static class
+ * - 混合类型数组 → Object，并附 `// mixed: …` 注释
  * - 顶层必须是对象或对象数组，否则报错
  */
-
-export type CodeLang = "java" | "ts";
 
 export interface CodegenOptions {
   /** 根类型名，默认 "Root" */
@@ -20,7 +18,7 @@ export interface CodegenOptions {
   javaLombok: boolean;
 }
 
-type Prim = { kind: "prim"; java: string; ts: string };
+type Prim = { kind: "prim"; java: string };
 type Mixed = { kind: "mixed"; detail: string };
 type Obj = { kind: "object"; name: string; fields: Field[] };
 type Arr = { kind: "array"; element: TypeNode };
@@ -34,11 +32,11 @@ interface Field {
   type: TypeNode;
 }
 
-const OBJECT: Prim = { kind: "prim", java: "Object", ts: "unknown" };
-const STRING: Prim = { kind: "prim", java: "String", ts: "string" };
-const BOOLEAN: Prim = { kind: "prim", java: "boolean", ts: "boolean" };
-const INT: Prim = { kind: "prim", java: "long", ts: "number" };
-const DOUBLE: Prim = { kind: "prim", java: "double", ts: "number" };
+const OBJECT: Prim = { kind: "prim", java: "Object" };
+const STRING: Prim = { kind: "prim", java: "String" };
+const BOOLEAN: Prim = { kind: "prim", java: "boolean" };
+const INT: Prim = { kind: "prim", java: "long" };
+const DOUBLE: Prim = { kind: "prim", java: "double" };
 
 const JAVA_KEYWORDS = new Set(
   (
@@ -165,13 +163,6 @@ function javaType(type: TypeNode): string {
   return `List<${javaType(type.element)}>`;
 }
 
-function tsType(type: TypeNode): string {
-  if (type.kind === "prim") return type.ts;
-  if (type.kind === "mixed") return "unknown";
-  if (type.kind === "object") return type.name;
-  return `${tsType(type.element)}[]`;
-}
-
 function usesList(type: TypeNode): boolean {
   if (type.kind === "array") return true;
   if (type.kind === "object") return type.fields.some((f) => usesList(f.type));
@@ -261,29 +252,11 @@ function renderJava(root: Obj, ctx: Ctx, opts: CodegenOptions): string {
   return lines.join("\n");
 }
 
-function renderTs(root: Obj, ctx: Ctx): string {
-  const renderInterface = (obj: Obj): string[] => {
-    const body: string[] = [`export interface ${obj.name} {`];
-    for (const f of obj.fields) {
-      if (f.name !== f.original) body.push(`  /** 原键: "${f.original}" */`);
-      const mixed = mixedDetail(f.type);
-      body.push(`  ${f.name}: ${tsType(f.type)};${mixed ? ` // mixed: ${mixed}` : ""}`);
-    }
-    body.push("}");
-    return body;
-  };
-  const blocks = [renderInterface(root)];
-  for (const obj of ctx.objects) {
-    if (obj !== root) blocks.push(renderInterface(obj));
-  }
-  return blocks.map((b) => b.join("\n")).join("\n\n");
-}
-
 /**
- * 从任意 JSON 值推断类型树并生成源码。
+ * 从任意 JSON 值推断类型树并生成 Java 源码。
  * 顶层必须是对象或对象数组（数组时 className 表示元素类型）。
  */
-export function jsonToCode(json: unknown, lang: CodeLang, opts: CodegenOptions): string {
+export function jsonToJava(json: unknown, opts: CodegenOptions): string {
   if (!isPlainObject(json) && !Array.isArray(json)) {
     throw new Error("顶层必须是对象或对象数组（当前是标量）");
   }
@@ -304,6 +277,5 @@ export function jsonToCode(json: unknown, lang: CodeLang, opts: CodegenOptions):
     root = inferObject([json], className, ctx);
   }
   const header = arrayRoot ? `// JSON 根为数组：${root.name} 表示数组元素类型\n` : "";
-  const body = lang === "java" ? renderJava(root, ctx, opts) : renderTs(root, ctx);
-  return `${header}${body}\n`;
+  return `${header}${renderJava(root, ctx, opts)}\n`;
 }

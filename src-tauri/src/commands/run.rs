@@ -541,17 +541,17 @@ fn spawn_run(
 /// 运行当前文件：先停掉上一个任务，再启动新进程并流式回传。
 /// 安全：目标文件必须是应用已知路径（当前打开的标签），runner 仅接受
 /// 内置白名单（python / node / java / curl）。
+/// 停旧进程含 taskkill、curl 还需读文件：整个过程放 spawn_blocking，
+/// 避免阻塞 IPC 主线程（与 stop_run 的理由一致）。
 #[tauri::command]
-pub fn run_code(
+pub async fn run_code(
     app: AppHandle,
-    state: tauri::State<RunState>,
-    guard: tauri::State<crate::commands::paths::PathGuard>,
+    state: tauri::State<'_, RunState>,
+    guard: tauri::State<'_, crate::commands::paths::PathGuard>,
     path: String,
     runner: String,
 ) -> Result<(), String> {
     guard.ensure_file_scope(&path)?;
-    kill_tree(&state.slot);
-
     let file = PathBuf::from(&path);
     if !file.is_file() {
         return Err(format!("文件不存在: {path}"));
@@ -560,31 +560,43 @@ pub fn run_code(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-
-    let mut cmd = build_command(&runner, &file)?;
-    cmd.current_dir(&work_dir);
-    spawn_run(app, &state.slot, &state.generation, cmd, &runner)
+    let slot = Arc::clone(&state.slot);
+    let generation = Arc::clone(&state.generation);
+    tauri::async_runtime::spawn_blocking(move || {
+        kill_tree(&slot);
+        let mut cmd = build_command(&runner, &file)?;
+        cmd.current_dir(&work_dir);
+        spawn_run(app, &slot, &generation, cmd, &runner)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 执行一段 cURL 脚本（内容而非路径）：无需先保存文件，选区/整篇由前端裁决。
 /// 不走 PathGuard：参数是脚本内容；`-o 路径` 等由 curl 自行解释（与终端执行等价）。
 #[tauri::command]
-pub fn run_curl(
+pub async fn run_curl(
     app: AppHandle,
-    state: tauri::State<RunState>,
-    guard: tauri::State<crate::commands::paths::PathGuard>,
+    state: tauri::State<'_, RunState>,
+    guard: tauri::State<'_, crate::commands::paths::PathGuard>,
     script: String,
 ) -> Result<(), String> {
-    let spec = command_spec("curl", RunSource::Script(&script))?;
-    kill_tree(&state.slot);
-
-    let mut cmd = Command::new(&spec.program);
-    cmd.args(&spec.args);
     // 无磁盘文件可依：取首个已登记的工作区目录；没有则用进程默认目录
-    if let Some(dir) = guard.first_dir_root() {
-        cmd.current_dir(dir);
-    }
-    spawn_run(app, &state.slot, &state.generation, cmd, "curl")
+    let dir = guard.first_dir_root();
+    let slot = Arc::clone(&state.slot);
+    let generation = Arc::clone(&state.generation);
+    tauri::async_runtime::spawn_blocking(move || {
+        let spec = command_spec("curl", RunSource::Script(&script))?;
+        kill_tree(&slot);
+        let mut cmd = Command::new(&spec.program);
+        cmd.args(&spec.args);
+        if let Some(dir) = dir {
+            cmd.current_dir(dir);
+        }
+        spawn_run(app, &slot, &generation, cmd, "curl")
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 停止当前运行；返回是否有正在运行的任务

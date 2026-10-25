@@ -80,6 +80,11 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** loadDocument 重入计数：并发加载期间抑制 dirty 回调（替代单布尔量，
    *  避免快速连点标签时先到的 finally 提前释放抑制状态） */
   let loadingDepth = 0;
+  /** 载入代号：每次 loadDocument 递增，await 后校验，过期载入不得再写任何状态 */
+  let docLoadSeq = 0;
+  /** 语言应用代号：每次 applyLanguage / forgetDocument 递增，
+   *  比 activeDocKey 守卫更可靠（A → B → A 快速切换时 docKey 会相等） */
+  let languageSeq = 0;
   /** 标签切换外层窗口（loadActiveTab 中 loadDocument 之前的异步步骤） */
   let switching = false;
   let languageKey: string | null = null;
@@ -138,9 +143,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
    * 性能保护（行数超限 / 超长行）优先于语言加载，命中时整篇降级纯文本。
    */
   async function applyLanguage(override: string | null | undefined): Promise<void> {
-    const expectedKey = activeDocKey;
+    const token = ++languageSeq;
     const key = override === undefined ? languageKeyFromPath(currentPath) : override;
-    languageKey = key;
 
     const tooManyLines = view.state.doc.lines > settings.highlighterDisabledOver;
     // 行数已超限时无需再逐行扫描超长行
@@ -152,8 +156,9 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       return;
     }
     const support = key ? await loadLanguage(key) : null;
-    // 语言包加载期间可能已切换标签：过期结果丢弃，避免作用到其它标签
-    if (activeDocKey !== expectedKey) return;
+    // 语言包加载期间可能已切换标签 / 关闭文档：过期结果丢弃
+    if (token !== languageSeq) return;
+    languageKey = key;
     view.dispatch({ effects: c.language.reconfigure(support ? [support] : []) });
   }
 
@@ -175,6 +180,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     languageOverride?: string | null,
     docId?: string,
   ): Promise<void> {
+    const seq = ++docLoadSeq;
     const key = docId ?? null;
     const sameDoc =
       key !== null && activeDocKey === key && view.state.doc.toString() === content;
@@ -192,6 +198,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         if (cached && cached.state.doc.toString() === content) {
           view.setState(cached.state);
           languageKey = cached.langKey;
+          // 先落 docId：语言加载 / 光标广播都依赖它判断当前文档
+          activeDocKey = key;
           const scroll = EditorView.scrollIntoView(
             cached.state.selection.main.head,
             { y: "nearest" },
@@ -215,11 +223,13 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
               ],
             });
             await applyLanguage(languageOverride);
+            if (seq !== docLoadSeq) return;
           }
         } else {
           // 新状态在创建时即按当前配置与只读态构建
           view.setState(createState(content));
           languageKey = null;
+          activeDocKey = key;
           if (cursor !== undefined) {
             // 超限文档没有缓存状态：至少恢复光标，否则切回会跳回文首
             const head = Math.min(cursor, view.state.doc.length);
@@ -229,13 +239,14 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
             });
           }
           await applyLanguage(languageOverride);
+          if (seq !== docLoadSeq) return;
         }
-        activeDocKey = key;
       } else {
         view.dispatch({
           effects: dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly }),
         });
         await applyLanguage(languageOverride);
+        if (seq !== docLoadSeq) return;
       }
       // 快速连点标签时，晚到的载入不要覆盖当前标签的状态栏光标
       if (activeDocKey === key) notifyCursor(view.state);
@@ -247,6 +258,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** 关闭标签时丢弃其缓存状态；若关闭的是当前标签，避免下次切换再把它写回缓存 */
   function forgetDocument(docId: string): void {
     stateCache.delete(docId);
+    // 作废在飞的语言加载：否则关闭后它仍可能把语言作用到其它文档
+    languageSeq++;
     if (activeDocKey === docId) {
       activeDocKey = null;
       // 同时清空视图与语言高亮：否则已关闭文档的内容/语言会残留显示，

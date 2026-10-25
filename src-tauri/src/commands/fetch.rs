@@ -312,7 +312,11 @@ pub async fn fetch_url(
         ));
     }
 
-    let size = atomic_write(&target, &bytes)?;
+    // 落盘含 fsync，且响应可达数 MB：放 spawn_blocking，避免阻塞异步线程
+    let target_bg = target.clone();
+    let size = tauri::async_runtime::spawn_blocking(move || atomic_write(&target_bg, &bytes))
+        .await
+        .map_err(|e| format!("任务调度失败: {e}"))??;
     Ok(FetchResult {
         path: target.to_string_lossy().to_string(),
         bytes: size,

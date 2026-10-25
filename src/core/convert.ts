@@ -3,24 +3,30 @@
  * - 内容嗅探 detectFormat（面板默认源格式）
  * - C1 JSON → YAML / C2 YAML → JSON
  * - C3 Properties → YAML / C4 YAML → Properties
+ * - G2 Java 源码 → JSON 示例（G1 JSON → Java 代码生成见 convertCodegen.ts）
  * - 共享类型与面板选项规格（CONVERT_OPTION_SPECS）
  *
- * js-yaml 只在函数内动态 import()，不进主 bundle；properties 解析为零依赖同步实现。
+ * js-yaml 只在函数内动态 import()，不进主 bundle；properties / Java 解析为零依赖同步实现。
  * 失败统一抛 ConvertError（message + 可选 line，1 基）。
  */
 
-import type { CodegenOptions } from "./convertCodegen";
+import { javaToJson } from "./javaToJson";
 
-export type ConvertFormat = "json" | "yaml" | "properties";
-export type ConvertKind = "json2yaml" | "yaml2json" | "properties2yaml" | "yaml2properties";
-/** 面板目标：4 个转换方向 + 2 个代码生成 */
-export type ConvertTarget = ConvertKind | "json2java" | "json2ts";
+export type ConvertFormat = "json" | "yaml" | "properties" | "java";
+export type ConvertKind =
+  | "json2yaml"
+  | "yaml2json"
+  | "properties2yaml"
+  | "yaml2properties"
+  | "java2json";
+/** 面板目标：5 个格式转换方向 + 1 个代码生成 */
+export type ConvertTarget = ConvertKind | "json2java";
 
 export interface ConvertOptions {
   /** C3：把 true/false、数字、null 推断为对应标量（默认 false，保数据原样） */
   inferScalarTypes?: boolean;
-  /** JSON → Java / TS 代码生成选项 */
-  code?: CodegenOptions;
+  /** G2：根类名，空串按依赖关系自动推断 */
+  javaRootClass?: string;
 }
 
 export class ConvertError extends Error {
@@ -44,29 +50,34 @@ export const CONVERT_TARGET_LABELS: Record<ConvertTarget, string> = {
   properties2yaml: "Properties → YAML",
   yaml2properties: "YAML → Properties",
   json2java: "JSON → Java",
-  json2ts: "JSON → TypeScript",
+  java2json: "Java → JSON",
 };
 
 export const CONVERT_TARGET_HINTS: Partial<Record<ConvertTarget, string>> = {
   properties2yaml: "键中的 . 按层级展开为嵌套 map（Spring 约定）",
   yaml2properties: "嵌套 map 拍平为 a.b.c；数组叶为 a.0 / a.1（往返不保证可逆）",
   json2java: "顶层需为对象或对象数组；生成类含字段与 getter（或 record）",
-  json2ts: "顶层需为对象或对象数组；生成 export interface",
+  java2json: "取类的非静态字段生成 JSON 示例，不合并父类字段",
 };
 
 /** 目标产物对应的语言键（插入新标签时用） */
 export function targetLanguage(target: ConvertTarget): string {
-  if (target === "json2yaml" || target === "properties2yaml") return "yaml";
-  if (target === "json2ts") return "typescript";
-  if (target === "yaml2json") return "json";
-  if (target === "yaml2properties") return "properties";
-  return "java";
+  switch (target) {
+    case "json2yaml":
+    case "properties2yaml":
+      return "yaml";
+    case "yaml2json":
+    case "java2json":
+      return "json";
+    case "yaml2properties":
+      return "properties";
+    case "json2java":
+      return "java";
+  }
 }
 
 /** 目标产物扩展名（文件名建议） */
 export function targetExtension(target: ConvertTarget): string {
-  if (target === "json2java") return ".java";
-  if (target === "json2ts") return ".ts";
   return `.${targetLanguage(target)}`;
 }
 
@@ -119,7 +130,15 @@ export const CONVERT_OPTION_SPECS: Record<ConvertTarget, OptionSpec[]> = {
       hint: "record 模式忽略此项",
     },
   ],
-  json2ts: [CODEGEN_CLASS_NAME],
+  java2json: [
+    {
+      key: "javaRoot",
+      label: "根类名",
+      kind: "text",
+      defaultValue: "",
+      hint: "留空自动推断：取未被其他类引用的顶层类",
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -140,14 +159,21 @@ function tryJson(text: string): unknown | undefined {
 
 /**
  * 启发式嗅探（失败返回 null，由用户手选）：
- * JSON 首字符 `{`/`[` 且可解析 → json；行内出现 `key=value` → properties；
- * `---` / `- ` 列表 → yaml；其余按 `key: value` 视为 yaml。
+ * JSON 首字符 `{`/`[` 且可解析 → json；类型声明 + 花括号 → java；
+ * 行内出现 `key=value` → properties；`---` / `- ` 列表 → yaml；其余按 `key: value` 视为 yaml。
  */
 export function detectFormat(text: string): ConvertFormat | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
   // 以 { / [ 开头即按 JSON 处理（即使语法错误也给出带行号的 JSON 错误）
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) return "json";
+  // Java 源码：class / interface / enum / record 声明 + 类型体
+  if (
+    trimmed.includes("{") &&
+    /(?:^|[^\w$.])(?:class|interface|enum|record)\s+[\p{L}_$][\w$]*/u.test(trimmed)
+  ) {
+    return "java";
+  }
   let eq = 0;
   let colon = 0;
   let yamlSignals = 0;
@@ -411,6 +437,14 @@ export async function convert(
         ([key, val]) => `${escapePropertyKey(key)}=${escapePropertyValue(val)}`,
       );
       return `# 由 YAML 拍平生成，数组叶为 key.N\n${lines.join("\n")}\n`;
+    }
+    case "java2json": {
+      try {
+        return javaToJson(text, { rootClass: opts.javaRootClass });
+      } catch (e) {
+        if (e instanceof ConvertError) throw e;
+        throw new ConvertError(e instanceof Error ? e.message : String(e));
+      }
     }
   }
 }

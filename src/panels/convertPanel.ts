@@ -19,7 +19,7 @@ import {
   type ConvertOptions,
   type ConvertTarget,
 } from "../core/convert";
-import { jsonToCode, type CodegenOptions } from "../core/convertCodegen";
+import { jsonToJava, type CodegenOptions } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
 
 /** 超过此行数替换前确认（与格式化一致） */
@@ -157,6 +157,7 @@ export class ConvertPanel {
       ["json", "JSON"],
       ["yaml", "YAML"],
       ["properties", "Properties"],
+      ["java", "Java"],
     ] as const) {
       this.sourceSelect.append(new Option(label, value));
     }
@@ -243,9 +244,10 @@ export class ConvertPanel {
   }
 
   private targetsFor(format: ConvertFormat | null): ConvertTarget[] {
-    if (format === "json") return ["json2yaml", "json2java", "json2ts"];
+    if (format === "json") return ["json2yaml", "json2java"];
     if (format === "yaml") return ["yaml2json", "yaml2properties"];
     if (format === "properties") return ["properties2yaml"];
+    if (format === "java") return ["java2json"];
     return [];
   }
 
@@ -352,15 +354,12 @@ export class ConvertPanel {
     this.setBusy(true);
     try {
       let result: string;
-      if (target === "json2java" || target === "json2ts") {
-        result = jsonToCode(
-          parseJsonText(this.source.text),
-          target === "json2java" ? "java" : "ts",
-          this.codegenOptions(),
-        );
+      if (target === "json2java") {
+        result = jsonToJava(parseJsonText(this.source.text), this.codegenOptions());
       } else {
         const opts: ConvertOptions = {
           inferScalarTypes: Boolean(this.optionValues.get("inferScalarTypes")),
+          javaRootClass: String(this.optionValues.get("javaRoot") ?? ""),
         };
         result = await convert(this.source.text, target as ConvertKind, opts);
       }

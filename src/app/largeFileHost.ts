@@ -129,12 +129,18 @@ export class LargeFileHost {
       if (!ok) return;
     }
     try {
-      await invoke("close_large_file", { id: info.id });
+      // 先把内容读进编辑器路径，再关大文件会话：读取/解码失败时
+      // 会话仍然有效，标签不会指向一个已释放的 largeId
       const data = await invoke<FileContent>("open_text_file", {
         path: info.path,
         largeFileThreshold: settings.largeFileThreshold,
         logExtensions: getConfig().largeFile.logExtensions,
       });
+      try {
+        await invoke("close_large_file", { id: info.id });
+      } catch {
+        // 会话可能已释放：忽略
+      }
       tabStore.convertVirtual(tab.id, data);
       await this.deps.onReloadActiveTab();
       this.deps.showMessage(

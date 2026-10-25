@@ -27,6 +27,8 @@ export interface FileServiceDeps {
   onCheckMojibake: (tabId: string) => void;
   /** 保存后丢弃该标签的草稿（tabId → 草稿 key 的解析在 main.ts） */
   onDiscardDraft: (tabId: string) => void;
+  /** 保存窗口内又有新输入时重写草稿（不能直接丢弃，否则新内容失去兜底） */
+  onPersistDraft: (tabId: string) => void;
   /** 在编辑器光标处插入文本 */
   insertAtCursor: (text: string) => void;
   /** 文件监听重登记（保存改变了路径集合） */
@@ -286,10 +288,13 @@ export class FileService {
   async writeTo(tab: Tab, path: string, encodingOverride?: string): Promise<void> {
     // 经 snapshotOf 取内容：激活标签会先把编辑器里的最新内容落回（惰性快照）
     const encoding = encodingOverride ?? tab.encoding;
+    const newline = tab.newline;
+    // 这份文本就是最终落盘的内容：保存期间的新输入不能算进基线
+    const written = tabStore.snapshotOf(tab);
     const result = await invoke<SaveResult>("save_file", {
       path,
-      content: tabStore.snapshotOf(tab),
-      newline: tab.newline,
+      content: written,
+      newline,
       hasBom: tab.has_bom,
       encoding,
     });
@@ -302,10 +307,11 @@ export class FileService {
     if (current) {
       current.size = result.size;
     }
-    tabStore.markSaved(tab.id);
-    // 内容已落盘：草稿不再需要；自身写入的抑制由 Rust 保存在写盘前后处理，
-    // 这里只需同步标签集（另存为改变了路径）与外部修改标记
-    void this.deps.onDiscardDraft(tab.id);
+    tabStore.markSaved(tab.id, written, { encoding, newline });
+    // 内容已落盘：草稿不再需要；但保存窗口内可能又输入了新内容，
+    // 此时草稿必须按最新内容重写（直接丢弃会连新输入的兜底一起删掉）
+    if (tabStore.findById(tab.id)?.dirty) this.deps.onPersistDraft(tab.id);
+    else void this.deps.onDiscardDraft(tab.id);
     tabStore.markExternal(tab.id, false);
     this.deps.syncWatchedFiles();
     this.deps.refreshStatus();

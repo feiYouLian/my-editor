@@ -113,18 +113,18 @@ impl PathGuard {
         }
     }
 
-    /// 登记单个路径：同时记为「已知文件」与「已知根」。
-    /// 兼作根是为了覆盖「在已登记路径下新建子目录/文件」的场景
-    /// （如导出的 xxx.md.assets/ 素材目录）；对真实文件而言，
-    /// 以其为前缀的路径必然无法创建，不会有额外暴露面。
+    /// 登记单个路径（应用已知的文件或目录）。
+    /// 注意：**只进 files，不升级为 roots**。
+    /// roots 是目录树类操作（新建 / 重命名 / 删除）的作用域，
+    /// 而本方法会被前端 `register_paths` / `probe_file` 等命令间接触发，
+    /// 若把任意目录升级为根，WebView 内两行 IPC 就能递归删除任意目录。
+    /// 写入类操作仍可通过「已知文件同目录」与「已知目录直接子项」放行（见 ensure_file_scope）。
     pub fn add_path(&self, raw: &str) {
         if let Ok(p) = Self::normalize(Path::new(raw)) {
-            {
-                let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
-                files.insert(p.clone());
-            }
-            let mut roots = self.roots.write().unwrap_or_else(|e| e.into_inner());
-            roots.insert(p);
+            self.files
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(p);
         }
     }
 
@@ -149,7 +149,10 @@ impl PathGuard {
     }
 
     /// 文件类操作（写二进制 / 导出补丁 / 运行 / 批量转码）：
-    /// 允许 = 已登记根目录之内 / 已登记路径 / 已登记文件的同目录。
+    /// 允许 = 已登记根目录之内 / 已登记路径 / 已登记文件的同目录 /
+    /// 已登记目录的直接子项。
+    /// 最后一条覆盖「对话框选中的输出目录 / 导出素材目录」，
+    /// 但只放行一层，不把目录本身变成可递归操作的作用域根。
     pub fn ensure_file_scope(&self, raw: &str) -> Result<PathBuf, String> {
         let p = Self::normalize(Path::new(raw))?;
         {
@@ -166,6 +169,9 @@ impl PathGuard {
             if files.iter().any(|f| f.parent() == Some(parent)) {
                 return Ok(p);
             }
+            if files.iter().any(|f| f.is_dir() && f == parent) {
+                return Ok(p);
+            }
         }
         Err(SCOPE_ERR.to_string())
     }
@@ -173,6 +179,7 @@ impl PathGuard {
 
 /// 前端登记对话框选取的路径（批量编码的文件与输出目录等）。
 /// 打开/保存/比较等流程由后端在对应命令内自动登记，无需前端调用。
+/// 只登记为「已知路径」：不授予目录树类操作（新建/重命名/删除）的作用域。
 #[tauri::command]
 pub fn register_paths(state: tauri::State<'_, PathGuard>, paths: Vec<String>) {
     for p in paths {
@@ -240,6 +247,33 @@ mod tests {
         assert!(guard
             .ensure_root_scope(dir.join("sub").join("c.txt").to_str().unwrap())
             .is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归：register_paths / probe_file 可登记的目录不得升级为可递归操作的根
+    #[test]
+    fn registered_directory_never_becomes_root_scope() {
+        let guard = PathGuard::new();
+        let dir = std::env::temp_dir().join("my_editor_paths_registered_dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        guard.add_path(dir.to_str().unwrap());
+
+        // 目录树操作（删除 / 重命名 / 新建）必须拒绝
+        assert!(guard.ensure_root_scope(dir.to_str().unwrap()).is_err());
+        assert!(guard
+            .ensure_root_scope(dir.join("sub").to_str().unwrap())
+            .is_err());
+        // 写入类操作：目录自身与其直接子项放行，孙辈不放行
+        assert!(guard.ensure_file_scope(dir.to_str().unwrap()).is_ok());
+        assert!(guard
+            .ensure_file_scope(dir.join("out.txt").to_str().unwrap())
+            .is_ok());
+        assert!(guard
+            .ensure_file_scope(dir.join("sub").join("deep.txt").to_str().unwrap())
+            .is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -220,35 +220,49 @@ fn mime_for_ext(ext: &str) -> Option<&'static str> {
     })
 }
 
+/// 图片读取的体积上限：防止超大图被整读后 base64 放大 ~4/3 撑爆内存。
+/// 前端预览 / 导出另有 4MB / 10MB 预算，这里是后端的最后一道防线。
+const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+
 #[tauri::command]
-pub fn read_image_file(
+pub async fn read_image_file(
     state: tauri::State<'_, PathGuard>,
     path: String,
 ) -> Result<ImageFile, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-
     state.add_path(&path);
-    let p = PathBuf::from(&path);
-    let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
-    let ext = p
-        .extension()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let mime = mime_for_ext(&ext)
-        .ok_or_else(|| format!("不支持的图片格式: .{ext}"))?;
-    let data_url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
-    let name = p
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let p = PathBuf::from(&path);
+        let meta = fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?;
+        if meta.len() > MAX_IMAGE_BYTES {
+            return Err(format!(
+                "图片体积超过 {} MB，已拒绝处理",
+                MAX_IMAGE_BYTES / 1024 / 1024
+            ));
+        }
+        let bytes = fs::read(&p).map_err(|e| format!("读取失败: {e}"))?;
+        let ext = p
+            .extension()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mime = mime_for_ext(&ext)
+            .ok_or_else(|| format!("不支持的图片格式: .{ext}"))?;
+        let data_url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
+        let name = p
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-    Ok(ImageFile {
-        path,
-        name,
-        size: bytes.len() as u64,
-        mime: mime.to_string(),
-        data_url,
+        Ok(ImageFile {
+            path,
+            name,
+            size: bytes.len() as u64,
+            mime: mime.to_string(),
+            data_url,
+        })
     })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 原子写入：同目录临时文件 → fsync → rename
@@ -318,8 +332,9 @@ pub(crate) fn apply_eol(text: &str, newline: &str) -> String {
 
 /// 保存文件：按目标编码与换行符改写，保留 BOM，走原子替换。
 /// 保存成功后登记该路径（后续同目录写入 / 导出素材等操作由此获得作用域）。
+/// 全文编码 + fsync 可能耗时（大文件 / 杀毒扫描）：放 spawn_blocking，避免卡主线程。
 #[tauri::command]
-pub fn save_file(
+pub async fn save_file(
     watch: tauri::State<'_, crate::commands::watch::WatchState>,
     guard: tauri::State<'_, PathGuard>,
     path: String,
@@ -331,35 +346,49 @@ pub fn save_file(
     let target = PathBuf::from(&path);
     // 自身写盘：写前先开静默窗口、写后刷新指纹，避免 notify 把本次保存误判为外部修改
     crate::commands::watch::mark_writing(&watch, &target);
-    let text = apply_eol(&content, &newline);
-    let bytes = encoding::encode(&text, &encoding, has_bom)?;
-    let size = atomic_write(&target, &bytes)?;
-    crate::commands::watch::note_written(&watch, &target);
+    // 路径登记（轻量、幂等）放外层：闭包内不再借用 State
     guard.add_path(&path);
+    let watch_state = (*watch).clone();
+    let target_bg = target.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        let text = apply_eol(&content, &newline);
+        let bytes = encoding::encode(&text, &encoding, has_bom)?;
+        atomic_write(&target_bg, &bytes)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?;
+    // 无论成败都要结束「正在写」标记，否则失败后该文件的外部修改会被永久吞掉
+    crate::commands::watch::note_written(&watch_state, &target);
+    let size = written?;
     Ok(SaveResult { path, size })
 }
 
 /// 写入二进制文件（内容为 base64），自动创建父目录；返回写入字节数。
 /// 供「插入剪贴板图片」等需要落盘二进制的场景使用。
-/// 安全：目标必须位于应用已知路径范围内（已打开/保存文件的同目录等）。
+/// 安全：目标必须位于应用已知路径范围内（已打开/保存文件的同目录等）；
+/// 解码 + 写盘放 spawn_blocking；作用域校验先于解码，避免未授权路径也触发大内存分配。
 #[tauri::command]
-pub fn write_binary_file(
+pub async fn write_binary_file(
     state: tauri::State<'_, PathGuard>,
     path: String,
     base64_data: String,
 ) -> Result<u64, String> {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine as _;
-    let bytes = STANDARD
-        .decode(base64_data.as_bytes())
-        .map_err(|e| format!("base64 解码失败: {e}"))?;
     let target = state.ensure_file_scope(&path)?;
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        let bytes = STANDARD
+            .decode(base64_data.as_bytes())
+            .map_err(|e| format!("base64 解码失败: {e}"))?;
+        if let Some(parent) = target.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+            }
         }
-    }
-    atomic_write(&target, &bytes)
+        atomic_write(&target, &bytes)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 #[cfg(test)]

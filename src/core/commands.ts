@@ -66,10 +66,19 @@ const MENU_LABELS: Record<string, string> = {
 };
 
 const registry = new Map<string, CommandDef>();
+/** 注册代号：注册表变更后递增，供缓存派生物（快捷键分发表）判定失效 */
+let registryVersion = 0;
 
 /** 注册命令（同 id 后注册覆盖，保证单一来源语义） */
 export function registerCommands(defs: readonly CommandDef[]): void {
+  if (defs.length === 0) return;
   for (const def of defs) registry.set(def.id, def);
+  registryVersion += 1;
+}
+
+/** 注册表版本（缓存键用） */
+export function commandsVersion(): number {
+  return registryVersion;
 }
 
 export function getCommand(id: string): CommandDef | undefined {

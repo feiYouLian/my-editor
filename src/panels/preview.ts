@@ -58,6 +58,12 @@ export class PreviewHost {
   /** 预览被本类程序滚动后，窗口内其 scroll 事件视为回显直接忽略 */
   private previewEchoUntil = 0;
 
+  // ---- 块标记缓存（双栏滚动联动的热路径）----
+  /** 块标记及其内容坐标（相对滚动内容原点）；null = 需重建 */
+  private markerCache: { line: number; top: number }[] | null = null;
+  /** 建缓存时的内容高度：图片加载 / 重渲染会改变它，作为失效信号 */
+  private markerCacheHeight = -1;
+
   constructor(
     private pane: HTMLElement,
     private area: HTMLElement,
@@ -71,6 +77,10 @@ export class PreviewHost {
     this.pane.innerHTML = '<div class="preview-content"></div>';
     this.contentEl = this.pane.querySelector<HTMLElement>(".preview-content")!;
     this.contentEl.addEventListener("scroll", () => this.onPreviewScroll());
+    // 窗口尺寸变化会改变块高度：丢弃标记缓存，下一帧重建
+    window.addEventListener("resize", () => {
+      this.markerCache = null;
+    });
   }
 
   /** 移除预览区残留的图片工具条，避免连续打开图片时叠加 */
@@ -127,6 +137,7 @@ export class PreviewHost {
     this.contentEl.innerHTML = "";
     this.contentEl.classList.remove("md-doc");
     this.clearImageToolbar();
+    this.markerCache = null;
   }
 
   /** 编辑内容变化后的防抖重渲染：内容快照由调用方在真正渲染时再取 */
@@ -216,32 +227,36 @@ export class PreviewHost {
       else break; // data-line 按文档序递增
     }
     const cur = markers[idx];
-    const curTop = this.markerTop(cur.el);
     const next = markers[idx + 1];
-    if (!next) return Math.max(0, curTop - SYNC_TOP_MARGIN);
-    const nextTop = this.markerTop(next.el);
+    if (!next) return Math.max(0, cur.top - SYNC_TOP_MARGIN);
     const span = Math.max(1, next.line - cur.line);
     const frac = Math.min(1, Math.max(0, (lineNo - cur.line) / span));
-    return Math.max(0, curTop + (nextTop - curTop) * frac - SYNC_TOP_MARGIN);
+    return Math.max(0, cur.top + (next.top - cur.top) * frac - SYNC_TOP_MARGIN);
   }
 
-  /** 块标记（data-line）按文档序收集 */
-  private lineMarkers(): { el: HTMLElement; line: number }[] {
-    const out: { el: HTMLElement; line: number }[] = [];
+  /**
+   * 块标记（data-line）按内容位置缓存。
+   * 原实现每帧 querySelectorAll + 逐元素 getBoundingClientRect：长文档滚动时
+   * 每帧 O(块数) 次强制布局，帧率会跌到个位数。现在只在渲染 / 图片加载 /
+   * 尺寸变化后重建一次，滚动时只读数值数组。
+   */
+  private lineMarkers(): { line: number; top: number }[] {
+    const height = this.contentEl.scrollHeight;
+    if (this.markerCache !== null && this.markerCacheHeight === height) {
+      return this.markerCache;
+    }
+    const contentTop =
+      this.contentEl.getBoundingClientRect().top - this.contentEl.scrollTop;
+    const markers: { line: number; top: number }[] = [];
     for (const el of this.contentEl.querySelectorAll<HTMLElement>("[data-line]")) {
       const line = Number(el.dataset.line);
-      if (Number.isFinite(line)) out.push({ el, line });
+      if (!Number.isFinite(line)) continue;
+      markers.push({ line, top: el.getBoundingClientRect().top - contentTop });
     }
-    return out;
-  }
-
-  /** 标记元素相对滚动容器内容原点的顶部位置（rect 计算，不受 offsetParent 影响） */
-  private markerTop(el: HTMLElement): number {
-    return (
-      el.getBoundingClientRect().top -
-      this.contentEl.getBoundingClientRect().top +
-      this.contentEl.scrollTop
-    );
+    markers.sort((a, b) => a.top - b.top);
+    this.markerCache = markers;
+    this.markerCacheHeight = height;
+    return markers;
   }
 
   /** 重渲染 / 图片加载后：下一帧按编辑器位置重新校准预览滚动 */
@@ -293,6 +308,8 @@ export class PreviewHost {
       // markdown-it html:false + DOMPurify 兜底消毒（data:image 在媒体标签上被允许）
       this.contentEl.innerHTML = this.dompurify!.sanitize(holder.innerHTML);
       this.contentEl.scrollTop = scrollTop;
+      // 新内容：块标记缓存必须重建（scrollHeight 变化不一定能完全反映）
+      this.markerCache = null;
       this.bindImageLoadResync();
       this.scheduleResync();
     } else {
@@ -396,14 +413,12 @@ export class PreviewHost {
   private applyPreviewToEditor(): void {
     const markers = this.lineMarkers();
     if (markers.length === 0) return;
-    // 全部用视口坐标（getBoundingClientRect）比较：容器顶边与元素顶边同处
-    // 一个坐标系。注意不能拿内容坐标（相对滚动原点）和 paneTop 混用。
-    // 顶部边缘所在的块 = 最后一个 rect.top <= paneTop 的标记
-    // （比"第一个在边缘下方"的标记更稳：预览在块内滚动时编辑器连续跟随，不跳块）
-    const paneTop = this.contentEl.getBoundingClientRect().top;
+    // 全部用内容坐标比较：容器滚动量即"预览顶部边缘"在内容坐标中的位置
+    // （scrollTop 与缓存的 top 同一坐标系，无需逐帧读取 rect）
+    const threshold = this.contentEl.scrollTop + 2;
     let idx = -1;
     for (let i = 0; i < markers.length; i++) {
-      if (markers[i].el.getBoundingClientRect().top <= paneTop + 2) idx = i;
+      if (markers[i].top <= threshold) idx = i;
       else break;
     }
     let line: number;
@@ -415,12 +430,9 @@ export class PreviewHost {
       if (!next) {
         line = cur.line;
       } else {
-        const curTop = cur.el.getBoundingClientRect().top;
-        const nextTop = next.el.getBoundingClientRect().top;
+        const span = next.top - cur.top;
         const frac =
-          nextTop > curTop
-            ? Math.min(1, Math.max(0, (paneTop - curTop) / (nextTop - curTop)))
-            : 0;
+          span > 0 ? Math.min(1, Math.max(0, (threshold - cur.top) / span)) : 0;
         line = cur.line + frac * (next.line - cur.line);
       }
     }
@@ -431,7 +443,15 @@ export class PreviewHost {
   private bindImageLoadResync(): void {
     for (const img of this.contentEl.querySelectorAll("img")) {
       if (img.complete) continue;
-      img.addEventListener("load", () => this.scheduleResync(), { once: true });
+      img.addEventListener(
+        "load",
+        () => {
+          // 高度变化：丢弃块标记缓存后再校准
+          this.markerCache = null;
+          this.scheduleResync();
+        },
+        { once: true },
+      );
     }
   }
 }

@@ -157,30 +157,35 @@ fn draft_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
     Ok(drafts_dir(app)?.join(format!("{}.json", hash_hex(key.as_bytes()))))
 }
 
-/// 写入（覆盖）某标签的草稿，返回更新后的元信息
+/// 写入（覆盖）某标签的草稿，返回更新后的元信息。
+/// 草稿含全文内容且源文件指纹可能需整读：放 spawn_blocking（autosave 约 1s 一次）。
 #[tauri::command]
-pub fn write_draft(app: tauri::AppHandle, draft: DraftInput) -> Result<DraftInfo, String> {
-    let (mtime, size, hash) = match draft.path.as_deref() {
-        Some(p) => fingerprint(Path::new(p)),
-        None => (0, 0, String::new()),
-    };
-    let file = DraftFile {
-        key: draft.key.clone(),
-        path: draft.path,
-        name: draft.name,
-        encoding: draft.encoding,
-        newline: draft.newline,
-        has_bom: draft.has_bom,
-        mtime,
-        size,
-        hash,
-        saved_at: now_secs(),
-        content: draft.content,
-    };
-    let path = draft_path(&app, &draft.key)?;
-    let json = serde_json::to_string(&file).map_err(|e| format!("序列化失败: {e}"))?;
-    atomic_write(&path, &json)?;
-    Ok(DraftInfo::from_file(file))
+pub async fn write_draft(app: tauri::AppHandle, draft: DraftInput) -> Result<DraftInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mtime, size, hash) = match draft.path.as_deref() {
+            Some(p) => fingerprint(Path::new(p)),
+            None => (0, 0, String::new()),
+        };
+        let file = DraftFile {
+            key: draft.key.clone(),
+            path: draft.path,
+            name: draft.name,
+            encoding: draft.encoding,
+            newline: draft.newline,
+            has_bom: draft.has_bom,
+            mtime,
+            size,
+            hash,
+            saved_at: now_secs(),
+            content: draft.content,
+        };
+        let path = draft_path(&app, &draft.key)?;
+        let json = serde_json::to_string(&file).map_err(|e| format!("序列化失败: {e}"))?;
+        atomic_write(&path, &json)?;
+        Ok(DraftInfo::from_file(file))
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 列出全部草稿（含过期判定；内容不返回）

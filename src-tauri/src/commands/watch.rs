@@ -2,19 +2,19 @@
 //! 监听已打开文件所在目录，内容变化时推送 `file://changed` 事件；
 //! 前端仅在状态栏提示，不自动重载（由用户触发重载）。
 //!
-//! 自身保存引起的写入被抑制：前端保存后会重新登记文件指纹，
-//! 登记时给该文件一段静默窗口，窗口内的写入事件只刷新指纹、不推送。
+//! 自身保存引起的写入被抑制：保存前后用 `writing` 标记包裹（mark_writing /
+//! note_written），窗口内指纹与自身写入一致的写入事件不推送。
+//! 注意不能用「时间窗口」抑制：窗口内若发生真实的外部写入，事件与指纹都会
+//! 被吃掉（notify 不会重复上报同一次写入），外部修改会永久漏报。
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter};
 
-/// 登记后抑制自身写入事件的窗口（毫秒）
-const SUPPRESS_MS: u64 = 1500;
 /// 事件名（前端 listen）
 pub const CHANGED_EVENT: &str = "file://changed";
 
@@ -27,8 +27,10 @@ struct Entry {
     mtime: u64,
     /// 字节数
     size: u64,
-    /// 该时刻之前的写入视为自身保存，不推送
-    suppress_until_ms: u64,
+    /// 自身写盘进行中（mark_writing 置位，note_written 清除）
+    writing: bool,
+    /// 自身刚写完的指纹：命中则不当作外部修改
+    written: Option<(u64, u64)>,
 }
 
 #[derive(Serialize, Clone)]
@@ -69,13 +71,6 @@ fn fingerprint(path: &Path) -> Option<(u64, u64)> {
     Some((mtime, md.len()))
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// 登记需要监听的文件（打开 / 保存 / 关闭标签后调用）。
 /// 每次都重建指纹表；目录集合未变时不重建 watcher。
 /// 同时把监听路径登记进路径守卫（应用已知路径）。
@@ -90,7 +85,6 @@ pub fn watch_files(
 
     let mut known: HashMap<String, Entry> = HashMap::new();
     let mut dirs: HashSet<PathBuf> = HashSet::new();
-    let suppress_until_ms = now_ms() + SUPPRESS_MS;
     for raw in paths {
         let path = PathBuf::from(&raw);
         let Some((mtime, size)) = fingerprint(&path) else {
@@ -106,7 +100,8 @@ pub fn watch_files(
                 original: raw,
                 mtime,
                 size,
-                suppress_until_ms,
+                writing: false,
+                written: None,
             },
         );
     }
@@ -147,7 +142,9 @@ pub fn watch_files(
     Ok(())
 }
 
-/// 事件处理：命中已登记文件且指纹变化时推送（自身保存窗口内只刷新指纹）
+/// 事件处理：命中已登记文件且指纹变化时推送。
+/// 只抑制「自身写盘」：writing 期间的关联事件、以及指纹等于自身刚写完
+/// 结果的事件；其余变化一律上报，不能被时间窗口吞掉。
 fn handle_event(
     app: &AppHandle,
     known: &Arc<Mutex<HashMap<String, Entry>>>,
@@ -168,8 +165,9 @@ fn handle_event(
         }
         entry.mtime = mtime;
         entry.size = size;
-        if now_ms() < entry.suppress_until_ms {
-            continue; // 自身保存引起的写入
+        let self_write = entry.writing || entry.written == Some((mtime, size));
+        if self_write {
+            continue;
         }
         let payload = FileChanged {
             path: entry.original.clone(),
@@ -187,26 +185,27 @@ fn with_known<R>(state: &WatchState, f: impl FnOnce(&mut HashMap<String, Entry>)
     f(&mut map)
 }
 
-/// 自身写盘**前**调用：先给该路径开静默窗口，覆盖「写盘完成 → 刷新指纹」之间的空档。
+/// 自身写盘**前**调用：标记该路径正在被本应用写入。
 /// 不这样做的话，notify 事件可能在写盘瞬间就被处理，早于前端保存后的重新登记。
 pub(crate) fn mark_writing(state: &WatchState, path: &Path) {
     with_known(state, |map| {
         if let Some(entry) = map.get_mut(&norm(path)) {
-            entry.suppress_until_ms = now_ms() + SUPPRESS_MS;
+            entry.writing = true;
         }
     });
 }
 
-/// 自身写盘**后**调用：刷新指纹并延长静默窗口。
-/// 此后 notify 回调看到指纹一致会直接跳过，即便晚于静默窗口也不会误报。
+/// 自身写盘**后**调用（无论成败都必须调）：清除 writing 标记并刷新指纹。
+/// 此后 notify 回调看到指纹一致会直接跳过，晚到的自身事件也不会误报。
 pub(crate) fn note_written(state: &WatchState, path: &Path) {
     with_known(state, |map| {
         if let Some(entry) = map.get_mut(&norm(path)) {
-            if let Some((mtime, size)) = fingerprint(path) {
-                entry.mtime = mtime;
-                entry.size = size;
+            entry.writing = false;
+            if let Some(fp) = fingerprint(path) {
+                entry.mtime = fp.0;
+                entry.size = fp.1;
+                entry.written = Some(fp);
             }
-            entry.suppress_until_ms = now_ms() + SUPPRESS_MS;
         }
     });
 }
@@ -234,9 +233,9 @@ mod tests {
         assert!(fingerprint(&p.with_extension("missing")).is_none());
     }
 
-    /// 自身写盘：写前开静默窗口、写后刷新指纹（写后指纹一致 → 事件回调直接跳过）
+    /// 自身写盘：写前置 writing、写后清标记并刷新指纹
     #[test]
-    fn mark_and_note_written_refresh_fingerprint_and_open_window() {
+    fn mark_and_note_written_refresh_fingerprint_and_clear_writing() {
         let mut path = std::env::temp_dir();
         path.push("my_editor_watch_suppress_test.txt");
         std::fs::write(&path, b"v1").unwrap();
@@ -249,14 +248,15 @@ mod tests {
                     original: path.to_string_lossy().to_string(),
                     mtime: 1,
                     size: 2,
-                    suppress_until_ms: 0,
+                    writing: false,
+                    written: None,
                 },
             );
         });
 
         mark_writing(&state, &path);
         with_known(&state, |map| {
-            assert!(map.get(&norm(&path)).unwrap().suppress_until_ms > now_ms());
+            assert!(map.get(&norm(&path)).unwrap().writing);
         });
 
         std::fs::write(&path, b"v2-longer").unwrap();
@@ -265,7 +265,9 @@ mod tests {
             let entry = map.get(&norm(&path)).unwrap();
             let (mtime, size) = fingerprint(&path).unwrap();
             assert_eq!((entry.mtime, entry.size), (mtime, size));
-            assert!(entry.suppress_until_ms > now_ms());
+            assert!(!entry.writing);
+            // 自身写入的指纹被记住：同指纹事件不会被当作外部修改
+            assert_eq!(entry.written, Some((mtime, size)));
         });
     }
 

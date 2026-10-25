@@ -98,14 +98,14 @@ const statusReadonly = $<HTMLSpanElement>("status-readonly");
 const statusDraft = $<HTMLSpanElement>("status-draft");
 const statusExternal = $<HTMLSpanElement>("status-external");
 
-/** 格式转换目标（右键菜单顺序：先转换方向，后代码生成） */
+/** 格式转换目标（按源格式分组：JSON / YAML / Properties / Java） */
 const CONVERT_TARGETS: ConvertTarget[] = [
   "json2yaml",
-  "yaml2json",
-  "properties2yaml",
-  "yaml2properties",
   "json2java",
-  "json2ts",
+  "yaml2json",
+  "yaml2properties",
+  "properties2yaml",
+  "java2json",
 ];
 
 /** 状态栏（渲染 / 主题 / 字段显隐 / 分栏 / 消息 / 两个持久化开关） */
@@ -132,7 +132,6 @@ const statusBar = createStatusBar(
     isWhitespaceOn: () => editorHandle.isWhitespaceOn(),
     toggleWhitespace: () => editorHandle.toggleWhitespace(),
     setWordWrap: (on) => editorHandle.setWordWrap(on),
-    refreshRunButton: () => runHost.refreshRunButton(),
   },
 );
 
@@ -482,11 +481,16 @@ async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
 }
 
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
-tabStore.subscribe(() => {
+tabStore.subscribe((kind) => {
   const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
   breadcrumbView.render();
   statusBar.refresh();
+  // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
+  // 结构帧立即刷新；内容帧合并到 300ms 后再算（cURL 识别要读 4KB 文档头，
+  // 不能挂在每个按键帧上，但也不能只在结构帧算——输入 curl 后按钮应及时可用）
+  if (kind === "structure") refreshRunButton();
+  else scheduleRunButtonRefresh();
   sessionHost.refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
     void tabSwitcher.load();
@@ -580,6 +584,8 @@ subscribeSettings(() => {
   editorHandle.applySettings();
   statusBar.refresh();
   statusBar.refreshWhitespace();
+  // 语言映射 / 只读阈值等配置会影响可运行性判断
+  refreshRunButton();
 });
 
 // 编辑器右键菜单（条目由 buildEditorMenu 按当前状态构建）
@@ -591,6 +597,23 @@ const preview = new PreviewController($("preview-pane"), modeBar, editorArea, {
   getView: () => editorHandle.view,
   showMessage: statusBar.showMessage,
 });
+
+/**
+ * 运行按钮刷新的迟绑定入口：createStatusBar / tabStore 订阅都早于 RunHost 构造，
+ * 运行期统一走这里，避免在初始化完成前访问未初始化的常量（TDZ）。
+ */
+let refreshRunButton: () => void = () => {};
+
+/** 内容帧合并刷新的定时器（已有待执行任务时不重复排程） */
+let runButtonTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRunButtonRefresh(): void {
+  if (runButtonTimer !== null) return;
+  runButtonTimer = setTimeout(() => {
+    runButtonTimer = null;
+    refreshRunButton();
+  }, 300);
+}
 
 /**
  * 「重载当前标签」的迟绑定入口。
@@ -614,6 +637,7 @@ const fileService = new FileService({
   showMessage: statusBar.showMessage,
   onCheckMojibake: (tabId) => void checkMojibake(tabId),
   onDiscardDraft: (tabId) => void sessionHost.discardDraft(tabId),
+  onPersistDraft: (tabId) => void sessionHost.persistDraft(tabId),
   insertAtCursor,
   syncWatchedFiles: () => sessionHost.syncWatchedDebounced(),
   refreshStatus: () => statusBar.refresh(),
@@ -645,6 +669,7 @@ const runHost = new RunHost(runBtn, {
   onBeforeRun: () => terminalHost.hide(),
 });
 runHostRef = runHost;
+refreshRunButton = () => runHost.refreshRunButton();
 
 // 网页抓取编排（默认目录 / PathGuard 登记 / 抓取后打开）
 const fetchHost = new FetchHost({
@@ -1085,7 +1110,7 @@ registerCommands([
   { id: "convert.properties2yaml", title: "转换：Properties → YAML", section: "转换", run: () => void runHost.convertDirect("properties2yaml") },
   { id: "convert.yaml2properties", title: "转换：YAML → Properties", section: "转换", run: () => void runHost.convertDirect("yaml2properties") },
   { id: "convert.json2java", title: "转换：JSON → Java 代码", section: "转换", run: () => void runHost.convertDirect("json2java") },
-  { id: "convert.json2ts", title: "转换：JSON → TypeScript 代码", section: "转换", run: () => void runHost.convertDirect("json2ts") },
+  { id: "convert.java2json", title: "转换：Java → JSON", section: "转换", run: () => void runHost.convertDirect("java2json") },
   // 文本变换（作用于选区）
   ...(Object.keys(CASE_LABELS) as CaseMode[]).map((mode) => ({
     id: `text.case.${mode}`,

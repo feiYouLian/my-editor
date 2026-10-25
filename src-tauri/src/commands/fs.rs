@@ -78,15 +78,23 @@ pub fn rename_path(
 
 /// 删除文件或目录（目录递归；调用方必须已弹确认）。
 /// 安全：仅允许已登记工作区根目录之内。
+/// 递归删除可能很慢（node_modules 等）：放 spawn_blocking，避免卡主线程。
 #[tauri::command]
-pub fn delete_path(state: tauri::State<'_, PathGuard>, path: String) -> Result<(), String> {
+pub async fn delete_path(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+) -> Result<(), String> {
     let p = state.ensure_root_scope(&path)?;
-    let meta = fs::metadata(&p).map_err(|e| format!("读取元信息失败: {e}"))?;
-    if meta.is_dir() {
-        fs::remove_dir_all(&p).map_err(|e| format!("删除目录失败: {e}"))
-    } else {
-        fs::remove_file(&p).map_err(|e| format!("删除文件失败: {e}"))
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = fs::metadata(&p).map_err(|e| format!("读取元信息失败: {e}"))?;
+        if meta.is_dir() {
+            fs::remove_dir_all(&p).map_err(|e| format!("删除目录失败: {e}"))
+        } else {
+            fs::remove_file(&p).map_err(|e| format!("删除文件失败: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 /// 在系统文件管理器中定位（跨平台）。
