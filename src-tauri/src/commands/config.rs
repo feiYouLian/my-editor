@@ -124,6 +124,12 @@ pub struct LayoutSettings {
     pub status_bar_fields: Vec<StatusBarFieldEntry>,
     /// 侧栏当前视图：files / search / outline
     pub sidebar_view: String,
+    /// 启动时展开的侧栏分区组合（如 ["files", "outline"]；空 = 默认展开「文件」）
+    pub sidebar_expanded: Vec<String>,
+    /// 侧栏分区高度（px，键为分区 id；仅记录手调 / 按内容初始化的高度）
+    pub sidebar_sizes: BTreeMap<String, f64>,
+    /// 固定在侧栏底部的分区（从该分区往下的分区一并贴底）
+    pub sidebar_dock: Vec<String>,
 }
 
 impl Default for LayoutSettings {
@@ -137,6 +143,9 @@ impl Default for LayoutSettings {
             editor_font_size: 13,
             status_bar_fields: default_status_bar_fields(),
             sidebar_view: "files".into(),
+            sidebar_expanded: vec!["files".into()],
+            sidebar_sizes: BTreeMap::new(),
+            sidebar_dock: vec!["git".into()],
         }
     }
 }
@@ -253,6 +262,22 @@ impl Default for GlobalReplaceSettings {
     }
 }
 
+/// 文件树 / 侧栏列表的交互设置
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileSettings {
+    /// 打开手势：true = 双击（首次点击仅选中），false = 单击
+    pub open_with_double_click: bool,
+}
+
+impl Default for FileSettings {
+    fn default() -> Self {
+        Self {
+            open_with_double_click: false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
 pub struct FormatterEntry {
@@ -330,6 +355,7 @@ pub struct AppConfig {
     pub fetch: FetchSettings,
     pub terminal: TerminalSettings,
     pub global_replace: GlobalReplaceSettings,
+    pub files: FileSettings,
     pub ignore_dirs: Vec<String>,
     pub file_encoding_memory: BTreeMap<String, String>,
     pub formatters: BTreeMap<String, FormatterEntry>,
@@ -360,6 +386,7 @@ impl Default for AppConfig {
             fetch: FetchSettings::default(),
             terminal: TerminalSettings::default(),
             global_replace: GlobalReplaceSettings::default(),
+            files: FileSettings::default(),
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),
             formatters: default_formatters(),

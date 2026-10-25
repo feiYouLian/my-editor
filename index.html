@@ -63,6 +63,7 @@
               </button>
               <div id="sidebar-open" class="sidebar-section-body hidden"></div>
             </div>
+            <div class="sidebar-sash" title="拖动调整上下分区高度（双击按内容复位）"></div>
             <div class="sidebar-section">
               <button type="button" class="sidebar-section-head active" data-view="files" aria-expanded="true">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3.5 2.5h6l3 3v8h-9z"/><path d="M9.5 2.5v3h3"/></svg>
@@ -71,6 +72,7 @@
               </button>
               <div id="file-tree" class="file-tree sidebar-section-body"></div>
             </div>
+            <div class="sidebar-sash" title="拖动调整上下分区高度（双击按内容复位）"></div>
             <div class="sidebar-section">
               <button type="button" class="sidebar-section-head" data-view="search" aria-expanded="false">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4"/><path d="M10.2 10.2L13 13"/></svg>
@@ -79,6 +81,7 @@
               </button>
               <div id="sidebar-search" class="sidebar-section-body hidden"></div>
             </div>
+            <div class="sidebar-sash" title="拖动调整上下分区高度（双击按内容复位）"></div>
             <div class="sidebar-section">
               <button type="button" class="sidebar-section-head" data-view="outline" aria-expanded="false">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M5 8h8M7 12h6"/></svg>
@@ -86,6 +89,15 @@
                 <span class="chevron">&#8250;</span>
               </button>
               <div id="sidebar-outline" class="sidebar-section-body hidden"></div>
+            </div>
+            <div class="sidebar-sash" title="拖动调整上下分区高度（双击按内容复位）"></div>
+            <div class="sidebar-section">
+              <button type="button" class="sidebar-section-head" data-view="git" aria-expanded="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="3.5" r="1.5"/><circle cx="5" cy="12.5" r="1.5"/><circle cx="11" cy="6" r="1.5"/><path d="M5 5v6M5 8h4a2 2 0 0 0 2-2"/></svg>
+                <span>源代码管理</span>
+                <span class="chevron">&#8250;</span>
+              </button>
+              <div id="sidebar-git" class="sidebar-section-body hidden"></div>
             </div>
           </div>
         </aside>
@@ -117,6 +129,13 @@
       </main>
 
       <footer class="statusbar">
+        <!-- 左下角 Git 入口（参考 VS Code）：分支名切分支，右侧图标拉取 -->
+        <span id="status-git" class="status-git hidden" title="Git 分支">
+          <svg class="status-git-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="3.5" r="1.5"/><circle cx="5" cy="12.5" r="1.5"/><circle cx="11" cy="6" r="1.5"/><path d="M5 5v6M5 8h4a2 2 0 0 0 2-2"/></svg>
+          <span id="status-git-branch" class="status-git-branch" role="button">—</span>
+          <span id="status-git-sync" class="status-git-sync" role="button">⟳</span>
+        </span>
+        <span id="status-git-sep" class="status-sep"></span>
         <span id="status-path" class="status-path" data-field="path">未打开文件</span>
         <span class="status-sep"></span>
         <span id="status-readonly" class="status-readonly hidden" data-field="readonly">只读</span>
@@ -134,6 +153,9 @@
         <span id="status-wrap" class="status-toggle" data-field="wrap" title="点击切换自动换行">换行: 关</span>
         <span class="status-sep"></span>
         <span class="status-spacer"></span>
+        <!-- 图片标签显示自然尺寸；行列字段由状态栏按标签类型互斥切换 -->
+        <span id="status-image-size" class="field-hidden" data-field="imageSize" title="图片尺寸（宽 × 高，像素）">—</span>
+        <span class="status-sep field-hidden"></span>
         <span id="status-cursor" data-field="cursor">行 1，列 1</span>
         <span class="status-sep"></span>
         <span id="status-lines" data-field="lines">共 0 行</span>

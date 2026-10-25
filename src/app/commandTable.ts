@@ -54,7 +54,11 @@ export interface CommandTableCtx {
   insertAtCursor: (text: string) => void;
   toggleResultsPanel: () => void;
   focusWorkspaceSearch: () => void;
-  showSidebarView: (view: "open" | "files" | "search" | "outline") => void;
+  showSidebarView: (view: "open" | "git" | "files" | "search" | "outline") => void;
+  /** Git：分支切换面板 / 拉取 / 推送（状态栏入口之外的可命令化入口） */
+  gitPickBranch: () => void;
+  gitPull: () => void;
+  gitPush: () => void;
   /** 快捷键速查 / 关于（依赖 main.ts 的键位解析，保持注入） */
   showShortcuts: () => void;
   showAbout: () => void;
@@ -88,6 +92,9 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
+    gitPickBranch,
+    gitPull,
+    gitPush,
     showShortcuts,
     showAbout,
   } = ctx;
@@ -209,9 +216,14 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
     { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
     { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 35, menuSeparatorBefore: true, run: () => showSidebarView("open") },
+    { id: "view.sidebarGit", title: "侧栏：源代码管理", section: "视图", menu: "view", menuLabel: "侧栏：源代码管理", menuOrder: 38, run: () => showSidebarView("git") },
     { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 40, run: () => showSidebarView("files") },
     { id: "view.sidebarSearch", title: "侧栏：搜索", section: "视图", menu: "view", menuLabel: "侧栏：搜索", menuOrder: 50, run: () => showSidebarView("search") },
     { id: "view.sidebarOutline", title: "侧栏：大纲", section: "视图", menu: "view", menuLabel: "侧栏：大纲", menuOrder: 60, run: () => showSidebarView("outline") },
+    // ---- Git ----
+    { id: "git.pickBranch", title: "切换分支…", section: "Git", menu: "view", menuLabel: "切换 Git 分支…", menuOrder: 70, run: () => gitPickBranch() },
+    { id: "git.pull", title: "拉取（快进合并）", section: "Git", menu: "view", menuLabel: "拉取", menuOrder: 72, run: () => gitPull() },
+    { id: "git.push", title: "推送", section: "Git", menu: "view", menuLabel: "推送", menuOrder: 74, run: () => gitPush() },
     { id: "help.shortcuts", title: "快捷键速查", section: "设置", menu: "settings", menuLabel: "快捷键速查…", menuOrder: 85, run: () => showShortcuts() },
     { id: "help.about", title: "关于 my-editor", section: "设置", menu: "settings", menuLabel: "关于…", menuOrder: 90, run: () => showAbout() },
     // ---- 纯菜单项（系统/CM6 内置行为，仅展示）----

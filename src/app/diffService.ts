@@ -200,6 +200,34 @@ export class DiffService {
   }
 
   /**
+   * 任意文件与 Git 比较（侧栏源代码管理点击文件用）：
+   * staged=true 看 HEAD↔暂存区，否则 HEAD↔工作区。
+   */
+  async diffGitPath(path: string, staged: boolean): Promise<void> {
+    const name = tabStore.findByPath(path)?.name ?? path.split(/[\\/]/).pop() ?? path;
+    await this.open({
+      load: async () =>
+        invoke<DiffPayload>("git_diff", {
+          path,
+          scope: staged ? "index" : "worktree",
+        }),
+      actions: [
+        {
+          label: "导出补丁",
+          title: `导出 ${name} 的统一 diff 补丁`,
+          run: () => {
+            const payload = this.panel?.getPayload();
+            if (payload) void this.exportPatch(path, payload.patch);
+          },
+        },
+      ],
+      // 任意文件比较：不提供「采用差异块」（会改工作区文件，且标签未必打开）
+      adopt: () => null,
+      trailingFrom: "saved",
+    });
+  }
+
+  /**
    * 场景一：当前文件 磁盘内容 ⇄ 编辑中内容。
    * allowClean：外部修改提示用（未编辑、不脏时也允许比较）。
    */

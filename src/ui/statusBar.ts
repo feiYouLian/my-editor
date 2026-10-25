@@ -16,6 +16,18 @@ import {
 import { formatSize } from "../core/format";
 import type { Tab } from "../store/tabs";
 
+/** 图片标签下无意义的字段（只读二进制：无行列 / 编码 / 换行 / 语言 / 开关 / 脏标记） */
+const IMAGE_IRRELEVANT_FIELDS = new Set([
+  "cursor",
+  "lines",
+  "encoding",
+  "newline",
+  "language",
+  "whitespace",
+  "wrap",
+  "dirty",
+]);
+
 export interface StatusBarElements {
   path: HTMLSpanElement;
   size: HTMLSpanElement;
@@ -24,6 +36,8 @@ export interface StatusBarElements {
   language: HTMLSpanElement;
   cursor: HTMLSpanElement;
   lines: HTMLSpanElement;
+  /** 图片标签的自然尺寸（图片模式下替代行列） */
+  imageSize: HTMLSpanElement;
   dirty: HTMLSpanElement;
   message: HTMLSpanElement;
   whitespace: HTMLSpanElement;
@@ -48,6 +62,8 @@ export interface StatusBarDeps {
 
 export interface StatusBar {
   refresh(): void;
+  /** 图片查看器回报自然尺寸（宽 × 高），仅激活标签的回报会被采纳 */
+  setImageSize(tabId: string, width: number, height: number): void;
   /** 瞬时消息；durationMs 默认 3000，错误类提示可传更长停留时间 */
   showMessage(text: string, durationMs?: number): void;
   refreshWhitespace(): void;
@@ -75,6 +91,12 @@ export function createStatusBar(
   let pendingPatch: Partial<AppConfig> = {};
   /** 自动换行同步镜像：配置落库有 300ms 防抖，窗口内防连点互相抵消 */
   let wordWrapOn = getConfig().editorEnhancements.wordWrap;
+  /** 用户配置的字段显隐（设置中心），未配置的字段默认显示 */
+  let configuredFields = new Map<string, boolean>();
+  /** 上次按标签类型应用显隐时的模式；refresh 在内容帧上高频触发，值未变时跳过重排 */
+  let appliedImageMode: boolean | null = null;
+  /** 当前激活图片标签的自然尺寸：只留一条，切换标签即失效（同一标签重进免重算） */
+  let imageSize: { tabId: string; width: number; height: number } | null = null;
 
   function refreshWhitespace(): void {
     const on = deps.isWhitespaceOn();
@@ -88,8 +110,50 @@ export function createStatusBar(
     elements.wrap.classList.toggle("on", wordWrapOn);
   }
 
+  /** 图片尺寸文案：仅激活标签已回报尺寸时可用，否则显示占位 */
+  function refreshImageSize(tab: Tab | null): void {
+    const known = tab && imageSize?.tabId === tab.id ? imageSize : null;
+    elements.imageSize.textContent = known ? `${known.width} × ${known.height}` : "—";
+  }
+
+  function setImageSize(tabId: string, width: number, height: number): void {
+    // 后台标签解码完成的结果丢弃：切回该标签时查看器会重新触发一次 load
+    if (deps.getActiveTab()?.id !== tabId) return;
+    imageSize = { tabId, width, height };
+    refreshImageSize(deps.getActiveTab());
+  }
+
+  /** 单个字段显隐，连带其后紧邻的分隔符 */
+  function setFieldHidden(el: HTMLElement, hidden: boolean): void {
+    el.classList.toggle("field-hidden", hidden);
+    const next = el.nextElementSibling;
+    if (next?.classList.contains("status-sep")) next.classList.toggle("field-hidden", hidden);
+  }
+
+  /**
+   * 字段显隐 = 用户配置 ∪ 标签类型：
+   * 图片是只读二进制，没有行列、编码、换行、语言这些概念，也没有可编辑的
+   * 空白字符 / 自动换行开关——这些字段在图片标签下全部隐藏，空出的位置
+   * 让路径 / 只读 / 文件大小 / 图片尺寸一目了然（窄窗口也不会把大小挤没）。
+   * imageSize 不参与设置中心的可配置字段，只随标签类型出现。
+   */
+  function applyFieldVisibility(force = false): void {
+    const image = deps.getActiveTab()?.kind === "image";
+    if (!force && image === appliedImageMode) return;
+    appliedImageMode = image;
+    document.querySelectorAll<HTMLElement>(".statusbar [data-field]").forEach((el) => {
+      const id = el.dataset.field ?? "";
+      let visible = configuredFields.get(id) ?? true;
+      if (id === "imageSize") visible = image;
+      else if (image && IMAGE_IRRELEVANT_FIELDS.has(id)) visible = false;
+      setFieldHidden(el, !visible);
+    });
+  }
+
   function refresh(): void {
     const tab = deps.getActiveTab();
+    applyFieldVisibility();
+    refreshImageSize(tab);
     elements.path.textContent = tab ? tab.name : "未打开文件";
     elements.path.title = tab?.path ?? "";
     elements.size.textContent = tab ? formatSize(tab.size) : "—";
@@ -182,13 +246,8 @@ export function createStatusBar(
 
   /** 状态栏字段显隐（数组顺序即展示顺序） */
   function applyFields(fields: StatusBarFieldEntry[]): void {
-    const visible = new Map(fields.map((f) => [f.id, f.visible]));
-    document.querySelectorAll<HTMLElement>(".statusbar [data-field]").forEach((el) => {
-      const on = visible.get(el.dataset.field ?? "") ?? true;
-      el.classList.toggle("field-hidden", !on);
-      const next = el.nextElementSibling;
-      if (next?.classList.contains("status-sep")) next.classList.toggle("field-hidden", !on);
-    });
+    configuredFields = new Map(fields.map((f) => [f.id, f.visible]));
+    applyFieldVisibility(true);
   }
 
   /** 应用分栏比例（设置中心滑杆 / 配置默认值共用） */
@@ -205,6 +264,7 @@ export function createStatusBar(
 
   return {
     refresh,
+    setImageSize,
     showMessage,
     refreshWhitespace,
     refreshWordWrap,

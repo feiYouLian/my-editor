@@ -9,6 +9,7 @@
 
 import { syntaxTree } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
+import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 interface OutlineItem {
   label: string;
@@ -134,7 +135,10 @@ export class OutlineView {
       line.className = "outline-line";
       line.textContent = String(item.line);
       row.append(label, line);
-      row.addEventListener("click", () => this.goto(item));
+      bindOpenGesture(row, {
+        onSelect: () => selectRowIn(row),
+        onOpen: () => this.goto(item),
+      });
       frag.append(row);
     }
     if (items.length > MAX_ITEMS) {

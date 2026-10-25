@@ -1,7 +1,7 @@
 /**
- * 设置中心 ▸ 文件与会话页：会话恢复 / 草稿、大文件阈值、终端 shell。
+ * 设置中心 ▸ 文件与会话页：打开方式、会话恢复 / 草稿、大文件阈值、终端 shell。
  *
- * 与「编辑器与布局」页的分工：本页只放"文件生命周期"相关项，
+ * 与「编辑器与布局」页的分工：本页只放"文件生命周期与列表交互"相关项，
  * 不重复编辑器显示与增强开关。
  */
 
@@ -11,6 +11,17 @@ import { saveSettings, type SettingsTabContext } from "./shared";
 
 export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
   const cfg = getConfig();
+
+  const openSection = section(
+    "打开方式",
+    "侧栏列表（文件树 / 搜索结果 / 大纲 / 源代码管理 / 正在打开的文件）的打开手势；目录展开与双击设置无关，始终单击。",
+  );
+  openSection.body.append(
+    checkRow("双击打开（单击仅选中）", cfg.files.openWithDoubleClick, (value) => {
+      saveSettings({ files: { ...getConfig().files, openWithDoubleClick: value } });
+    }),
+  );
+  main.append(openSection.el);
 
   const sessionSection = section("会话与草稿", "启动恢复与未保存内容的本地兜底。");
   sessionSection.body.append(
@@ -85,9 +96,4 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
     ),
   );
   main.append(terminalSection.el);
-
-  const note = document.createElement("div");
-  note.className = "settings-note";
-  note.textContent = "跨文件批量替换与 .bak 备份策略将在后续版本接入。";
-  main.append(note);
 }

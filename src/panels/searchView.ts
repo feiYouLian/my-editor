@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/settings";
 import { confirmAction } from "../ui/dialogs";
+import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 interface SearchMatch {
   line: number;
@@ -400,7 +401,10 @@ export class SearchView {
           text.append(document.createTextNode(match.after));
         }
         row.append(ln, text);
-        row.addEventListener("click", () => this.deps.onOpenLocation(file.path, match.line));
+        bindOpenGesture(row, {
+          onSelect: () => selectRowIn(row),
+          onOpen: () => this.deps.onOpenLocation(file.path, match.line),
+        });
         rows.append(row);
       }
       if (file.truncated) {

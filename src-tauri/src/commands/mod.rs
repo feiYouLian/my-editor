@@ -6,6 +6,7 @@ pub mod fetch;
 pub mod file;
 pub mod format;
 pub mod fs;
+pub mod git;
 pub mod large;
 pub mod paths;
 pub mod run;

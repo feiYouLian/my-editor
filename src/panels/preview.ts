@@ -73,6 +73,8 @@ export class PreviewHost {
      * 通过同源访问 iframe 文档转发，坐标已换算为页面坐标。
      */
     private onContextMenu?: (x: number, y: number) => void,
+    /** 图片标签的自然宽高回报（状态栏展示用） */
+    private onImageSize?: (tabId: string, width: number, height: number) => void,
   ) {
     this.pane.innerHTML = '<div class="preview-content"></div>';
     this.contentEl = this.pane.querySelector<HTMLElement>(".preview-content")!;
@@ -97,7 +99,9 @@ export class PreviewHost {
       this.kind = null;
       this.contentEl.classList.remove("md-doc");
       this.setAreaMode("image");
-      renderImageViewer(this.pane, this.contentEl, tab);
+      renderImageViewer(this.pane, this.contentEl, tab, (w, h) =>
+        this.onImageSize?.(tab.id, w, h),
+      );
       return;
     }
     this.kind = tab ? kindOf(tab.path) : null;

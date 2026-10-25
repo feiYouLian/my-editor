@@ -10,6 +10,7 @@
 import { tabStore, type Tab } from "../store/tabs";
 import { createEntryIcon } from "../ui/icons";
 import { placeMenu } from "../ui/menu";
+import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 export interface OpenEditorsDeps {
   onActivate: (tabId: string) => void;
@@ -95,7 +96,10 @@ export class OpenEditorsView {
       });
       row.append(close);
 
-      row.addEventListener("click", () => this.deps.onActivate(tab.id));
+      bindOpenGesture(row, {
+        onSelect: () => selectRowIn(row),
+        onOpen: () => this.deps.onActivate(tab.id),
+      });
       row.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         this.showContextMenu(e.clientX, e.clientY, tab);

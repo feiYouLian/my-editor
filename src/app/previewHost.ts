@@ -28,6 +28,8 @@ export interface PreviewControllerDeps {
   getActiveTab: () => Tab | null;
   getView: () => EditorView;
   showMessage: (text: string) => void;
+  /** 图片标签自然宽高（状态栏展示；由查看器解码时回报，不额外解码） */
+  onImageSize?: (tabId: string, width: number, height: number) => void;
 }
 
 /** 联动回显抑制窗口（与 preview.ts 的 PREVIEW_ECHO_MS 对齐） */
@@ -58,6 +60,7 @@ export class PreviewController {
           this.showExportMenu(x, y, tab);
         }
       },
+      deps.onImageSize,
     );
 
     // 编辑器滚动 → 预览联动

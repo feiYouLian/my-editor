@@ -4,6 +4,7 @@ use serde::Serialize;
 use similar::{ChangeTag, TextDiff};
 
 use super::encoding;
+use super::git::git;
 use super::paths::PathGuard;
 
 /// 对齐后的双栏行；kind = equal / change / del / ins
@@ -255,18 +256,6 @@ pub async fn diff_files(
     })
     .await
     .map_err(|e| format!("任务调度失败: {e}"))?
-}
-
-fn git(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .map_err(|e| format!("git 不可用: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// 文件所在目录是否处于 Git 仓库内

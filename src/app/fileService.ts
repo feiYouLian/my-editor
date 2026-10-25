@@ -46,6 +46,8 @@ export interface FileServiceDeps {
   largeHost: LargeFileHost;
   /** 保存前格式化（仅激活标签；failed 也会继续保存原内容） */
   formatBeforeSave?: (tab: Tab) => Promise<"applied" | "skipped" | "failed">;
+  /** 写盘成功后（用于刷新 Git 状态等派生视图） */
+  onAfterSave?: () => void;
 }
 
 /** 编码回退列表（与状态栏编码菜单共用） */
@@ -319,6 +321,7 @@ export class FileService {
     tabStore.markExternal(tab.id, false);
     this.deps.syncWatchedFiles();
     this.deps.refreshStatus();
+    this.deps.onAfterSave?.();
     // 注意：与原实现一致，保存成功不弹消息（脏标记经 refresh 消失）
   }
 

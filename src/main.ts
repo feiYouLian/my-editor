@@ -9,6 +9,9 @@ import { QuickOpen } from "./panels/quickOpen";
 import { SearchView } from "./panels/searchView";
 import { OutlineView } from "./panels/outlineView";
 import { OpenEditorsView } from "./panels/openEditorsView";
+import { GitView } from "./panels/gitView";
+import type { GitFileEntry } from "./panels/gitView";
+import { BranchPicker } from "./panels/branchPicker";
 import { SidebarViews } from "./ui/sidebar";
 import { WelcomePanel } from "./panels/welcome";
 import { showAboutDialog } from "./panels/aboutDialog";
@@ -16,8 +19,9 @@ import { showShortcutsDialog, type ShortcutRow } from "./panels/shortcutsDialog"
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
-import { confirmAction, confirmCloseDirty } from "./ui/dialogs";
+import { confirmAction, confirmCloseDirty, showErrorDialog } from "./ui/dialogs";
 import { createStatusBar } from "./ui/statusBar";
+import { GitStatusItem } from "./ui/gitStatusItem";
 import { TabsBar } from "./ui/tabsBar";
 import { Breadcrumb } from "./ui/breadcrumb";
 import { EditorContextMenu, type MenuEntry } from "./ui/editorMenu";
@@ -36,6 +40,7 @@ import { StatusActions } from "./app/statusActions";
 import { FormatHost } from "./app/formatHost";
 import { buildEditorMenu } from "./app/menuContent";
 import { buildCommandTable } from "./app/commandTable";
+import { GitHost } from "./app/gitHost";
 import { LayoutPane } from "./app/layout";
 import {
   loadWorkspace,
@@ -94,6 +99,7 @@ const statusNewline = $<HTMLSpanElement>("status-newline");
 const statusLanguage = $<HTMLSpanElement>("status-language");
 const statusCursor = $<HTMLSpanElement>("status-cursor");
 const statusLines = $<HTMLSpanElement>("status-lines");
+const statusImageSize = $<HTMLSpanElement>("status-image-size");
 const statusDirty = $<HTMLSpanElement>("status-dirty");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
@@ -112,6 +118,7 @@ const statusBar = createStatusBar(
     language: statusLanguage,
     cursor: statusCursor,
     lines: statusLines,
+    imageSize: statusImageSize,
     dirty: statusDirty,
     message: statusMessage,
     whitespace: statusWhitespace,
@@ -443,6 +450,8 @@ const sidebarSearch = new SearchView($("sidebar-search"), {
     fileTree.refresh();
     sessionHost.refreshWatched();
     statusBar.refresh();
+    // 替换写盘同样会改变 Git 状态
+    gitHost.scheduleRefresh();
   },
   showMessage: statusBar.showMessage,
 });
@@ -457,6 +466,40 @@ const sidebarOutline = new OutlineView($("sidebar-outline"), {
     return !!tab && tab.kind === "text" && !tab.virtual;
   },
 });
+/** 复制文本到剪贴板（打开的文件 / 源代码管理右键共用） */
+function copyTextToClipboard(text: string, okMessage: string): void {
+  void navigator.clipboard.writeText(text).then(
+    () => statusBar.showMessage(okMessage),
+    () => statusBar.showMessage("复制失败"),
+  );
+}
+
+/** 复制路径到剪贴板 */
+function copyPathToClipboard(path: string): void {
+  copyTextToClipboard(path, "已复制文件路径");
+}
+
+/**
+ * 放弃更改前的确认（gitView 只发起，文案与确认弹窗在装配层）：
+ * 未跟踪 / 新增文件会被删除，必须把这一点写进提示。
+ */
+async function confirmDiscardGitChanges(
+  entries: GitFileEntry[],
+  staged: boolean,
+): Promise<void> {
+  if (entries.length === 0) return;
+  const deleting = entries.filter((e) => e.status === "?" || e.status === "A").length;
+  const target = entries.length === 1 ? entries[0].relative : `${entries.length} 个文件`;
+  const extra = deleting > 0 ? `，其中 ${deleting} 个未跟踪/新增文件会被删除` : "";
+  const backTo = staged ? "上次提交" : "暂存区";
+  const ok = await confirmAction(
+    `放弃 ${target} 的更改？磁盘内容将还原为${backTo}的内容${extra}。此操作不可撤销。`,
+    "放弃更改",
+  );
+  if (!ok) return;
+  gitHost.discard(entries);
+}
+
 // 侧栏「正在打开的文件」：点击激活 / 关闭（含未保存确认）+ 右键菜单
 const openEditors = new OpenEditorsView($("sidebar-open"), {
   onActivate: (id) => tabStore.activate(id),
@@ -464,39 +507,88 @@ const openEditors = new OpenEditorsView($("sidebar-open"), {
   onCloseOthers: (id) => void closeTabsBulk(() => tabStore.closeOthers(id)),
   onCloseAll: () => void closeTabsBulk(() => tabStore.closeAll()),
   onCompare: (id) => diffService.compareTabs(id),
-  onCopyPath: (path) => {
-    void navigator.clipboard.writeText(path).then(
-      () => statusBar.showMessage("已复制文件路径"),
-      () => statusBar.showMessage("复制文件路径失败"),
-    );
-  },
+  onCopyPath: (path) => copyPathToClipboard(path),
   onReveal: (path) => void invoke("reveal_in_file_manager", { path }),
 });
 openEditors.refresh();
+
+// 左下角 Git 入口（参考 VS Code）：分支名切分支、同步图标拉取
+const branchPicker = new BranchPicker({
+  load: () => gitHost.listBranches(),
+  onPick: (name) => gitHost.checkout(name),
+  showMessage: statusBar.showMessage,
+});
+const gitStatusItem = new GitStatusItem(
+  $("status-git"),
+  $("status-git-branch"),
+  $("status-git-sync"),
+  {
+    onPickBranch: () => branchPicker.open(),
+    onSync: () => gitHost.sync(),
+  },
+);
+
+// 源代码管理：只读状态 + 暂存/取消暂存/提交（串行队列 + 防抖刷新）
+const gitView = new GitView($("sidebar-git"), {
+  onRefresh: () => gitHost.refresh(),
+  onOpenDiff: (path, staged) => void diffService.diffGitPath(path, staged),
+  onStage: (entries) => gitHost.stage(entries),
+  onUnstage: (entries) => gitHost.unstage(entries),
+  onDiscard: (entries, staged) => void confirmDiscardGitChanges(entries, staged),
+  onCommit: (message) => gitHost.commit(message),
+  onOpenFile: (path) => void fileService.openFilePath(path),
+  onCopyPath: copyPathToClipboard,
+  onCopyRelative: (relative) => copyTextToClipboard(relative, "已复制相对路径"),
+  onReveal: (path) => void invoke("reveal_in_file_manager", { path }),
+  // terminalHost 在下文构造：回调运行时才访问（闭包，无 TDZ 风险）
+  onOpenTerminal: (dir) => void terminalHost.openAt(dir),
+});
+const gitHost = new GitHost({
+  getRoot: () => workspaceRoot,
+  view: gitView,
+  showMessage: statusBar.showMessage,
+  // 命令失败：状态栏给首行，完整 stderr 弹窗（可复制）
+  onError: (title, detail) => showErrorDialog(title, detail),
+  // 文件树同步染色（文件 + 上级目录）+ 状态栏分支信息
+  onStatus: (files, status) => {
+    fileTree.setGitStatus(files);
+    gitStatusItem.update(status);
+  },
+  // 切分支 / 拉取后磁盘内容变了：重载未编辑的标签
+  onWorkspaceChanged: () => void reloadCleanTabs(),
+});
+// 窗口重新聚焦时刷新一次 Git 状态（外部变更后回来能看到最新）
+window.addEventListener("focus", () => gitHost.scheduleRefresh());
 const sidebarViews = new SidebarViews(
   $("sidebar-sections"),
   {
     open: $("sidebar-open"),
+    git: $("sidebar-git"),
     files: $("file-tree"),
     search: $("sidebar-search"),
     outline: $("sidebar-outline"),
   },
   {
-    initial: "files",
     onChange: (view) => {
       statusBar.persistConfig({ layout: { ...getConfig().layout, sidebarView: view } });
       if (view === "open") openEditors.refresh();
+      if (view === "git") gitHost.refresh();
       if (view === "search") sidebarSearch.focusInput();
       if (view === "outline") sidebarOutline.scheduleRefresh();
+    },
+    // 展开组合 / 分区高度 / 底部固定：写回 config.json（启动时按此恢复）
+    onLayout: (patch) => {
+      statusBar.persistConfig({ layout: { ...getConfig().layout, ...patch } });
     },
   },
 );
 
 /** 菜单 / 快捷键：展开侧栏并切到指定视图 */
-function showSidebarView(view: "open" | "files" | "search" | "outline"): void {
+function showSidebarView(view: "open" | "git" | "files" | "search" | "outline"): void {
   layout.setSidebarVisible(true);
   sidebarViews.switch(view);
   if (view === "open") openEditors.refresh();
+  if (view === "git") gitHost.refresh();
   if (view === "search") sidebarSearch.focusInput();
   if (view === "outline") sidebarOutline.scheduleRefresh();
 }
@@ -598,6 +690,7 @@ const preview = new PreviewController($("preview-pane"), modeBar, editorArea, {
   getActiveTab: activeTab,
   getView: () => editorHandle.view,
   showMessage: statusBar.showMessage,
+  onImageSize: (tabId, width, height) => statusBar.setImageSize(tabId, width, height),
 });
 
 /**
@@ -624,6 +717,32 @@ function scheduleRunButtonRefresh(): void {
  * 运行期所有调用都走这里，不再有模块级可变状态散落各处。
  */
 let reloadActiveTab: () => Promise<void> = async () => {};
+
+/**
+ * 切换分支 / 拉取后磁盘内容变化：重载未编辑的标签。
+ * 脏标签保留现场（内容与磁盘不同，由外部修改提示与用户决定），
+ * 只重载干净标签，避免默默盖掉编辑器里未保存的内容。
+ */
+async function reloadCleanTabs(): Promise<void> {
+  for (const tab of tabStore.list()) {
+    if (tab.kind !== "text" || tab.virtual || !tab.path || tab.dirty) continue;
+    const path = tab.path;
+    try {
+      const data = await readDiskAs(path, tab.encoding);
+      tabStore.reopenWith(tab.id, data);
+      tabStore.setMojibake(tab.id, "", "");
+      tabStore.markExternal(tab.id, false);
+    } catch (e) {
+      // 文件已不存在（切分支删除 / 放弃未跟踪文件）：保留旧内容但如实标记，
+      // 由用户决定重新载入还是关闭，不默默当成本地文件
+      console.warn("[git] 重载标签失败", path, e);
+      tabStore.markExternal(tab.id, true);
+    }
+  }
+  await reloadActiveTab();
+  fileTree.refresh();
+  statusBar.refresh();
+}
 
 // 大文件只读虚拟视图宿主（分流 / 会话 / 逃生门）
 const largeHost = new LargeFileHost({
@@ -658,6 +777,8 @@ const fileService = new FileService({
   largeHost,
   // 保存前格式化：单编辑器实例，只处理激活标签；失败不阻塞保存
   formatBeforeSave: (tab) => formatHost.beforeSave(tab),
+  // 写盘成功后刷新 Git 状态（源代码管理分区）
+  onAfterSave: () => gitHost.scheduleRefresh(),
 });
 
 // 快速打开（Ctrl+P）：工作区文件模糊过滤 → 打开（含大文件分流）
@@ -968,6 +1089,9 @@ registerCommands(
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
+    gitPickBranch: () => branchPicker.open(),
+    gitPull: () => gitHost.pull(),
+    gitPush: () => gitHost.push(),
     showShortcuts: () => showShortcutsDialog(shortcutRows()),
     showAbout: () =>
       void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
@@ -1007,6 +1131,8 @@ async function openWorkspaceDir(): Promise<void> {
   if (!dir) return;
   // setRoot 会经 onWorkspaceStateChange 同步 workspaceRoot、侧栏标题与持久化
   fileTree.setRoot(dir);
+  // 新工作区：重新读取 Git 状态（状态栏分支入口随之更新或隐藏）
+  gitHost.scheduleRefresh();
 }
 
 /** 打开运行输出中的文件位置（堆栈点击）：打开文件并跳到指定行 */
@@ -1102,8 +1228,8 @@ async function bootstrap(): Promise<void> {
   await loadSettings();
   // 2) 布局项：侧栏显隐按 config.layout 恢复
   layout.applyConfiguredSidebar();
-  // 2.1) 侧栏视图（文件 / 搜索 / 大纲）按配置恢复
-  sidebarViews.restore(getConfig().layout.sidebarView ?? "files");
+  // 2.1) 侧栏布局（展开组合 / 分区高度 / 底部固定）按配置恢复
+  sidebarViews.restore(getConfig().layout);
   // 3) 分栏默认比例：localStorage 无记录时按配置（不写回，留给用户拖动/设置时落盘）
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集
@@ -1152,6 +1278,8 @@ async function bootstrap(): Promise<void> {
 
   // 登记外部修改监听（会话恢复出的标签一并纳入）
   sessionHost.refreshWatched();
+  // Git 状态首次载入（工作区已恢复）
+  gitHost.scheduleRefresh();
 }
 
 void bootstrap();

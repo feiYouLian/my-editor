@@ -54,6 +54,9 @@ const GROUPS: Group[] = [
       { key: "editorFontSize", meaning: "编辑器字号（px，10–24）", effect: "即时" },
       { key: "statusBarFields", meaning: "状态栏字段显隐与排序（id + visible 数组）", effect: "即时" },
       { key: "sidebarView", meaning: "侧栏当前分区：open / files / search / outline", effect: "即时" },
+      { key: "sidebarExpanded", meaning: '启动时展开的分区组合（空则默认 ["files"]）', effect: "重启后" },
+      { key: "sidebarSizes", meaning: "分区高度（px，键为分区 id）：按内容初始化 / 拖动分隔线时更新", effect: "重启后" },
+      { key: "sidebarDock", meaning: '固定在侧栏底部的分区（默认 ["git"]，从它往下的分区一并贴底）', effect: "即时" },
     ],
   },
   {
@@ -68,6 +71,7 @@ const GROUPS: Group[] = [
       { key: "fetch.allowPrivateNetwork", meaning: "允许「从网址抓取网页」访问内网 / 本机地址（默认 false）", effect: "即时" },
       { key: "terminal.shell", meaning: "内置终端 shell（空 = 自动：Windows 优先 pwsh，否则 PowerShell）；下次新建终端生效", effect: "即时" },
       { key: "globalReplace", meaning: "批量替换是否保留可撤销历史（存于应用配置目录，不生成 .bak）", effect: "即时" },
+      { key: "files.openWithDoubleClick", meaning: "侧栏列表的打开手势：true = 双击打开（单击仅选中），false = 单击；目录展开始终为单击", effect: "即时" },
       { key: "ignoreDirs", meaning: "工作区搜索 / 快速打开忽略的目录名", effect: "即时" },
       { key: "fileEncodingMemory", meaning: "预留：按文件名记忆编码（尚未接入）", effect: "预留" },
       { key: "formatters", meaning: "CLI 格式化工具与参数（后端按语言键读取；新增语言只需改这里）", effect: "即时" },

@@ -17,6 +17,7 @@ interface DirEntry {
 
 /** 文件图标工厂已下沉 ui/icons.ts（面包屑下拉共用） */
 import { createEntryIcon } from "../ui/icons";
+import { bindOpenGesture } from "../ui/openGesture";
 
 export interface FileTreeCallbacks {
   onOpenFile: (path: string) => void;
@@ -33,6 +34,10 @@ export class FileTree {
   private root: string | null = null;
   private expanded = new Set<string>();
   private nodes = new Map<string, HTMLElement>();
+  /** Git 状态：文件路径（规范化）→ 状态字母 */
+  private gitFileStatus = new Map<string, string>();
+  /** Git 状态：目录路径（规范化）→ 由子项推导的状态 */
+  private gitDirStatus = new Map<string, string>();
 
   constructor(
     private container: HTMLElement,
@@ -58,6 +63,48 @@ export class FileTree {
   /** 外部写盘（如批量替换生成 .bak）后重建当前树（保留展开状态） */
   refresh(): void {
     this.render();
+  }
+
+  /**
+   * 同步 Git 状态染色：文件按自身状态、目录按子项中最“重”的状态。
+   * 不重建树，只更新已渲染行的属性（懒加载新节点在 createNode 时自带状态）。
+   */
+  setGitStatus(files: Map<string, string>): void {
+    this.gitFileStatus = new Map();
+    for (const [path, status] of files) this.gitFileStatus.set(normPath(path), status);
+
+    // 目录状态：从每个文件向上推，取优先级最高的子项状态
+    this.gitDirStatus = new Map();
+    for (const [path, status] of this.gitFileStatus) {
+      let dir = this.parentOf(path);
+      let guard = 0;
+      while (dir && guard++ < 64) {
+        const key = normPath(dir);
+        this.gitDirStatus.set(key, pickStatus(this.gitDirStatus.get(key), status));
+        const next = this.parentOf(dir);
+        if (next === dir) break;
+        dir = next;
+      }
+    }
+    this.refreshGitMarks();
+  }
+
+  private statusFor(path: string, isDir: boolean): string | undefined {
+    const key = normPath(path);
+    return isDir ? this.gitDirStatus.get(key) : this.gitFileStatus.get(key);
+  }
+
+  /** 已渲染行同步状态属性（setGitStatus 后调用；数量 = 当前已展开节点） */
+  private refreshGitMarks(): void {
+    this.container.querySelectorAll<HTMLElement>(".tree-node[data-path]").forEach((node) => {
+      const path = node.dataset.path;
+      if (!path) return;
+      const row = node.querySelector<HTMLElement>(":scope > .tree-row");
+      if (!row) return;
+      const status = this.statusFor(path, this.nodes.has(path));
+      if (status) row.dataset.gitStatus = status;
+      else delete row.dataset.gitStatus;
+    });
   }
 
   private render(): void {
@@ -115,6 +162,9 @@ export class FileTree {
     const row = document.createElement("div");
     row.className = "tree-row";
     row.style.paddingLeft = `${depth * 14 + 6}px`;
+    // Git 状态：文件取自身，目录取子项推导值
+    const gitStatus = this.statusFor(entry.path, entry.is_dir);
+    if (gitStatus) row.dataset.gitStatus = gitStatus;
 
     const icon = document.createElement("span");
     icon.className = "tree-icon";
@@ -128,14 +178,19 @@ export class FileTree {
     row.append(label);
     wrapper.append(row);
 
-    row.addEventListener("click", () => {
-      if (entry.is_dir) {
-        this.toggleExpand(entry.path);
-      } else {
-        this.selectRow(entry.path);
-        this.callbacks.onOpenFile(entry.path);
-      }
-    });
+    if (entry.is_dir) {
+      // 目录保持单击展开：双击设置只影响「打开文件」
+      row.addEventListener("click", () => this.toggleExpand(entry.path));
+    } else {
+      // 单击 / 双击打开由设置决定（config.files.openWithDoubleClick）
+      bindOpenGesture(row, {
+        onSelect: () => this.selectRow(entry.path),
+        onOpen: () => {
+          this.selectRow(entry.path);
+          this.callbacks.onOpenFile(entry.path);
+        },
+      });
+    }
 
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -357,4 +412,25 @@ export class FileTree {
       this.callbacks.onNotify?.(`删除失败: ${String(e).split("\n")[0]}`);
     }
   }
+}
+
+/** Git 状态路径归一化：分隔符与大小写不敏感 */
+function normPath(path: string): string {
+  return path.replace(/\\/g, "/").toLowerCase();
+}
+
+/** 目录状态优先级：冲突 > 删除 > 修改 > 重命名 > 新增 > 未跟踪 */
+const GIT_STATUS_WEIGHT: Record<string, number> = {
+  U: 6,
+  D: 5,
+  M: 4,
+  R: 3,
+  C: 2,
+  A: 1,
+  "?": 0,
+};
+
+function pickStatus(prev: string | undefined, next: string): string {
+  if (!prev) return next;
+  return (GIT_STATUS_WEIGHT[prev] ?? 0) >= (GIT_STATUS_WEIGHT[next] ?? 0) ? prev : next;
 }
