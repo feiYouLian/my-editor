@@ -32,8 +32,14 @@ const SASH_H = 4;
 /** 可拖分区最小高度：标题行 + 至少一行内容 */
 const MIN_SECTION_PX = 60;
 
-/** 「文件」分区保底高度：它吸收剩余空间，但不能被挤没 */
+/** 「文件」分区保底高度（px 兜底） */
 const FILES_MIN_PX = 80;
+
+/**
+ * 「文件」优先保留的可用高度比例：它是主区域，其它分区再挤也要给它留下这么多。
+ * 同时打开多个分区的情况不常见，这里宁可压缩「搜索 / 大纲 / 源代码管理」。
+ */
+const FILES_MIN_RATIO = 0.4;
 
 /** 可拖分区首次展开、内容还量不出高度时的兜底值 */
 const DEFAULT_SECTION_PX = 150;
@@ -185,11 +191,10 @@ export class SidebarViews {
       btn.addEventListener("click", () => this.toggle(view));
     });
     this.initSashes();
-    // 侧栏高度变化（窗口缩放 / 终端面板开合）：挤不下时按比例收回手调高度
+    // 侧栏高度变化（窗口缩放 / 终端面板开合）：重新分配（挤不下时按比例压缩可拖区）
     new ResizeObserver(() => {
-      // 拖拽中收口会和光标抢高度，等松手再统一处理（见 endDrag）
+      // 拖拽中重排会和光标抢高度，等松手再统一处理（见 endDrag）
       if (this.drag) return;
-      this.fitSizes();
       this.applySizes();
     }).observe(this.sectionsEl);
     this.observeContent();
@@ -316,8 +321,6 @@ export class SidebarViews {
       el.classList.toggle("hidden", !this.expanded.has(view));
     }
     this.applySizes();
-    // 展开 / 收起后可能把手调高度挤爆，收口一次
-    this.fitSizes();
   }
 
   // ---- 几何 ----
@@ -347,33 +350,87 @@ export class SidebarViews {
   }
 
   /**
-   * 填充区（吸收贴顶段剩余空间、把沉底段压到底部）：
-   * - 「文件」展开就优先由它吸收；
-   * - 否则退化为锚点分区（它天然是贴顶段最后一个），但被手拖过就改固定高度；
-   * - 「正在打开的文件」永远不填充（高度由内容实时决定）。
+   * 弹性分区（吸收贴顶段剩余空间、把沉底段压到底部）：
+   * - 「文件」展开就由它承担——它是主区域，优先占用空间；
+   * - 否则退化为锚点分区（贴顶段最后一个），但被手拖过就改固定高度；
+   * - 「正在打开的文件」永远不弹性（高度由内容实时决定）。
    */
-  private fillTarget(
-    topExpanded: SidebarView[],
-    order: SidebarView[],
-    anchor: number,
-  ): SidebarView | null {
-    if (topExpanded.includes("files")) return "files";
-    const tail = anchor >= 0 ? order[anchor] : null;
+  private elasticTarget(geo: SidebarGeometry): SidebarView | null {
+    if (geo.topExpanded.includes("files")) return "files";
+    const tail = geo.anchor >= 0 ? geo.order[geo.anchor] : null;
     if (!tail || tail === "open" || this.manual.has(tail)) return null;
     return tail;
+  }
+
+  /** 弹性分区的保底高度：「文件」按比例 + 绝对值兜底，其它分区只留一行 */
+  private elasticMin(geo: SidebarGeometry, elastic: SidebarView | null): number {
+    if (elastic === "files") return Math.max(FILES_MIN_PX, geo.topAvail * FILES_MIN_RATIO);
+    return MIN_SECTION_PX;
   }
 
   // ---- 高度分配 ----
 
   /**
+   * 计算贴顶段每个展开分区的高度（px）。
+   *
+   * 优先级：「正在打开的文件」按内容实时算 → 「文件」优先保足（保底比例，富余全归它）
+   * → 其余可拖分区按内容 / 手拖值，空间不够时按比例压缩。
+   * 压缩只影响本次布局，不写回 sizes：窗口恢复后手拖值仍然生效。
+   */
+  private planHeights(
+    geo: SidebarGeometry,
+    elastic: SidebarView | null,
+  ): Map<SidebarView, number> {
+    const plan = new Map<SidebarView, number>();
+    const hasOpen = geo.topExpanded.includes("open");
+    const openH = hasOpen ? this.openHeight(geo) : 0;
+    if (hasOpen) plan.set("open", openH);
+
+    const fixed = geo.topExpanded.filter((view) => view !== "open" && view !== elastic);
+    const desired = fixed.map((view) => this.heightFor(view, geo));
+    const desiredSum = desired.reduce((sum, px) => sum + px, 0);
+    const room = Math.max(0, geo.topAvail - openH - this.elasticMin(geo, elastic));
+
+    let fixedTotal = desiredSum;
+    if (desiredSum > room) {
+      // 先给每块扣掉 MIN 保底，再把剩余额度按「期望值 - MIN」的比例分出去。
+      // 直接按期望值比例缩会每块都撞 MIN 保底，总和反过来超出 room（整栏溢出滚动）。
+      const minTotal = fixed.length * MIN_SECTION_PX;
+      if (minTotal >= room) {
+        fixed.forEach((view) => plan.set(view, MIN_SECTION_PX));
+      } else {
+        const spare = room - minTotal;
+        const extraSum = desiredSum - minTotal;
+        fixed.forEach((view, i) => {
+          const extra = desired[i] - MIN_SECTION_PX;
+          const share = extraSum > 0 ? (extra / extraSum) * spare : 0;
+          plan.set(view, Math.round(MIN_SECTION_PX + share));
+        });
+      }
+      fixedTotal = fixed.reduce((sum, view) => sum + (plan.get(view) ?? 0), 0);
+    } else {
+      fixed.forEach((view, i) => plan.set(view, desired[i]));
+    }
+
+    if (elastic) {
+      // 极窄窗口下连保底都放不下：弹性分区允许跌破比例保底（但不低于一行），
+      // 宁可它小一点，也不要整栏溢出
+      const px = geo.topAvail - openH - fixedTotal;
+      plan.set(elastic, Math.max(MIN_SECTION_PX, Math.round(px)));
+    }
+    return plan;
+  }
+
+  /**
    * 应用高度：
    * - 收起分区（含整个沉底段）只占标题行，贴顶 / 沉底由 flex 与 margin-top:auto 决定；
-   * - 填充区 flex:1 吸收剩余；
+   * - 弹性分区 flex:1 吸收剩余（min-height 兜底，窗口缩放时自动跟随）；
    * - 其余展开分区用固定像素（手调值或按内容算出的值）。
    */
   private applySizes(): void {
     const geo = this.geometry();
-    const fill = this.fillTarget(geo.topExpanded, geo.order, geo.anchor);
+    const elastic = this.elasticTarget(geo);
+    const plan = this.planHeights(geo, elastic);
     const sunkFirst = geo.sunk[0] ?? null;
 
     for (const view of geo.order) {
@@ -396,57 +453,43 @@ export class SidebarViews {
         section.style.flex = "0 0 auto";
         continue;
       }
-      if (view === fill) {
+      const px = plan.get(view) ?? MIN_SECTION_PX;
+      if (view === elastic) {
         section.style.flex = "1 1 auto";
-        section.style.minHeight = `${view === "files" ? FILES_MIN_PX : MIN_SECTION_PX}px`;
+        section.style.minHeight = `${px}px`;
         continue;
       }
-      section.style.flex = `0 0 ${this.heightFor(view, geo)}px`;
+      section.style.flex = `0 0 ${px}px`;
     }
     this.syncSashes();
   }
 
-  /** 某个展开分区该占多高（填充区不在此路径） */
+  /** 某个展开分区按内容 / 手拖值该占多高（open 与弹性分区走单独路径） */
   private heightFor(view: SidebarView, geo: SidebarGeometry): number {
-    if (view === "open") return this.openHeight(geo);
     const px = this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
     return Math.round(clamp(px, MIN_SECTION_PX, Math.max(MIN_SECTION_PX, geo.topAvail)));
   }
 
   /**
-   * 「正在打开的文件」高度：按内容实时计算，并受两条上限约束——
-   * 不超过侧栏可用高度的一半；不超过「可用高度 - 其它展开区各自的下限」，
-   * 保证它变高时不会把「文件」和其它展开区挤没。
+   * 「正在打开的文件」高度：按内容实时计算，上限为可用高度的一半。
+   * 这里是绝对上限、不再扣其它分区的份额——让位交给 planHeights 统一处理，
+   * 否则「文件」的保底和它会互相挤，两边都算不出稳定值。
    */
   private openHeight(geo: SidebarGeometry): number {
     const natural = HEAD_H + this.openContentH;
-    let reserved = 0;
-    for (const view of geo.topExpanded) {
-      if (view === "open") continue;
-      reserved +=
-        view === "files"
-          ? FILES_MIN_PX
-          : Math.round(
-              clamp(
-                this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX,
-                MIN_SECTION_PX,
-                Math.max(MIN_SECTION_PX, geo.topAvail),
-              ),
-            );
-    }
-    const cap = Math.max(
-      HEAD_H,
-      Math.min(geo.topAvail * OPEN_MAX_RATIO, geo.topAvail - reserved),
-    );
+    const cap = Math.max(HEAD_H, geo.topAvail * OPEN_MAX_RATIO);
     return Math.round(clamp(natural, HEAD_H, cap));
   }
 
-  /** 可拖分区能占到的最大高度：可用高度扣掉其它可拖分区的固定高度 */
+  /** 可拖分区能占到的最大高度（扣掉 open 与弹性分区的保底） */
   private availableHeight(): number {
     const geo = this.geometry();
+    const elastic = this.elasticTarget(geo);
     const openPx = geo.topExpanded.includes("open") ? this.openHeight(geo) : 0;
-    const filesPx = geo.topExpanded.includes("files") ? FILES_MIN_PX : 0;
-    return Math.max(MIN_SECTION_PX, geo.topAvail - openPx - filesPx);
+    return Math.max(
+      MIN_SECTION_PX,
+      geo.topAvail - openPx - this.elasticMin(geo, elastic),
+    );
   }
 
   /** 「正在打开的文件」内容高度：标签增减 / 列表变化时重算（唯一需要实时跟随的分区） */
@@ -491,13 +534,14 @@ export class SidebarViews {
   /**
    * 分隔线可拖拽态：
    * - 两侧都可调（展开且非锁定）：在二者之间分配高度；
-   * - 只有一侧可调：只调整该侧；
-   * - 锁定分区（「正在打开的文件」「文件」）所在侧永不参与，两侧都锁则整条线禁用；
+   * - 只有一侧可调：只调整该侧（「文件」这类填充区只被动补偿高度，位置不变）；
+   * - 沉底段起始线禁用（见 adjustableOf）；
    * - 唯一展开的分区铺满剩余空间，不开放拖拽。
    */
   private syncSashes(): void {
+    const sunkFirstEl = this.sunkFirstEl();
     this.sectionsEl.querySelectorAll<HTMLElement>(".sidebar-sash").forEach((sash) => {
-      const { upper, lower } = this.adjustableOf(sash);
+      const { upper, lower } = this.adjustableOf(sash, sunkFirstEl);
       const draggable = (upper !== null || lower !== null) && this.expanded.size > 1;
       sash.classList.toggle("draggable", draggable);
       sash.setAttribute("aria-disabled", String(!draggable));
@@ -518,26 +562,38 @@ export class SidebarViews {
     window.addEventListener("pointercancel", () => this.endDrag());
   }
 
+  /** 沉底段首个分区元素（没有沉底段时为 null） */
+  private sunkFirstEl(): HTMLElement | null {
+    const sunkFirst = this.geometry().sunk[0];
+    return sunkFirst ? (this.sections.get(sunkFirst) ?? null) : null;
+  }
+
   /**
-   * 分隔线两侧「可调」的分区（收起侧为 null）。
-   * 紧邻锁定分区（「正在打开的文件」「文件」）的线整体禁用：这两块的高度由计算
-   * 决定，被拖动改写会让它们的位置与内容对不上（需求明确要求这两区不可拖）。
+   * 分隔线两侧「可调」的分区（收起侧 / 锁定侧为 null）。
+   *
+   * 沉底段的起始线一律禁用：沉底段贴底不动，拖这条线只会让上方的填充区反向
+   * 补偿，线本身纹丝不动（用户感受到的就是「拖了没反应 / 方向反了」）。
+   * 调整该分区的正确入口是它上面那条边界线——那里的线正好落在它的顶边，
+   * 拖动时光标与边界同步。
    */
-  private adjustableOf(sash: HTMLElement): {
-    upper: SidebarView | null;
-    lower: SidebarView | null;
-  } {
-    const above = this.expandedViewOf(sash.previousElementSibling);
-    const below = this.expandedViewOf(sash.nextElementSibling);
-    if ((above !== null && isLocked(above)) || (below !== null && isLocked(below))) {
+  private adjustableOf(
+    sash: HTMLElement,
+    sunkFirstEl: HTMLElement | null,
+  ): { upper: SidebarView | null; lower: SidebarView | null } {
+    if (sunkFirstEl !== null && sunkFirstEl.previousElementSibling === sash) {
       return { upper: null, lower: null };
     }
-    return { upper: above, lower: below };
+    const above = this.expandedViewOf(sash.previousElementSibling);
+    const below = this.expandedViewOf(sash.nextElementSibling);
+    return {
+      upper: above !== null && !isLocked(above) ? above : null,
+      lower: below !== null && !isLocked(below) ? below : null,
+    };
   }
 
   private startDrag(sash: HTMLElement, e: PointerEvent): void {
     if (e.button !== 0 || !sash.classList.contains("draggable")) return;
-    const { upper, lower } = this.adjustableOf(sash);
+    const { upper, lower } = this.adjustableOf(sash, this.sunkFirstEl());
     if (!upper && !lower) return;
     e.preventDefault();
     this.drag = {
@@ -557,12 +613,15 @@ export class SidebarViews {
     document.body.classList.add("dragging-row");
   }
 
-  /** 两侧都可调时的预算：两区高度之和的上限（扣掉其它可调分区） */
+  /**
+   * 两侧都可调时的预算：两区高度之和的上限（扣掉其它可调分区）。
+   * 「其它分区」用实际渲染高度而非 sizes：sizes 是用户设定值，可能已被压缩。
+   */
   private pairBudget(upper: SidebarView, lower: SidebarView): number {
     let others = 0;
     for (const view of this.expanded) {
       if (view === upper || view === lower || isLocked(view)) continue;
-      others += this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
+      others += this.heightOf(view);
     }
     return Math.max(MIN_SECTION_PX * 2, this.availableHeight() - others);
   }
@@ -572,7 +631,7 @@ export class SidebarViews {
     let others = 0;
     for (const view of this.expanded) {
       if (view === target || isLocked(view)) continue;
-      others += this.sizes.get(view) ?? this.natural.get(view) ?? DEFAULT_SECTION_PX;
+      others += this.heightOf(view);
     }
     return Math.max(MIN_SECTION_PX, this.availableHeight() - others);
   }
@@ -620,7 +679,7 @@ export class SidebarViews {
     const down = e.key === "ArrowDown";
     if (!up && !down) return;
     const step = (e.shiftKey ? 50 : 10) * (up ? -1 : 1);
-    const { upper, lower } = this.adjustableOf(sash);
+    const { upper, lower } = this.adjustableOf(sash, this.sunkFirstEl());
     if (upper) {
       this.sizes.set(
         upper,
@@ -650,29 +709,6 @@ export class SidebarViews {
     this.measureOpen();
     this.apply();
     this.persistLayout();
-  }
-
-  /**
-   * 高度收口（窗口缩放 / 终端开合 / 展开收起后）：
-   * 可调分区的固定高度总和超过可用高度时按比例收回（保底 MIN）；
-   * 填充区由 flex 自动收缩（有 min-height 兜底），不在此处理。
-   */
-  private fitSizes(): void {
-    const geo = this.geometry();
-    const fill = this.fillTarget(geo.topExpanded, geo.order, geo.anchor);
-    const fixed = geo.topExpanded.filter((view) => view !== "open" && view !== fill);
-    if (fixed.length === 0) return;
-    const avail = this.availableHeight();
-    const used = fixed.reduce((sum, view) => sum + this.heightFor(view, geo), 0);
-    if (used <= avail) return;
-    const factor = avail <= 0 ? 0 : avail / used;
-    for (const view of fixed) {
-      this.sizes.set(
-        view,
-        Math.max(MIN_SECTION_PX, this.heightFor(view, geo) * factor),
-      );
-    }
-    this.applySizes();
   }
 
   private heightOf(view: SidebarView): number {
