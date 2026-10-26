@@ -2,8 +2,8 @@
  * 预览宿主（状态机）：
  * - Markdown：markdown-it(html:false) + DOMPurify + highlight.js（管线见 preview/markdownPipeline.ts，懒加载），
  *   块级元素打 data-line 标记，双栏滚动联动
- * - HTML：沙箱 iframe（sandbox="" 禁用脚本，CSS/图片正常渲染）
- * - 模式：编辑 / 预览 / 双栏（md/html 可切换；≥20MB 禁用预览）
+ * - HTML：沙箱 iframe（allow-same-origin，未开启 allow-scripts，脚本不执行；CSS/图片正常渲染）
+ * - 模式：编辑 / 预览 / 双栏（md/html 可切换；超过 20MB 禁用预览）
  * - 图片标签走 mode-image（渲染见 preview/imageViewer.ts）
  *
  * 导出（独立文档 / 打印 / HTML→Markdown）在 preview/export.ts，
@@ -34,10 +34,8 @@ const PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
 const SYNC_TOP_MARGIN = 8;
 /**
  * 双栏滚动联动：回显抑制窗口（ms）。
- * 一侧被程序滚动后，对方面板随之抛出的 scroll 事件在窗口内视为回显忽略，
- * 避免"你滚我滚"的死循环。程序滚动产生的 scroll 事件 1~2 帧内必到，
- * 120ms 足够覆盖；即便偶发超时也被当作一次真实滚动，计算结果相同、不会振荡，
- * 最多让对侧多同步一次（自收敛，无死循环）。
+ * 一侧被程序滚动后，窗口内对侧抛出的 scroll 事件视为回显忽略，避免双向追赶。
+ * 程序滚动事件 1~2 帧内必到；偶发超时只会让对侧多同步一次，不会振荡。
  */
 const PREVIEW_ECHO_MS = 120;
 
@@ -47,8 +45,13 @@ export class PreviewHost {
   private activeId: string | null = null;
   private mdReady: Promise<void> | null = null;
   private md: { render(text: string): string } | null = null;
+  private dompurify: { sanitize(html: string): string } | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private contentEl: HTMLElement;
+  /** 已渲染到预览区的标签 id（HTML 同标签重渲染时保留滚动位置） */
+  private renderedTabId: string | null = null;
+  /** 渲染代际：await 后据此丢弃被更新渲染取代的旧结果 */
+  private renderSeq = 0;
 
   // ---- 双栏滚动联动状态 ----
   /** 最近一次参与联动的编辑器视图（供重渲染 / 图片加载后校准用） */
@@ -94,9 +97,12 @@ export class PreviewHost {
   apply(tab: PreviewTab | null, mode: PreviewMode): void {
     const prevId = this.activeId;
     this.activeId = tab?.id ?? null;
+    // 立即渲染会取代待触发的防抖渲染，避免同一内容渲染两次
+    this.cancelScheduledRender();
     this.clearImageToolbar();
     if (tab?.kind === "image") {
       this.kind = null;
+      this.renderedTabId = null;
       this.contentEl.classList.remove("md-doc");
       this.setAreaMode("image");
       renderImageViewer(this.pane, this.contentEl, tab, (w, h) =>
@@ -113,7 +119,7 @@ export class PreviewHost {
       this.setAreaMode("edit");
       return;
     }
-    this.mode = mode !== "edit" ? mode : "edit";
+    this.mode = mode;
     // 换到另一个标签且新模式是编辑：上一个标签的渲染结果不会再被复用。
     // 同一标签内 编辑/预览 互切仍保留（切回零延迟），属缓存而非泄漏。
     if (this.mode === "edit" && prevId !== this.activeId) this.releaseContent();
@@ -134,14 +140,19 @@ export class PreviewHost {
   /** 释放预览 DOM：清空后 data URL 字符串与 iframe 文档树才会被回收。
    *  不重置 kind：调用方可能仍需为当前标签渲染，置空由 forgetTab / 不可预览分支负责 */
   private releaseContent(): void {
-    if (this.renderTimer) {
-      clearTimeout(this.renderTimer);
-      this.renderTimer = null;
-    }
+    this.cancelScheduledRender();
     this.contentEl.innerHTML = "";
     this.contentEl.classList.remove("md-doc");
     this.clearImageToolbar();
     this.markerCache = null;
+    this.renderedTabId = null;
+  }
+
+  /** 取消待触发的防抖渲染（立即渲染 / 释放内容时调用） */
+  private cancelScheduledRender(): void {
+    if (!this.renderTimer) return;
+    clearTimeout(this.renderTimer);
+    this.renderTimer = null;
   }
 
   /** 编辑内容变化后的防抖重渲染：内容快照由调用方在真正渲染时再取 */
@@ -160,10 +171,13 @@ export class PreviewHost {
 
   /** 渲染并兜底错误：组件加载失败时在预览区显示原因，绝不静默空白 */
   private renderSafe(tab: PreviewTab, kind: "md" | "html"): void {
-    this.renderNow(tab, kind).catch((e) => {
-      if (this.isStale(tab)) return;
+    const seq = ++this.renderSeq;
+    this.renderNow(tab, kind, seq).catch((e) => {
+      if (this.isStale(tab, seq)) return;
       console.error("[preview] 渲染失败", e);
       this.contentEl.innerHTML = "";
+      this.markerCache = null;
+      this.renderedTabId = null;
       const note = document.createElement("div");
       note.className = "preview-note";
       note.textContent = String(e instanceof Error ? e.message : e);
@@ -172,22 +186,16 @@ export class PreviewHost {
   }
 
   /**
-   * 编辑器滚动 → 预览滚动（双栏 Markdown）。
-   *
-   * 历史问题（滚动越久偏移越大）：
-   * 1. 用 posAtCoords 取顶部行——快速拖动滚动条时该行常未渲染，返回 null 直接不同步；
-   * 2. 时间窗（80ms）丢事件：一次滚动手势的最后一个事件落在窗口内就被丢弃，偏移永久残留；
-   * 3. `[data-line="N"]` 精确匹配——行落在长段落中间时没有对应标记，同样不同步。
-   *
-   * 现在改为：rAF 节流（末次事件必达）+ 高度图取顶部可见行 + 最近标记 + 块内插值。
+   * 编辑器滚动 → 预览滚动（双栏 Markdown）：
+   * rAF 节流保证末次事件必达；高度图取顶部行，再按块标记插值到亚行精度。
+   * 不用共享时间窗：手势末次事件被丢弃会让偏移永久累积。
    */
   syncFromEditor(view: EditorView): void {
-    if (!this.canSync()) return;
-    // 注意：这里不能做回显抑制——previewEchoUntil 是本类自己滚动预览时打的
-    // 标记，编辑器连续滚动时每一帧都会刷新它，若在这里判断会把真实滚动也吞掉
-    // （每 200ms 才同步一次，且手势末次事件被丢弃，偏移再次累积）。
-    // 回显抑制只属于 onPreviewScroll（预览侧）。
+    // 先记录视图：首次切到双栏时也能按编辑器当前滚动位置校准
     this.syncView = view;
+    if (!this.canSync()) return;
+    // 这里不能判断 previewEchoUntil：它标记的是"预览刚被本类滚动"，
+    // 编辑器侧回显已由 PreviewController 在事件入口过滤，在此再判断会吞掉真实滚动。
     this.scheduleSync(() => this.applyEditorToPreview());
   }
 
@@ -213,7 +221,8 @@ export class PreviewHost {
       const info = doc.line(whole);
       line = whole + (pos - info.from) / Math.max(1, info.to - info.from);
     } catch {
-      return; // 视图已销毁等异常：放弃本次同步
+      // 编辑器重建 / 销毁期间高度图可能不可用：跳过本轮，下一次滚动会重新触发
+      return;
     }
     const target = this.previewScrollTopForLine(line);
     if (target == null) return;
@@ -239,10 +248,8 @@ export class PreviewHost {
   }
 
   /**
-   * 块标记（data-line）按内容位置缓存。
-   * 原实现每帧 querySelectorAll + 逐元素 getBoundingClientRect：长文档滚动时
-   * 每帧 O(块数) 次强制布局，帧率会跌到个位数。现在只在渲染 / 图片加载 /
-   * 尺寸变化后重建一次，滚动时只读数值数组。
+   * 块标记（data-line）按内容坐标缓存：渲染 / 图片加载 / 尺寸变化后重建，
+   * 滚动热路径只读数值数组，避免逐帧 querySelectorAll 与 getBoundingClientRect。
    */
   private lineMarkers(): { line: number; top: number }[] {
     const height = this.contentEl.scrollHeight;
@@ -290,34 +297,52 @@ export class PreviewHost {
     this.area.classList.add(`mode-${mode}`);
   }
 
-  private async renderNow(tab: PreviewTab, kind: "md" | "html"): Promise<void> {
-    if (this.activeId !== tab.id || this.mode === "edit") return;
+  private async renderNow(
+    tab: PreviewTab,
+    kind: "md" | "html",
+    seq: number,
+  ): Promise<void> {
+    if (this.isStale(tab, seq)) return;
     if (tab.size > PREVIEW_MAX_BYTES) {
-      this.contentEl.innerHTML = '<div class="preview-note">文件过大（≥20MB），预览已禁用</div>';
+      this.contentEl.innerHTML =
+        '<div class="preview-note">文件过大（超过 20MB），预览已禁用</div>';
+      this.markerCache = null;
+      this.renderedTabId = null;
       return;
     }
     if (kind === "md") {
       this.contentEl.classList.add("md-doc");
       await this.ensureMarkdown();
+      // 管线加载期间可能已切走：不必再渲染整篇文档
+      if (this.isStale(tab, seq)) return;
       // 先渲染为 DOM：本地图片需在消毒前替换为 data URL
       // （盘符路径会被 DOMPurify 当作未知协议而移除 src）
       const holder = document.createElement("div");
       holder.innerHTML = this.md!.render(tab.content);
       await inlineLocalImages(holder, tab.path);
-      // 解析期间可能已切标签 / 切模式：丢弃过期结果
-      if (this.isStale(tab)) return;
-      // innerHTML 整体替换会把滚动位置重置为 0（输入期间预览"跳回顶部"的元凶）：
-      // 先记录再恢复，随后以编辑器位置重新校准
+      // 解析期间可能已切标签 / 切模式，或已有更新的渲染：丢弃过期结果
+      if (this.isStale(tab, seq)) return;
+      // innerHTML 替换会重置滚动位置：先记录再恢复（双栏下随后按编辑器位置校准）
       const scrollTop = this.contentEl.scrollTop;
       // markdown-it html:false + DOMPurify 兜底消毒（data:image 在媒体标签上被允许）
       this.contentEl.innerHTML = this.dompurify!.sanitize(holder.innerHTML);
       this.contentEl.scrollTop = scrollTop;
+      this.renderedTabId = tab.id;
       // 新内容：块标记缓存必须重建（scrollHeight 变化不一定能完全反映）
       this.markerCache = null;
       this.bindImageLoadResync();
       this.scheduleResync();
     } else {
       this.contentEl.classList.remove("md-doc");
+      // 同一标签重渲染（编辑停顿 / 模式切换）保留 iframe 滚动位置；换标签仍从顶部开始
+      let prevScroll = 0;
+      if (this.renderedTabId === tab.id) {
+        try {
+          prevScroll = this.contentEl.querySelector("iframe")?.contentWindow?.scrollY ?? 0;
+        } catch {
+          // iframe 内链接已跳到跨源页面：读不到滚动值
+        }
+      }
       // sandbox 仅放行 allow-same-origin 以便把右键事件转回宿主；
       // 未开启 allow-scripts，HTML 内脚本仍不执行
       this.contentEl.innerHTML =
@@ -325,6 +350,21 @@ export class PreviewHost {
       const iframe = this.contentEl.querySelector("iframe")!;
       iframe.srcdoc = tab.content;
       iframe.addEventListener("load", () => this.bindIframeContextMenu(iframe));
+      if (prevScroll > 0) {
+        // 只恢复首帧：iframe 内后续导航不应被拉回原位置
+        iframe.addEventListener(
+          "load",
+          () => {
+            try {
+              iframe.contentWindow?.scrollTo(0, prevScroll);
+            } catch {
+              // 跨源页面无法恢复滚动
+            }
+          },
+          { once: true },
+        );
+      }
+      this.renderedTabId = tab.id;
     }
   }
 
@@ -340,9 +380,11 @@ export class PreviewHost {
     });
   }
 
-  /** 异步渲染完成后判断标签 / 模式是否已变化 */
-  private isStale(tab: PreviewTab): boolean {
-    return this.activeId !== tab.id || this.mode === "edit";
+  /** 异步渲染完成后判断标签 / 模式是否已变化，或已有更新的渲染 */
+  private isStale(tab: PreviewTab, seq: number): boolean {
+    return (
+      seq !== this.renderSeq || this.activeId !== tab.id || this.mode === "edit"
+    );
   }
 
   private async ensureMarkdown(): Promise<void> {
@@ -367,8 +409,6 @@ export class PreviewHost {
     }
     await this.mdReady;
   }
-
-  private dompurify: { sanitize(html: string): string } | null = null;
 
   /** 管线构建完成后安装（供 loadMarkdownPipeline 回调） */
   installMarkdown(
@@ -398,14 +438,9 @@ export class PreviewHost {
   // ---- 预览滚动 → 编辑器滚动 ----
 
   /**
-   * 预览滚动 → 编辑器滚动。
-   *
-   * 历史问题：时间窗（150ms）与 syncFromEditor 的 80ms 共用 lastSyncAt，
-   * 滚动手势末尾的事件落在窗口内被丢弃 → 编辑器永久落后一截；
-   * 且 onScrollToLine 用 coordsAtPos 定位，目标行未渲染时返回 null，
-   * 快速拖动预览滚动条时编辑器完全不动 → 偏移持续放大。
-   *
-   * 现在改为：rAF 节流 + 顶部边缘所在块 + 块内插值出源行号。
+   * 预览滚动 → 编辑器滚动（双栏 Markdown）：
+   * rAF 节流 + 顶部边缘所在块 + 块内插值出源行号，
+   * 避免目标行未渲染或末次事件被丢弃时无法定位。
    */
   private onPreviewScroll(): void {
     if (!this.canSync()) return;
