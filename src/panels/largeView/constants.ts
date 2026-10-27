@@ -11,5 +11,8 @@ export const DEFAULT_PADDING_LINES = 200;
 /** 缩略图密度桶数 */
 export const MINIMAP_BUCKETS = 240;
 
+/** 缩略图宽度（px）：与编辑器内 minimap（editor/minimap.ts）保持一致 */
+export const MINIMAP_WIDTH = 80;
+
 /** 编码切换候选 */
 export const ENCODINGS = ["UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5"];

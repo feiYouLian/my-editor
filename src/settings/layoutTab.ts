@@ -58,6 +58,9 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
     checkRow("高亮当前行", cfg.layout.showActiveLine, (value) => {
       saveSettings({ layout: { ...layout(), showActiveLine: value } });
     }),
+    checkRow("Minimap 缩略图（编辑器右侧）", cfg.layout.minimap, (value) => {
+      saveSettings({ layout: { ...layout(), minimap: value } });
+    }),
     checkRow("缩进参考线", cfg.editorEnhancements.indentGuides, (value) => {
       saveSettings({ editorEnhancements: { ...editorEnhancements(), indentGuides: value } });
     }),
@@ -122,8 +125,7 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   const reservedSection = section("预留", "以下能力已设计、暂未实现，标记为预留。");
   const note = document.createElement("div");
   note.className = "settings-note";
-  note.textContent =
-    "面板停靠（查找 / 输出 / 预览停靠到右侧或底部）、Minimap、自定义主题导入：排期 v2。";
+  note.textContent = "面板停靠（查找 / 输出 / 预览停靠到右侧或底部）、自定义主题导入：排期 v2。";
   reservedSection.body.append(note);
   main.append(reservedSection.el);
 }

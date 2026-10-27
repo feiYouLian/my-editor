@@ -24,6 +24,7 @@ import { rainbowBrackets } from "./rainbowBrackets";
 import { buildKeymap } from "./keymap";
 import { searchExtensions } from "./search";
 import { bookmarkGutter } from "./bookmarks";
+import { minimapExtension } from "./minimap";
 
 export interface EditorCompartments {
   language: Compartment;
@@ -40,6 +41,7 @@ export interface EditorCompartments {
   chrome: Compartment;
   wrap: Compartment;
   folding: Compartment;
+  minimap: Compartment;
 }
 
 export function createCompartments(): EditorCompartments {
@@ -58,6 +60,7 @@ export function createCompartments(): EditorCompartments {
     chrome: new Compartment(),
     wrap: new Compartment(),
     folding: new Compartment(),
+    minimap: new Compartment(),
   };
 }
 
@@ -157,6 +160,11 @@ function foldingExtensions(): Extension[] {
   ];
 }
 
+/** Minimap：关闭时置空，开启时挂 ViewPlugin（见 minimap.ts） */
+function minimapExtensions(): Extension[] {
+  return settings.minimap ? [minimapExtension()] : [];
+}
+
 /** 各 Compartment 的初始内容 */
 export function initialExtensions(
   c: EditorCompartments,
@@ -181,6 +189,7 @@ export function initialExtensions(
     c.readOnly.of(readOnlyExtensions(opts.readonly)),
     c.language.of([]),
     c.theme.of(themeExtensions()),
+    c.minimap.of(minimapExtensions()),
     ...bookmarkGutter,
     ...searchExtensions(),
   ];
@@ -205,5 +214,6 @@ export function dynamicEffects(
     c.folding.reconfigure(foldingExtensions()),
     c.readOnly.reconfigure(readOnlyExtensions(opts.readonly)),
     c.theme.reconfigure(themeExtensions()),
+    c.minimap.reconfigure(minimapExtensions()),
   ];
 }

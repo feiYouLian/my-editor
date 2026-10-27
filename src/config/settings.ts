@@ -57,6 +57,8 @@ export interface LayoutSettings {
   defaultViewMode: "edit" | "preview" | "split";
   showLineNumbers: boolean;
   showActiveLine: boolean;
+  /** 右侧 Minimap 缩略图（见 editor/minimap.ts） */
+  minimap: boolean;
   /** 编辑器字号（px） */
   editorFontSize: number;
   /** 状态栏字段（数组顺序即展示顺序） */
@@ -176,6 +178,7 @@ export interface EditorSettings {
   columnEditorKey: string;
   showLineNumbers: boolean;
   showActiveLine: boolean;
+  minimap: boolean;
   wordWrap: boolean;
   codeFolding: boolean;
 }
@@ -240,6 +243,7 @@ export function defaultConfig(): AppConfig {
       defaultViewMode: "split",
       showLineNumbers: true,
       showActiveLine: true,
+      minimap: true,
       editorFontSize: 13,
       statusBarFields: defaultStatusBarFields(),
     },
@@ -301,6 +305,7 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     columnEditorKey: e.columnEditorKey,
     showLineNumbers: cfg.layout.showLineNumbers,
     showActiveLine: cfg.layout.showActiveLine,
+    minimap: cfg.layout.minimap,
     wordWrap: e.wordWrap,
     codeFolding: e.codeFolding,
   };

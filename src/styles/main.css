@@ -19,6 +19,12 @@
   --rb-3: #6cb6ff; /* 蓝 */
   --rb-4: #7ee787; /* 绿 */
   --rb-5: #b48ef7; /* 紫 */
+  /* Minimap 启发式着色（普通行用 --text-primary；其余为缩略图专用色，
+     比正文语法色更灰一档，避免 80px 宽色带喧宾夺主） */
+  --mm-comment: #7d8799;
+  --mm-string: #98c379;
+  --mm-keyword: #c678dd;
+  --mm-number: #d19a66;
   /* 图片查看器棋盘底：深色主题用深灰格，透明图边界可辨且不刺眼 */
   --image-checker-a: #2b303a;
   --image-checker-b: #23272f;
@@ -45,6 +51,11 @@
   --rb-3: #0969da; /* 蓝 */
   --rb-4: #1a7f37; /* 绿 */
   --rb-5: #6f42c1; /* 紫 */
+  /* Minimap 启发式着色（浅色纸底：加深保对比） */
+  --mm-comment: #6e7781;
+  --mm-string: #1a7f37;
+  --mm-keyword: #8250df;
+  --mm-number: #953800;
   /* 图片查看器棋盘底：浅色主题用浅灰格 */
   --image-checker-a: #f2f4f6;
   --image-checker-b: #e4e7eb;
@@ -75,6 +86,11 @@
   --rb-3: #4da3ff; /* 蓝 */
   --rb-4: #5fe07a; /* 绿 */
   --rb-5: #c77dff; /* 紫 */
+  /* Minimap 启发式着色（高饱和，黑底可辨） */
+  --mm-comment: #b9b9b9;
+  --mm-string: #7ee787;
+  --mm-keyword: #ffd60a;
+  --mm-number: #ff9e64;
   /* 图片查看器棋盘底：高对比度主题贴近纯黑，避免大块灰底削弱对比 */
   --image-checker-a: #1a1a1a;
   --image-checker-b: #000000;
@@ -227,6 +243,18 @@ body {
   color: #fff;
 }
 
+/* 勾选列（开关类菜单项）：空占位保证同菜单内标签对齐 */
+.menu-item .menu-check {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.menu-item .menu-label {
+  flex: 1;
+}
+
 .menu-item .shortcut {
   color: var(--text-secondary);
   font-size: 11px;
@@ -334,6 +362,56 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* Minimap 与编辑器并排（见 editor/minimap.ts）：minimap 是固定宽度的 flex 兄弟节点，
+     不做覆盖层，避免横向滚动时长行钻到缩略图下面 */
+  display: flex;
+}
+
+#editor > .cm-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---------- Minimap 缩略图 ---------- */
+.cm-minimap {
+  flex: 0 0 80px;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  cursor: pointer;
+  /* 拖拽跳转时不触发文本选择 / 触摸滚动 */
+  touch-action: none;
+  user-select: none;
+}
+
+.cm-minimap canvas {
+  display: block;
+}
+
+.cm-minimap-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* 先给不依赖 color-mix 的兜底，再由 color-mix 跟随主题 accent（WebView2 / Chromium 111+） */
+  background: rgba(76, 141, 255, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-top: 1px solid rgba(76, 141, 255, 0.6);
+  border-bottom: 1px solid rgba(76, 141, 255, 0.6);
+  border-top-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  pointer-events: none;
+}
+
+.cm-minimap:hover .cm-minimap-viewport {
+  background: rgba(76, 141, 255, 0.3);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 编辑区过窄（split 拖到极端）时整列隐藏 */
+.cm-minimap.cm-minimap-hidden {
+  display: none;
 }
 
 #preview-pane {
@@ -691,6 +769,71 @@ body.dragging-row {
   font-size: 12px;
   color: var(--text-secondary);
   flex-shrink: 0;
+}
+
+/* ---------- 预览内查找条（preview/findBar.ts） ---------- */
+.preview-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+.preview-findbar.hidden {
+  display: none;
+}
+
+.preview-find-input {
+  flex: 1;
+  min-width: 120px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 3px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.preview-find-input:focus {
+  border-color: var(--accent);
+}
+
+.preview-find-count {
+  min-width: 48px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.preview-find-btn {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.preview-find-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+/* 命中高亮：Markdown 预览（HTML 预览的规则注入到 iframe 文档内，见 findBar.ts） */
+::highlight(preview-find) {
+  background-color: rgba(76, 141, 255, 0.3);
+}
+
+::highlight(preview-find-current) {
+  background-color: rgba(255, 176, 46, 0.9);
+  color: #1b1d23;
 }
 
 /* ---------- 预览模式切换（tabs 栏右侧） ---------- */
@@ -3400,11 +3543,12 @@ button.danger:hover {
   display: flex;
 }
 
+/* 缩略图在右侧（与编辑器内 minimap 同侧、同宽、同底色） */
 .lv-minimap {
   flex-shrink: 0;
-  width: 64px;
-  border-right: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.12);
+  width: 80px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
   cursor: pointer;
 }
 

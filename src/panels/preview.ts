@@ -15,6 +15,7 @@ import { pathKindOf as kindOf } from "./preview/pathKind";
 import { loadMarkdownPipeline } from "./preview/markdownPipeline";
 import { EXPORT_IMAGE_MAX_BYTES, inlineLocalImages } from "./preview/localImages";
 import { renderImageViewer } from "./preview/imageViewer";
+import { PreviewFindBar, type PreviewFindScope } from "./preview/findBar";
 import type { PreviewKind, PreviewMode, PreviewTab } from "./preview/types";
 
 export type { PreviewKind, PreviewMode, PreviewTab };
@@ -42,6 +43,8 @@ const PREVIEW_ECHO_MS = 120;
 export class PreviewHost {
   private mode: PreviewMode = "edit";
   private kind: PreviewKind = null;
+  /** 预览内查找条（Markdown / HTML 生效，图片与编辑模式关闭） */
+  private readonly findBar: PreviewFindBar;
   private activeId: string | null = null;
   private mdReady: Promise<void> | null = null;
   private md: { render(text: string): string } | null = null;
@@ -82,6 +85,7 @@ export class PreviewHost {
     this.pane.innerHTML = '<div class="preview-content"></div>';
     this.contentEl = this.pane.querySelector<HTMLElement>(".preview-content")!;
     this.contentEl.addEventListener("scroll", () => this.onPreviewScroll());
+    this.findBar = new PreviewFindBar(this.pane, () => this.findScope());
     // 窗口尺寸变化会改变块高度：丢弃标记缓存，下一帧重建
     window.addEventListener("resize", () => {
       this.markerCache = null;
@@ -104,6 +108,7 @@ export class PreviewHost {
       this.kind = null;
       this.renderedTabId = null;
       this.contentEl.classList.remove("md-doc");
+      this.findBar.forget();
       this.setAreaMode("image");
       renderImageViewer(this.pane, this.contentEl, tab, (w, h) =>
         this.onImageSize?.(tab.id, w, h),
@@ -115,11 +120,14 @@ export class PreviewHost {
     // 只切 CSS class 的话，整棵预览树（含 data URL 图片与 iframe 文档）会一直驻留。
     if (!this.kind) {
       this.releaseContent();
+      this.findBar.forget();
       this.mode = "edit";
       this.setAreaMode("edit");
       return;
     }
     this.mode = mode;
+    // 编辑模式下预览不可见：查找条收起（切回预览时由 renderNow 重建命中，不会自动弹出）
+    if (mode === "edit") this.findBar.close();
     // 换到另一个标签且新模式是编辑：上一个标签的渲染结果不会再被复用。
     // 同一标签内 编辑/预览 互切仍保留（切回零延迟），属缓存而非泄漏。
     if (this.mode === "edit" && prevId !== this.activeId) this.releaseContent();
@@ -127,6 +135,58 @@ export class PreviewHost {
     if (this.mode !== "edit" && tab) {
       this.renderSafe(tab, this.kind);
     }
+  }
+
+  // ---- 预览内查找 ----
+
+  /** 打开查找条；图片 / 编辑模式下的预览不可见，调用方应先自行判断 */
+  openFind(): boolean {
+    if (this.kind === null || this.mode === "edit") return false;
+    this.findBar.open();
+    return true;
+  }
+
+  closeFind(): void {
+    this.findBar.close();
+  }
+
+  isFindOpen(): boolean {
+    return this.findBar.isOpen();
+  }
+
+  /** 查找作用域：Markdown 为预览容器，HTML 为 iframe 文档（需已 load） */
+  private findScope(): PreviewFindScope | null {
+    if (this.kind === "md") {
+      return {
+        root: this.contentEl,
+        win: window,
+        reveal: (range) => {
+          const rect = range.getBoundingClientRect();
+          const box = this.contentEl.getBoundingClientRect();
+          const top =
+            this.contentEl.scrollTop + (rect.top - box.top) - this.contentEl.clientHeight / 2;
+          this.contentEl.scrollTop = Math.max(0, top);
+        },
+      };
+    }
+    if (this.kind === "html") {
+      const iframe = this.contentEl.querySelector("iframe");
+      const win = iframe?.contentWindow;
+      const doc = iframe?.contentDocument;
+      if (!win || !doc?.body) return null;
+      return {
+        root: doc.body,
+        win,
+        reveal: (range) => {
+          const rect = range.getBoundingClientRect();
+          win.scrollTo({
+            top: Math.max(0, win.scrollY + rect.top - win.innerHeight / 2),
+            behavior: "auto",
+          });
+        },
+      };
+    }
+    return null;
   }
 
   /** 关闭标签：若面板正展示它，释放其渲染结果 */
@@ -141,6 +201,8 @@ export class PreviewHost {
    *  不重置 kind：调用方可能仍需为当前标签渲染，置空由 forgetTab / 不可预览分支负责 */
   private releaseContent(): void {
     this.cancelScheduledRender();
+    // 先清高亮：Range 随 DOM 释放而失效，留着会在下次搜索时抛错
+    this.findBar.forget();
     this.contentEl.innerHTML = "";
     this.contentEl.classList.remove("md-doc");
     this.clearImageToolbar();
@@ -175,6 +237,7 @@ export class PreviewHost {
     this.renderNow(tab, kind, seq).catch((e) => {
       if (this.isStale(tab, seq)) return;
       console.error("[preview] 渲染失败", e);
+      this.findBar.close();
       this.contentEl.innerHTML = "";
       this.markerCache = null;
       this.renderedTabId = null;
@@ -332,6 +395,8 @@ export class PreviewHost {
       this.markerCache = null;
       this.bindImageLoadResync();
       this.scheduleResync();
+      // 内容已换：按当前查询重建命中（高亮的 Range 指向旧 DOM）
+      this.findBar.revive();
     } else {
       this.contentEl.classList.remove("md-doc");
       // 同一标签重渲染（编辑停顿 / 模式切换）保留 iframe 滚动位置；换标签仍从顶部开始
@@ -349,7 +414,11 @@ export class PreviewHost {
         '<iframe class="preview-iframe" sandbox="allow-same-origin"></iframe>';
       const iframe = this.contentEl.querySelector("iframe")!;
       iframe.srcdoc = tab.content;
-      iframe.addEventListener("load", () => this.bindIframeContextMenu(iframe));
+      iframe.addEventListener("load", () => {
+        this.bindIframeContextMenu(iframe);
+        // iframe 文档就绪后才能遍历文本
+        this.findBar.revive();
+      });
       if (prevScroll > 0) {
         // 只恢复首帧：iframe 内后续导航不应被拉回原位置
         iframe.addEventListener(

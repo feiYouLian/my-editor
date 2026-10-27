@@ -116,6 +116,23 @@ export class PreviewController {
     return this.modes.get(tab.id) ?? getConfig().layout.defaultViewMode;
   }
 
+  /**
+   * 预览内查找是否可用：纯预览模式 + Markdown/HTML。
+   * 双栏下编辑器可见，Ctrl+F 仍应走编辑器查找，故不接管。
+   */
+  canFind(): boolean {
+    const tab = this.deps.getActiveTab();
+    if (!tab || tab.kind !== "text") return false;
+    if (!pathKindOf(tab.path)) return false;
+    return this.currentMode() === "preview";
+  }
+
+  /** 打开预览内查找条；返回 false 表示未接管（调用方继续原有查找逻辑） */
+  openFind(): boolean {
+    if (!this.canFind()) return false;
+    return this.panel.openFind();
+  }
+
   /** 标签关闭：遗忘其模式记忆，并释放面板上该标签的渲染结果 */
   forget(tabId: string): void {
     this.modes.delete(tabId);

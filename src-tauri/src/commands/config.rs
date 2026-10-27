@@ -118,6 +118,8 @@ pub struct LayoutSettings {
     pub default_view_mode: String,
     pub show_line_numbers: bool,
     pub show_active_line: bool,
+    /// 右侧 Minimap 缩略图
+    pub minimap: bool,
     /// 编辑器字号（px）
     pub editor_font_size: u32,
     /// 状态栏字段（数组顺序即展示顺序）
@@ -138,6 +140,7 @@ impl Default for LayoutSettings {
             default_view_mode: "split".into(),
             show_line_numbers: true,
             show_active_line: true,
+            minimap: true,
             editor_font_size: 13,
             status_bar_fields: default_status_bar_fields(),
             sidebar_view: "files".into(),
@@ -545,4 +548,30 @@ pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), Strin
 #[tauri::command]
 pub fn config_path(app: tauri::AppHandle) -> Result<String, String> {
     Ok(config_file(&app)?.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧配置缺少 layout.minimap（v2 之前的 config.json）：应取默认 true，且不影响同段其它字段
+    #[test]
+    fn legacy_config_without_minimap_uses_default() {
+        let legacy = r#"{"version":2,"layout":{"splitRatio":0.6,"showLineNumbers":false}}"#;
+        let cfg: AppConfig = serde_json::from_str(legacy).expect("旧配置应可解析");
+        assert!(cfg.layout.minimap);
+        assert!(!cfg.layout.show_line_numbers);
+        assert!((cfg.layout.split_ratio - 0.6).abs() < f64::EPSILON);
+    }
+
+    /// 显式关闭后往返一次不丢字段
+    #[test]
+    fn minimap_roundtrips() {
+        let mut cfg = AppConfig::default();
+        cfg.layout.minimap = false;
+        let json = serde_json::to_string(&cfg).expect("序列化");
+        assert!(json.contains("\"minimap\":false"));
+        let back: AppConfig = serde_json::from_str(&json).expect("反序列化");
+        assert!(!back.layout.minimap);
+    }
 }

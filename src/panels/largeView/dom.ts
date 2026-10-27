@@ -3,7 +3,7 @@
  * 只负责建元素与返回引用，事件接线留在 panels/largeView.ts。
  */
 
-import { ENCODINGS } from "./constants";
+import { ENCODINGS, MINIMAP_WIDTH } from "./constants";
 
 export interface LargeViewDom {
   titleEl: HTMLSpanElement;
@@ -94,13 +94,13 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     indexEl,
   );
 
-  // ---- 主体：缩略图 + 虚拟列表 ----
+  // ---- 主体：虚拟列表 + 缩略图（缩略图在右侧，与编辑器内 minimap 同侧） ----
   const body = document.createElement("div");
   body.className = "lv-body";
 
   const canvas = document.createElement("canvas");
   canvas.className = "lv-minimap";
-  canvas.width = 64;
+  canvas.width = MINIMAP_WIDTH;
   canvas.title = "缩略图：点击跳转，红线为过滤命中位置";
 
   const scrollEl = document.createElement("div");
@@ -112,7 +112,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   spacerEl.append(rowsEl);
   scrollEl.append(spacerEl);
 
-  body.append(canvas, scrollEl);
+  body.append(scrollEl, canvas);
 
   const statusEl = document.createElement("div");
   statusEl.className = "lv-status";

@@ -19,6 +19,7 @@ import { openColumnEditor } from "../editor/columnEditor";
 import { gotoBookmark, toggleBookmark } from "../editor/bookmarks";
 import { copyFromEditor, pasteIntoEditor } from "../editor/clipboard";
 import { pathKindOf } from "../panels/preview";
+import { getConfig, updateSettings } from "../config/settings";
 import { showSettingsHelp } from "../ui/settingsHelp";
 import type { Tab } from "../store/tabs";
 import type { FileService } from "./fileService";
@@ -31,7 +32,11 @@ export interface CommandTableCtx {
   fileService: FileService;
   quickOpen: { open(): void };
   fetchHost: { open(): void };
-  preview: { export(tab: Tab, format: "html" | "word" | "pdf" | "md"): Promise<void> };
+  preview: {
+    export(tab: Tab, format: "html" | "word" | "pdf" | "md"): Promise<void>;
+    /** 纯预览模式下接管 Ctrl+F：在渲染结果里查找（返回 false 表示未接管） */
+    openFind(): boolean;
+  };
   diffService: DiffService;
   runHost: RunHost;
   terminalHost: { toggle(): Promise<void>; hide(): void };
@@ -200,6 +205,8 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", menu: "edit", menuLabel: "查找…", menuOrder: 60, menuSeparatorBefore: true, hidden: true, run: () => {
         // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，故全局兜底放行
         if (getActiveTab()?.kind !== "text") return;
+        // 纯预览模式下编辑器不可见：Ctrl+F 改为在渲染结果中查找
+        if (preview.openFind()) return;
         openSearchPanel(getView());
       } },
     { id: "search.replace", title: "替换（当前文档）", section: "查找", defaultKey: "Mod-H", menu: "edit", menuLabel: "替换…", menuOrder: 70, hidden: true, run: () => {
@@ -212,7 +219,14 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       } },
     // ---- 视图 ----
     { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", menu: "edit", menuOrder: 120, menuSeparatorBefore: true, hidden: true, run: () => palette.toggle() },
-    { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", menu: "view", menuLabel: "切换侧栏", menuOrder: 10, hidden: true, run: () => layout.toggleSidebar() },
+    { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", menu: "view", menuLabel: "切换侧栏", menuOrder: 10, hidden: true, menuChecked: () => getConfig().layout.sidebarVisible, run: () => layout.toggleSidebar() },
+    { id: "view.toggleMinimap", title: "切换 Minimap 缩略图", section: "视图", defaultKey: "Mod-Shift-M", menu: "view", menuLabel: "切换 Minimap 缩略图", menuOrder: 15, menuChecked: () => getConfig().layout.minimap, run: () => {
+        const next = !getConfig().layout.minimap;
+        // layout 段是浅合并，必须整对象回传；保存成功后主进程订阅会触发 Compartment 重配
+        void updateSettings({ layout: { ...getConfig().layout, minimap: next } })
+          .then(() => showMessage(`Minimap 已${next ? "开启" : "关闭"}`))
+          .catch((e) => showMessage(`配置保存失败：${String(e).split("\n")[0]}`));
+      } },
     { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
     { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
     { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 35, menuSeparatorBefore: true, run: () => showSidebarView("open") },

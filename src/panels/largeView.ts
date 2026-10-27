@@ -56,6 +56,8 @@ export class LargeView {
   private filterFinishedId = -1;
   /** 流式刷新节流时间戳 */
   private lastStreamRefresh = 0;
+  /** 应用主题切换观察器：缩略图颜色取自 CSS 变量，需要主动重绘 */
+  private themeObserver: MutationObserver | null = null;
 
   constructor(private host: HTMLElement, private deps: LargeViewDeps) {
     this.mount();
@@ -86,6 +88,15 @@ export class LargeView {
       el.scrollEl.scrollTop = ratio * total * LINE_HEIGHT - el.scrollEl.clientHeight / 2;
       this.scheduleLoad();
     });
+
+    // 主题切换不产生滚动/渲染事件：观察 data-theme 后重绘，避免沿用旧主题配色
+    if (typeof MutationObserver === "function") {
+      this.themeObserver = new MutationObserver(() => this.drawMinimap());
+      this.themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    }
 
     // 大小写 / 正则开关（互斥样式，各自独立状态）
     const wireToggle = (btn: HTMLButtonElement, isOn: () => boolean): void => {

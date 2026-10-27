@@ -70,7 +70,16 @@ export class MenuBar {
       }
       const el = document.createElement("div");
       el.className = "menu-item";
+      // 勾选列：所有项都占位，保证同列菜单标签左边缘对齐
+      const check = document.createElement("span");
+      check.className = "menu-check";
+      if (item.checked?.()) {
+        check.textContent = "✓";
+        el.classList.add("checked");
+      }
+      el.append(check);
       const label = document.createElement("span");
+      label.className = "menu-label";
       label.textContent = item.label ?? "";
       el.append(label);
       if (item.shortcut) {

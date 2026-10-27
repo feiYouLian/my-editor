@@ -18,6 +18,8 @@ export interface MenuItemModel {
   shortcut?: string;
   run?: () => void;
   separator?: boolean;
+  /** 勾选态求值（开关类菜单项；每次展开菜单时调用，取最新状态） */
+  checked?: () => boolean;
 }
 
 export interface MenuModel {
@@ -50,6 +52,8 @@ export interface CommandDef {
   menuSeparatorBefore?: boolean;
   /** 菜单展示的快捷键（不进键位体系；如系统剪贴板键 Ctrl+A） */
   menuShortcut?: string;
+  /** 开关类菜单项的勾选态（缺省 = 不显示勾选列；菜单展开时求值） */
+  menuChecked?: () => boolean;
   // ---- 可见性 ----
   /** 不在命令面板显示（纯菜单项 / 纯键位展示项） */
   hidden?: boolean;
@@ -131,6 +135,7 @@ export function menuModel(resolveShortcut: (cmd: CommandDef) => string): MenuMod
         label: cmd.menuLabel ?? cmd.title,
         shortcut: shortcut || undefined,
         run: cmd.run,
+        checked: cmd.menuChecked,
       });
     }
     if (items.length > 0) menus.push({ id, label, items });
