@@ -23,6 +23,7 @@ const IMAGE_IRRELEVANT_FIELDS = new Set([
   "encoding",
   "newline",
   "language",
+  "indent",
   "whitespace",
   "wrap",
   "dirty",
@@ -39,7 +40,13 @@ export interface StatusBarElements {
   /** 图片标签的自然尺寸（图片模式下替代行列） */
   imageSize: HTMLSpanElement;
   dirty: HTMLSpanElement;
+  /** 常驻错误（保存失败等）：不随 3 秒消息消失，直到显式清除 */
+  error: HTMLSpanElement;
+  /** 长任务进行中指示（旋转点 + 文案） */
+  busy: HTMLSpanElement;
   message: HTMLSpanElement;
+  /** 当前文档缩进（空格 N / Tab） */
+  indent: HTMLSpanElement;
   whitespace: HTMLSpanElement;
   wrap: HTMLSpanElement;
   readonly: HTMLSpanElement;
@@ -52,6 +59,8 @@ export interface StatusBarDeps {
   getActiveTab: () => Tab | null;
   /** 语言展示文案（含「（手动）」标注；领域逻辑在 main.ts） */
   languageLabel: (tab: Tab) => string;
+  /** 当前文档缩进文案（"空格:4" / "Tab" / "—"） */
+  indentLabel: () => string;
   /** 编辑器空白字符是否显示中 */
   isWhitespaceOn: () => boolean;
   /** 编辑器切换空白字符 */
@@ -66,6 +75,12 @@ export interface StatusBar {
   setImageSize(tabId: string, width: number, height: number): void;
   /** 瞬时消息；durationMs 默认 3000，错误类提示可传更长停留时间 */
   showMessage(text: string, durationMs?: number): void;
+  /** 常驻错误条：一直显示到 clearStickyError()，用于"保存失败"等不能错过的失败 */
+  showStickyError(text: string): void;
+  clearStickyError(): void;
+  /** 长任务进行中：可嵌套（计数归零才隐藏），纯 CSS 动画 */
+  showBusy(text: string): void;
+  hideBusy(): void;
   refreshWhitespace(): void;
   refreshWordWrap(): void;
   toggleWhitespace(): void;
@@ -164,21 +179,72 @@ export function createStatusBar(
       ? `${tab.mojibakeReason}（点击切换编码）`
       : "点击切换编码（重新打开为…）";
     elements.newline.textContent = tab ? tab.newline : "—";
+    // 虚拟视图（大文件 / 日志）没有光标回调，行数只能由标签里的总行数渲染
+    if (tab?.virtual && typeof tab.totalLines === "number") {
+      elements.lines.textContent = `共 ${tab.totalLines} 行`;
+    }
     elements.language.textContent = tab ? deps.languageLabel(tab) : "纯文本";
+    elements.indent.textContent = tab ? deps.indentLabel() : "—";
     elements.dirty.classList.toggle("hidden", !tab?.dirty);
     elements.external.classList.toggle("hidden", tab?.externallyChanged !== true);
     elements.readonly.classList.toggle("hidden", tab?.readonly !== true);
-    elements.readonly.title = tab?.readonly ? tab.readonlyReason : "";
+    if (tab?.readonly) {
+      // 只写"只读"等于没说：把原因压在字段里，不必 hover 才知道为什么不能编辑
+      const reason = (tab.readonlyReason ?? "").trim();
+      const short = reason.length > 12 ? `${reason.slice(0, 12)}…` : reason;
+      elements.readonly.textContent = short ? `只读 · ${short}` : "只读";
+      elements.readonly.title = reason;
+    } else {
+      elements.readonly.textContent = "只读";
+      elements.readonly.title = "";
+    }
     refreshWhitespace();
     refreshWordWrap();
   }
 
   /** 状态栏瞬时消息（格式化结果等，默认 3 秒后淡出） */
+  /** 同一显示窗口内叠加了多少条消息：用于"（+N）"提示，避免关键信息被后一条吞掉 */
+  let messageCount = 0;
+
   function showMessage(text: string, durationMs = 3000): void {
-    elements.message.textContent = text;
+    const visible = !elements.message.classList.contains("hidden");
+    messageCount = visible ? messageCount + 1 : 0;
+    elements.message.textContent = messageCount > 0 ? `${text}（+${messageCount}）` : text;
+    elements.message.title = text;
     elements.message.classList.remove("hidden");
     if (messageTimer) clearTimeout(messageTimer);
-    messageTimer = setTimeout(() => elements.message.classList.add("hidden"), durationMs);
+    messageTimer = setTimeout(() => {
+      elements.message.classList.add("hidden");
+      messageCount = 0;
+    }, durationMs);
+  }
+
+  /** 并发长任务计数：嵌套调用时后到的文案覆盖，全部结束才隐藏 */
+  let busyDepth = 0;
+
+  function showBusy(text: string): void {
+    busyDepth++;
+    const textEl = elements.busy.querySelector<HTMLElement>(".status-busy-text");
+    if (textEl) textEl.textContent = text;
+    elements.busy.classList.remove("hidden");
+  }
+
+  function hideBusy(): void {
+    busyDepth = Math.max(0, busyDepth - 1);
+    if (busyDepth === 0) elements.busy.classList.add("hidden");
+  }
+
+  /** 常驻错误：独立元素，避免与 3 秒瞬时消息互相覆盖 */
+  function showStickyError(text: string): void {
+    elements.error.textContent = text;
+    elements.error.title = text;
+    elements.error.classList.remove("hidden");
+  }
+
+  function clearStickyError(): void {
+    elements.error.textContent = "";
+    elements.error.title = "";
+    elements.error.classList.add("hidden");
   }
 
   /** 合并两层配置补丁：嵌套对象（layout / editorEnhancements 等）逐层合并 */
@@ -266,6 +332,10 @@ export function createStatusBar(
     refresh,
     setImageSize,
     showMessage,
+    showStickyError,
+    clearStickyError,
+    showBusy,
+    hideBusy,
     refreshWhitespace,
     refreshWordWrap,
     toggleWhitespace,

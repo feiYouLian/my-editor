@@ -15,6 +15,7 @@ import { foldKeymap } from "@codemirror/language";
 import { settings } from "../config/settings";
 import { openColumnEditor } from "./columnEditor";
 import { bookmarkKeymap } from "./bookmarks";
+import { closeBracketsKeymap } from "./input";
 
 /** Home 双段跳转：第 1 次跳到行内首个非空白字符，第 2 次跳到行首 */
 function smartHome(view: EditorView, select: boolean): boolean {
@@ -46,6 +47,9 @@ export function buildKeymap() {
   return keymap.of([
     indentWithTab,
     ...lineEditKeys(),
+    // 必须排在 defaultKeymap 之前：否则 Backspace 走 deleteCharBackward，
+    // 闭合括号不会成对删除
+    ...closeBracketsKeymap,
     ...foldKeymap,
     ...defaultKeymap,
     ...historyKeymap,

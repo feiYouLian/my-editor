@@ -19,7 +19,7 @@ import { showShortcutsDialog, type ShortcutRow } from "./panels/shortcutsDialog"
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
 import { tabStore, type Tab } from "./store/tabs";
-import { confirmAction, confirmCloseDirty, showErrorDialog } from "./ui/dialogs";
+import { confirmAction, confirmCloseDirty, confirmExitDirty, showErrorDialog } from "./ui/dialogs";
 import { createStatusBar } from "./ui/statusBar";
 import { GitStatusItem } from "./ui/gitStatusItem";
 import { TabsBar } from "./ui/tabsBar";
@@ -54,7 +54,13 @@ import {
   getConfig,
   loadSettings,
   subscribeSettings,
+  updateSettings,
 } from "./config/settings";
+import { openStatusMenu } from "./ui/statusMenu";
+import { initBusy, withBusy } from "./ui/busy";
+import { NoticePanel } from "./panels/noticePanel";
+import { addNotice, listNotices, subscribeNotices } from "./app/noticeStore";
+import type { IndentStyle } from "./core/indentDetect";
 import {
   matchKeyCommand,
   resolveKey,
@@ -71,6 +77,7 @@ import {
 } from "./core/commands";
 import type { SettingsPanel } from "./panels/settingsPanel";
 import { basenameOf } from "./core/paths";
+import { ensureFinalNewline, trimTrailing } from "./core/textOps";
 import { effectiveLanguage, languageLabel } from "./editor/languages";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +108,10 @@ const statusCursor = $<HTMLSpanElement>("status-cursor");
 const statusLines = $<HTMLSpanElement>("status-lines");
 const statusImageSize = $<HTMLSpanElement>("status-image-size");
 const statusDirty = $<HTMLSpanElement>("status-dirty");
+const statusIndent = $<HTMLSpanElement>("status-indent");
+const statusError = $<HTMLSpanElement>("status-error");
+const statusBusy = $<HTMLSpanElement>("status-busy");
+const statusNotice = $<HTMLSpanElement>("status-notice");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
 const statusWrap = $<HTMLSpanElement>("status-wrap");
@@ -120,6 +131,9 @@ const statusBar = createStatusBar(
     lines: statusLines,
     imageSize: statusImageSize,
     dirty: statusDirty,
+    indent: statusIndent,
+    error: statusError,
+    busy: statusBusy,
     message: statusMessage,
     whitespace: statusWhitespace,
     wrap: statusWrap,
@@ -130,6 +144,12 @@ const statusBar = createStatusBar(
   {
     getActiveTab: activeTab,
     languageLabel,
+    indentLabel: () => {
+      const tab = activeTab();
+      if (!tab || tab.kind !== "text" || tab.virtual) return "—";
+      const style = editorHandle.indentStyle();
+      return style.insertSpaces ? `空格:${style.tabSize}` : "Tab";
+    },
     isWhitespaceOn: () => editorHandle.isWhitespaceOn(),
     toggleWhitespace: () => editorHandle.toggleWhitespace(),
     setWordWrap: (on) => editorHandle.setWordWrap(on),
@@ -138,6 +158,72 @@ const statusBar = createStatusBar(
 
 statusWhitespace.addEventListener("click", () => statusBar.toggleWhitespace());
 statusWrap.addEventListener("click", () => statusBar.toggleWordWrap());
+
+// 长任务指示注册（批量保存 / 抓取 / 批量替换等经 withBusy 包一层）
+initBusy({ show: statusBar.showBusy, hide: statusBar.hideBusy });
+
+// ---- 通知中心（H9）：失败与待处理提示的聚合入口 ----
+const noticePanel = new NoticePanel(statusNotice, { onMessage: statusBar.showMessage });
+statusNotice.addEventListener("click", (e) => {
+  e.stopPropagation();
+  noticePanel.toggle();
+});
+subscribeNotices(() => {
+  const count = listNotices().length;
+  statusNotice.classList.toggle("hidden", count === 0);
+  statusNotice.textContent = count > 0 ? `⚠ ${count}` : "";
+  statusNotice.title = count > 0 ? `${count} 条待处理提示（点击查看）` : "";
+});
+
+// 缩进字段：点击切换当前文档的缩进（会话级）；「设为全局默认」才写 config.json
+statusIndent.addEventListener("click", (e) => {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || tab.virtual) {
+    statusBar.showMessage("当前标签不支持调整缩进");
+    return;
+  }
+  const current = editorHandle.indentStyle();
+  const key = current.insertSpaces ? `space:${current.tabSize}` : "tab";
+  openStatusMenu<string>({
+    anchor: { x: e.clientX, y: e.clientY },
+    header: `缩进：${current.insertSpaces ? `空格 ${current.tabSize}` : "Tab"}${
+      current.confidence === "low" ? "（沿用全局设置）" : ""
+    }`,
+    options: [
+      { value: "space:2", label: "空格 2" },
+      { value: "space:4", label: "空格 4" },
+      { value: "space:8", label: "空格 8" },
+      { value: "tab", label: "Tab", separatorBefore: true },
+    ],
+    actions: [
+      {
+        label: "把当前缩进设为全局默认",
+        separatorBefore: true,
+        run: () => {
+          void updateSettings({ tabSize: current.tabSize, insertSpaces: current.insertSpaces })
+            .then(() => statusBar.showMessage("已设为全局默认缩进"))
+            .catch((err) =>
+              statusBar.showMessage(`保存配置失败：${String(err).split("\n")[0]}`),
+            );
+        },
+      },
+    ],
+    current: key,
+    tabId: tab.id,
+    onMessage: statusBar.showMessage,
+    onPick: (value) => {
+      const style: IndentStyle =
+        value === "tab"
+          ? { tabSize: current.tabSize, insertSpaces: false, confidence: "high" }
+          : { tabSize: Number(value.split(":")[1]), insertSpaces: true, confidence: "high" };
+      editorHandle.setIndent(style);
+      statusBar.refresh();
+      statusBar.showMessage(
+        `缩进：${style.insertSpaces ? `空格 ${style.tabSize}` : "Tab"}（仅当前文档）`,
+      );
+    },
+  });
+});
 
 // ---- 状态栏弹出菜单（换行符 / 语言 / 编码）：领域动作见 app/statusActions.ts ----
 
@@ -150,6 +236,7 @@ const statusActions = new StatusActions({
   saveAsWithEncoding: () => void fileService.saveAsWithEncoding(),
   readDiskAs,
   fallbackEncodings: FALLBACK_ENCODINGS,
+  rememberEncoding: rememberEncodingDebounced,
 });
 
 
@@ -211,6 +298,11 @@ const tabsBarView = new TabsBar($<HTMLDivElement>("tabs"), {
   onActivate: (id) => tabStore.activate(id),
   onClose: (id) => void closeTab(id),
   onCompareWith: (id) => diffService.compareTabs(id),
+  // 固定入口：文件被外部改动 / 保存失败后想"回到磁盘版本"时不用再找菜单
+  onReload: (id) => {
+    const tab = tabStore.findById(id);
+    if (tab) void sessionHost.reloadFromDisk(tab);
+  },
   onBulkClose: (kind, id) =>
     void closeTabsBulk(() => {
       if (kind === "left") return tabStore.closeLeft(id);
@@ -320,14 +412,16 @@ async function saveAllFiles(): Promise<void> {
   }
   let ok = 0;
   const failed: string[] = [];
-  for (const tab of saved) {
-    try {
-      await fileService.writeTo(tab, tab.path);
-      ok += 1;
-    } catch {
-      failed.push(tab.name);
+  await withBusy(`保存 ${saved.length} 个文件…`, async () => {
+    for (const tab of saved) {
+      try {
+        await fileService.writeTo(tab, tab.path);
+        ok += 1;
+      } catch {
+        failed.push(tab.name);
+      }
     }
-  }
+  });
   const extra = untitled > 0 ? `；另有 ${untitled} 个未命名文档未保存` : "";
   statusBar.showMessage(
     failed.length > 0
@@ -364,6 +458,38 @@ async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
   await fn();
 }
 
+// ---- 外部修改：切到该标签时才确认（后台标签不打扰）----
+
+/** 已被「取消」过的标签：同一轮外部修改不再反复弹 */
+const externalPrompted = new Set<string>();
+/** 正在弹确认的标签：快速连点标签时不叠出多个对话框 */
+let externalPrompting: string | null = null;
+
+async function promptExternalReload(tab: Tab): Promise<void> {
+  if (externalPrompted.has(tab.id) || externalPrompting === tab.id) return;
+  externalPrompted.add(tab.id);
+  externalPrompting = tab.id;
+  try {
+    const reload = await confirmAction(
+      `「${tab.name}」已被其它程序修改。\n重新加载会用磁盘内容替换当前编辑区；选择「取消」保留当前内容（标签上的 ⟳ 仍在，可稍后从标签右键菜单重新载入）。`,
+      "重新加载",
+    );
+    if (!reload) return;
+    externalPrompted.delete(tab.id);
+    await sessionHost.reloadFromDisk(tab, { force: true });
+  } finally {
+    if (externalPrompting === tab.id) externalPrompting = null;
+  }
+}
+
+/** 切标签 / 载入完成后调用：只有目标标签确实被外部改过才弹 */
+function maybePromptExternalChange(): void {
+  const tab = activeTab();
+  if (!tab || !tab.externallyChanged) return;
+  if (externalPrompted.has(tab.id)) return;
+  void promptExternalReload(tab);
+}
+
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
 tabStore.subscribe((kind) => {
   const prevActiveId = tabSwitcher.currentId;
@@ -380,7 +506,12 @@ tabStore.subscribe((kind) => {
   else scheduleRunButtonRefresh();
   sessionHost.refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
-    void tabSwitcher.load();
+    // 等这一轮标签载入完成再问，避免"标签还没显示就弹窗"
+    void tabSwitcher.load().then(() => maybePromptExternalChange());
+  }
+  // 已关闭标签的"已取消"记录顺手清掉（数量等于标签数，成本可忽略）
+  for (const id of externalPrompted) {
+    if (!tabStore.findById(id)) externalPrompted.delete(id);
   }
   if (sessionHost.structureChanged()) {
     sessionHost.persistSession();
@@ -407,6 +538,10 @@ const fileTree = new FileTree(fileTreeEl, {
   // terminalHost 在下文构造：回调运行时才访问（闭包，无 TDZ 风险）
   onOpenTerminal: (dir) => void terminalHost.openAt(dir),
   onNotify: (message) => statusBar.showMessage(message),
+  // 过滤框与快速打开共用同一份忽略目录，避免两处搜出来的文件不一致
+  getIgnoreDirs: () => getConfig().ignoreDirs,
+  // 空状态里的「打开目录」按钮（原来只有一行文字）
+  onOpenFolder: () => void openWorkspaceDir(),
   onWorkspaceStateChange: (state) => {
     workspaceRoot = state.root;
     wsName.textContent = state.root
@@ -655,12 +790,17 @@ editorHandle = createEditor($("editor"), {
     if (tab && editorHandle.docId() === tab.id) {
       // 只标记，不写盘：切标签 / 隐藏 / 定时器兜底时再落会话
       sessionHost.setCursor(tab.id, { line, col });
+      // 大纲跟随光标（只在侧栏确实显示大纲时更新，否则纯属浪费）
+      if (sidebarViews.view === "outline") sidebarOutline.followCursor(line);
     }
   },
   onHighlightDisabled: (reason) => {
     console.info(`[editor] 高亮已禁用: ${reason}`);
     statusLanguage.textContent = "纯文本（高亮已禁用）";
   },
+  // 书签 / 折叠变化写进会话（400ms 防抖），重启后自动恢复
+  onBookmarkChange: () => sessionHost.persistSession(),
+  onFoldChange: () => sessionHost.persistSession(),
 });
 
 // 惰性快照：按键只标记内容已变，需要全文时经 snapshotOf 从编辑器拉取
@@ -749,6 +889,11 @@ const largeHost = new LargeFileHost({
   showMessage: statusBar.showMessage,
   onCheckMojibake: (tabId) => void statusActions.checkMojibake(tabId),
   onReloadActiveTab: () => reloadActiveTab(),
+  // 索引完成后把真实行数写回标签，状态栏（右侧）随之刷新 —— 视图内不再重复显示
+  onVirtualMetrics: (totalLines) => {
+    const tab = activeTab();
+    if (tab?.virtual) tabStore.setVirtualTotalLines(tab.id, totalLines);
+  },
 });
 
 // 格式化编排（文档级 / 选中级 / 保存前自动格式化）
@@ -760,6 +905,27 @@ const formatHost = new FormatHost({
   showMessage: statusBar.showMessage,
   refreshStatus: () => statusBar.refresh(),
 });
+
+// ---- 按文件记忆编码（F1）----
+// 只在自动检测置信度低时采用上次的选择；写回做 800ms 防抖，避免连续开文件时抖配置
+const ENCODING_MEMORY_DEBOUNCE_MS = 800;
+let encodingMemoryTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingEncodingMemory: Record<string, string> = {};
+
+function rememberEncodingDebounced(path: string, encoding: string): void {
+  if (!getConfig().files.encodeMemory) return;
+  if (getConfig().fileEncodingMemory[path] === encoding) return;
+  pendingEncodingMemory[path] = encoding;
+  if (encodingMemoryTimer) clearTimeout(encodingMemoryTimer);
+  encodingMemoryTimer = setTimeout(() => {
+    encodingMemoryTimer = null;
+    const patch = pendingEncodingMemory;
+    pendingEncodingMemory = {};
+    void updateSettings({
+      fileEncodingMemory: { ...getConfig().fileEncodingMemory, ...patch },
+    }).catch((e) => console.warn("[encoding] 记忆编码写回失败", e));
+  }, ENCODING_MEMORY_DEBOUNCE_MS);
+}
 
 // 文件操作服务（打开 / 保存 / 另存 / 插入图片 / 配置）
 const fileService = new FileService({
@@ -777,8 +943,46 @@ const fileService = new FileService({
   largeHost,
   // 保存前格式化：单编辑器实例，只处理激活标签；失败不阻塞保存
   formatBeforeSave: (tab) => formatHost.beforeSave(tab),
+  // 保存前清理（默认关）：激活标签走编辑器事务且不进撤销栈，其它标签直接改内存
+  cleanupBeforeSave: (tab) => {
+    const cfg = getConfig().files;
+    if (!cfg.trimTrailingWhitespaceOnSave && !cfg.ensureFinalNewlineOnSave) return;
+    if (tab.kind !== "text" || tab.virtual) return;
+    const eol = tab.newline === "CRLF" ? "\r\n" : tab.newline === "CR" ? "\r" : "\n";
+    const transform = (text: string): string => {
+      let next = text;
+      if (cfg.trimTrailingWhitespaceOnSave) next = trimTrailing(next);
+      if (cfg.ensureFinalNewlineOnSave) next = ensureFinalNewline(next, eol);
+      return next;
+    };
+    if (editorHandle.docId() === tab.id) {
+      editorHandle.applyDocTransform(transform, { history: false });
+    } else {
+      tabStore.applyContentTransform(tab.id, transform);
+    }
+  },
   // 写盘成功后刷新 Git 状态（源代码管理分区）
   onAfterSave: () => gitHost.scheduleRefresh(),
+  // 保存失败不得静默：弹可复制详情的对话框 + 状态栏常驻红字（直到下次保存成功）
+  reportSaveError: (tab, error) => {
+    const detail = String(error ?? "未知错误");
+    // 失败后直接给出两条出路：另存为（换路径）、从磁盘重新载入（文件被外部占用/改动时）
+    showErrorDialog(`保存失败：「${tab.name}」`, detail, [
+      { label: "另存为…", run: () => void fileService.saveFileAs() },
+      { label: "从磁盘重新载入", run: () => void sessionHost.reloadFromDisk(tab) },
+    ]);
+    statusBar.showStickyError("保存失败");
+    addNotice(
+      "saveFail",
+      `保存失败：「${tab.name}」`,
+      [{ label: "另存为…", run: () => void fileService.saveFileAs() }],
+      `save:${tab.id}`,
+    );
+  },
+  clearSaveError: () => statusBar.clearStickyError(),
+  preferredEncoding: (path) =>
+    getConfig().files.encodeMemory ? (getConfig().fileEncodingMemory[path] ?? null) : null,
+  rememberEncoding: rememberEncodingDebounced,
 });
 
 // 快速打开（Ctrl+P）：工作区文件模糊过滤 → 打开（含大文件分流）
@@ -851,6 +1055,28 @@ const diffService = new DiffService({
 
 // 窗口 chrome（标题栏按钮 / 缩放热区 / 退出清理）
 const windowChrome = new WindowChrome({
+  // 退出前确认未保存文件（快捷键与清理流程不变，只是不再静默丢弃）
+  confirmExit: async () => {
+    // 已有模态打开时不叠加：先让用户处理当前对话框，退出请求直接取消
+    if (isModalOpen()) return false;
+    const dirty = tabStore.list().filter((t) => t.dirty && t.kind === "text" && !t.virtual);
+    if (dirty.length === 0) return true;
+    const choice = await confirmExitDirty(dirty.map((t) => t.name), {
+      draftAutosave: getConfig().session.draftAutosave,
+    });
+    if (choice === "cancel") return false;
+    if (choice === "save") {
+      await saveAllFiles();
+      // 有失败就不能退：否则用户会以为已经存过
+      const stillDirty = tabStore
+        .list()
+        .filter((t) => t.dirty && t.kind === "text" && !t.virtual);
+      return stillDirty.length === 0;
+    }
+    // 不保存退出：先落草稿，下次启动仍可恢复
+    for (const tab of dirty) await sessionHost.persistDraft(tab.id);
+    return true;
+  },
   onBeforeExit: async () => {
     await sessionHost.flush();
     try {
@@ -915,7 +1141,15 @@ const sessionHost = new SessionHost(
     onNewUntitled: (name) => fileService.newUntitled(name),
     onLoadPendingTab: (tab) => largeHost.loadPendingTab(tab),
     onDiffDisk: () => void diffService.diffUnsaved({ allowClean: true }),
-  },
+    getBookmarks: (tabId) => editorHandle.bookmarksOf(tabId),
+    getFolds: (tabId) => editorHandle.foldsOf(tabId),
+    onCloseTab: (tabId) => void closeTab(tabId),
+    // 外部修改落在"正看着的标签"上：立即问，不等到下次切标签
+    onExternalOnActive: (tab) => {
+      externalPrompted.delete(tab.id);
+      void promptExternalReload(tab);
+    },
+},
   statusDraft,
   statusExternal,
 );
@@ -1190,13 +1424,48 @@ let lastNonModalFocus: HTMLElement | null = null;
 document.addEventListener("focusin", (e) => {
   const t = e.target;
   if (!(t instanceof HTMLElement)) return;
-  if (t.closest(MODAL_SELECTORS)) return; // 模态内部的焦点变迁不记录
+  // 模态内部、以及菜单（打开时会主动聚焦）都不作为"恢复目标"
+  if (t.closest(MODAL_SELECTORS) || t.closest(".context-menu")) return;
   lastNonModalFocus = t;
 });
-new MutationObserver(() => {
-  if (isModalOpen()) return;
-  const prev = lastNonModalFocus;
-  if (prev?.isConnected) prev.focus();
+// 点到空白处时焦点落到 body，但**不会触发 focusin**：不显式清空的话，
+// 之后任何一次 DOM 重建（列表刷新、标签切换）都会把焦点"拽回"旧输入框。
+// 先清空再让随后的 focusin 重新记录，顺序天然正确（mousedown → focusin）。
+document.addEventListener(
+  "mousedown",
+  (e) => {
+    const t = e.target;
+    if (t instanceof HTMLElement && t.closest(MODAL_SELECTORS)) return;
+    lastNonModalFocus = null;
+  },
+  true,
+);
+
+/**
+ * 只在"刚刚移除了一个模态节点"时恢复焦点。
+ * 原实现监听所有 childList 变更并对每个变更跑 isModalOpen() + focus()，
+ * 既会被列表重建反复触发（抢焦点），又在大列表刷新时产生成百上千次查询。
+ */
+let focusRestoreRaf: number | null = null;
+new MutationObserver((records) => {
+  const removedModal = records.some((record) =>
+    [...record.removedNodes].some(
+      (node) =>
+        node instanceof HTMLElement &&
+        (node.matches(MODAL_SELECTORS) || node.querySelector(MODAL_SELECTORS) !== null),
+    ),
+  );
+  if (!removedModal) return;
+  if (focusRestoreRaf !== null) return; // 一帧只处理一次
+  focusRestoreRaf = requestAnimationFrame(() => {
+    focusRestoreRaf = null;
+    if (isModalOpen()) return;
+    // 焦点已经在有效元素上（用户已自己点了别处）就不要动
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const prev = lastNonModalFocus;
+    if (prev?.isConnected) prev.focus();
+  });
 }).observe(document.body, { childList: true, subtree: true });
 
 window.addEventListener(
@@ -1268,6 +1537,17 @@ async function bootstrap(): Promise<void> {
         ? tabStore.findByPath(sess.activeFile)
         : tabStore.list()[0];
       if (target) tabStore.activate(target.id);
+      // 书签 / 折叠：激活标签立即恢复；占位标签先排队，首次载入时应用
+      for (const f of sess.openFiles) {
+        const tab = tabStore.findByPath(f.path);
+        if (!tab) continue;
+        if (f.bookmarks && f.bookmarks.length > 0) {
+          editorHandle.restoreBookmarks(tab.id, f.bookmarks);
+        }
+        if (f.folds && f.folds.length > 0) {
+          editorHandle.restoreFolds(tab.id, f.folds);
+        }
+      }
     } catch (e) {
       console.warn("[session] 恢复失败", e);
     }
@@ -1281,5 +1561,23 @@ async function bootstrap(): Promise<void> {
   // Git 状态首次载入（工作区已恢复）
   gitHost.scheduleRefresh();
 }
+
+// ---- 全局异常兜底（H12）----
+// 任何未被捕获的 Promise 拒绝都不能静默：IPC 失败（保存 / 读写 / 进程）此前
+// 只会进控制台，用户看到的是"点了没反应"。
+// 注意白名单：用户取消对话框产生的 AbortError 属预期流程，不弹窗。
+const IGNORED_REJECTIONS = [/AbortError/i, /user canceled/i, /已取消/];
+
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e.reason as unknown;
+  const text = reason instanceof Error ? reason.message : String(reason ?? "未知错误");
+  if (IGNORED_REJECTIONS.some((re) => re.test(text))) {
+    e.preventDefault();
+    return;
+  }
+  console.error("[unhandled]", reason);
+  showErrorDialog("操作失败", text);
+  e.preventDefault();
+});
 
 void bootstrap();

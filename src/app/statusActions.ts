@@ -47,6 +47,8 @@ export interface StatusActionsDeps {
   readDiskAs: (path: string, encoding: string) => Promise<FileContent>;
   /** 状态栏编码菜单的回退候选 */
   fallbackEncodings: string[];
+  /** 记住本次手动选择的编码（下次打开同一文件优先采用） */
+  rememberEncoding?: (path: string, encoding: string) => void;
 }
 
 export class StatusActions {
@@ -160,13 +162,26 @@ export class StatusActions {
       this.deps.showMessage("当前文件不支持切换编码");
       return;
     }
+    const candidates = tab.encodingCandidates.length
+      ? tab.encodingCandidates
+      : this.deps.fallbackEncodings;
+    const suggested = tab.mojibakeSuggested?.trim() ?? "";
+    const options = candidates.map((enc) => ({ value: enc, label: enc }));
+    // 乱码已诊断出建议编码时，把它顶到第一项：用户不必自己判断选哪个
+    if (suggested && !candidates.includes(suggested)) {
+      options.unshift({ value: suggested, label: `${suggested}（建议）` });
+    } else if (suggested) {
+      const idx = options.findIndex((o) => o.value === suggested);
+      if (idx > 0) {
+        const [hit] = options.splice(idx, 1);
+        hit.label = `${hit.label}（建议）`;
+        options.unshift(hit);
+      }
+    }
     openStatusMenu({
       anchor: { x, y },
-      header: `当前编码：${tab.encoding}`,
-      options: (tab.encodingCandidates.length
-        ? tab.encodingCandidates
-        : this.deps.fallbackEncodings
-      ).map((enc) => ({ value: enc, label: enc })),
+      header: `当前编码：${tab.encoding}${suggested ? ` · 建议 ${suggested}` : ""}`,
+      options,
       // 两类编码操作同框但语义不同：上面只改解读方式，下面是真正转码写新文件
       actions: [
         {
@@ -197,6 +212,8 @@ export class StatusActions {
     try {
       const data = await this.deps.readDiskAs(tab.path, encoding);
       tabStore.reopenWith(tabId, data);
+      // 手动选择比自动检测可靠：记下来，下次打开该文件优先用
+      if (tab.path) this.deps.rememberEncoding?.(tab.path, data.encoding);
       // 编码已变更：旧结论失效，按新解读重新检测
       tabStore.setMojibake(tabId, "", "");
       if (tabStore.active()?.id === tabId) {

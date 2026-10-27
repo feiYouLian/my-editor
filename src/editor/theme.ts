@@ -56,7 +56,9 @@ function baseLayout(fontSize: number): Extension {
       lineHeight: "1.6",
       overflow: "auto",
     },
-    ".cm-content": { padding: "8px 0", maxWidth: "100%" },
+    // 底部留白（scrollPastEnd）：光标停在最后一行时也能滚到视口中部，
+    // 否则写文档末尾会一直贴着底边。纯样式实现，不新增扩展。
+    ".cm-content": { padding: "8px 0 40vh", maxWidth: "100%" },
     ".cm-gutters": {
       borderRight: "1px solid var(--border)",
       // 背景色由各语法主题自带的 gutter 规则提供（dark=one-dark、light/hc=结构底）
@@ -67,6 +69,21 @@ function baseLayout(fontSize: number): Extension {
     // 书签 gutter
     "& .cm-bookmark-gutter": { width: "22px", minWidth: "22px" },
     ".cm-bookmark": { color: "#ffcc66", cursor: "pointer", fontSize: "12px" },
+    // 补全弹窗：CM 默认选中项用系统 Highlight 色，深色主题下常常几乎看不见，
+    // 导致"不知道回车会插入哪一条"。改成强调色实底 + 白字，并把行高放宽。
+    ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
+      padding: "3px 8px",
+      lineHeight: "1.4",
+    },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
+      backgroundColor: "var(--accent)",
+      color: "#ffffff",
+    },
+    // 命中前缀再加粗，同一个候选里"为什么它排第一"也能看出来
+    ".cm-completionMatchedText": {
+      textDecoration: "none",
+      fontWeight: "700",
+    },
   });
 }
 

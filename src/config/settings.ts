@@ -32,6 +32,16 @@ export interface EditorEnhancements {
   wordWrap: boolean;
   /** 代码折叠：gutter 折叠标记 + 折叠快捷键 */
   codeFolding: boolean;
+  /** 自动闭合括号 / 引号 */
+  autoCloseBrackets: boolean;
+  /** 输入时按语言自动缩进 */
+  autoIndent: boolean;
+  /** 文档内单词补全（无词库、无后台） */
+  wordCompletion: boolean;
+  /** 按文件检测缩进（Tab 宽度 / 空格 or Tab） */
+  detectIndent: boolean;
+  /** 列标尺：在这些字符列画竖线（空数组 = 关闭） */
+  rulers: number[];
 }
 
 export interface KeybindingEntry {
@@ -108,6 +118,12 @@ export interface GlobalReplaceSettings {
 export interface FileSettings {
   /** 打开手势：true = 双击（首次点击仅选中），false = 单击 */
   openWithDoubleClick: boolean;
+  /** 保存前删除行尾空白（默认关：会改动用户文件） */
+  trimTrailingWhitespaceOnSave: boolean;
+  /** 保存前补最终换行（默认关） */
+  ensureFinalNewlineOnSave: boolean;
+  /** 按文件记忆编码（默认开：只在自动检测不可靠时生效） */
+  encodeMemory: boolean;
 }
 
 export interface FormatterEntry {
@@ -181,6 +197,11 @@ export interface EditorSettings {
   minimap: boolean;
   wordWrap: boolean;
   codeFolding: boolean;
+  autoCloseBrackets: boolean;
+  autoIndent: boolean;
+  wordCompletion: boolean;
+  detectIndent: boolean;
+  rulers: number[];
 }
 
 /** 状态栏字段默认显隐顺序（与 index.html data-field 对应） */
@@ -192,6 +213,7 @@ export function defaultStatusBarFields(): StatusBarFieldEntry[] {
     { id: "encoding", visible: true },
     { id: "newline", visible: true },
     { id: "language", visible: true },
+    { id: "indent", visible: true },
     { id: "whitespace", visible: true },
     { id: "wrap", visible: true },
     { id: "cursor", visible: true },
@@ -232,6 +254,11 @@ export function defaultConfig(): AppConfig {
       rainbowBrackets: true,
       wordWrap: false,
       codeFolding: true,
+      autoCloseBrackets: true,
+      autoIndent: true,
+      wordCompletion: true,
+      detectIndent: true,
+      rulers: [],
     },
     keybindings: [],
     layout: {
@@ -263,7 +290,12 @@ export function defaultConfig(): AppConfig {
     fetch: { allowPrivateNetwork: false },
     terminal: { shell: "" },
     globalReplace: { backup: true },
-    files: { openWithDoubleClick: false },
+    files: {
+      openWithDoubleClick: false,
+      trimTrailingWhitespaceOnSave: false,
+      ensureFinalNewlineOnSave: false,
+      encodeMemory: true,
+    },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},
     formatters: {
@@ -308,6 +340,11 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     minimap: cfg.layout.minimap,
     wordWrap: e.wordWrap,
     codeFolding: e.codeFolding,
+    autoCloseBrackets: e.autoCloseBrackets,
+    autoIndent: e.autoIndent,
+    wordCompletion: e.wordCompletion,
+    detectIndent: e.detectIndent,
+    rulers: e.rulers,
   };
 }
 

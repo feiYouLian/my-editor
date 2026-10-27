@@ -19,10 +19,27 @@ export class LayoutPane {
   private sidebarVisible = true;
   private resizing = false;
   private sidebarResizing = false;
+  /** 拖拽合帧：mousemove 只记最新值，每帧最多应用一次 */
+  private dragRaf: number | null = null;
+  /** 待应用的拖拽结果（宽度 px 或分割比例） */
+  private pendingSidebarX: number | null = null;
+  private pendingSplitX: number | null = null;
+  /** 最近一次应用的侧栏宽度 / 分栏比例（松手时落盘用） */
+  private sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  private splitRatioLast = 0.5;
 
   constructor(private deps: LayoutDeps) {
     this.initSplitResizer();
     this.initSidebarResizer();
+  }
+
+  /** 合帧执行：同一帧内后到的位置覆盖先到的（末次必达） */
+  private scheduleDrag(apply: () => void): void {
+    if (this.dragRaf !== null) return;
+    this.dragRaf = requestAnimationFrame(() => {
+      this.dragRaf = null;
+      apply();
+    });
   }
 
   // ---- 侧栏显隐 ----
@@ -50,12 +67,22 @@ export class LayoutPane {
   // ---- 侧栏宽度 ----
 
   setSidebarWidth(px: number): void {
+    this.persistSidebarWidth(this.applySidebarWidth(px));
+  }
+
+  /** 只改样式，不落盘（拖动过程中每帧调用，localStorage 写入放到松手） */
+  private applySidebarWidth(px: number): number {
     const clamped = Math.min(640, Math.max(150, px));
+    this.sidebarWidth = clamped;
     document
       .querySelector<HTMLElement>(".main")
       ?.style.setProperty("--sidebar-width", `${clamped}px`);
+    return clamped;
+  }
+
+  private persistSidebarWidth(px: number): void {
     try {
-      localStorage.setItem("my-editor.sidebarWidth", String(clamped));
+      localStorage.setItem("my-editor.sidebarWidth", String(px));
     } catch {
       // localStorage 不可用时仅会话内生效
     }
@@ -74,13 +101,20 @@ export class LayoutPane {
       if (!this.sidebarResizing) return;
       const main = document.querySelector(".main");
       if (!main) return;
-      this.setSidebarWidth(e.clientX - main.getBoundingClientRect().left);
+      // 合帧：同一帧内只应用最新位置，避免每次 mousemove 都触发布局
+      this.pendingSidebarX = e.clientX - main.getBoundingClientRect().left;
+      this.scheduleDrag(() => {
+        if (this.pendingSidebarX !== null) this.applySidebarWidth(this.pendingSidebarX);
+      });
     });
     window.addEventListener("mouseup", () => {
       if (!this.sidebarResizing) return;
       this.sidebarResizing = false;
+      this.pendingSidebarX = null;
       el?.classList.remove("dragging");
       document.body.classList.remove("dragging-split");
+      // 松手才落盘：拖动过程中不产生任何同步 IO
+      this.persistSidebarWidth(this.sidebarWidth);
     });
     el?.addEventListener("dblclick", () => this.setSidebarWidth(DEFAULT_SIDEBAR_WIDTH));
     try {
@@ -111,19 +145,28 @@ export class LayoutPane {
       const area = this.splitArea();
       if (!area) return;
       const rect = area.getBoundingClientRect();
-      const ratio = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
-      area.style.setProperty("--split-ratio", `${(ratio * 100).toFixed(1)}%`);
-      try {
-        localStorage.setItem("my-editor.splitRatio", String(ratio));
-      } catch {
-        // localStorage 不可用时静默降级为会话内记忆
-      }
+      this.pendingSplitX = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
+      this.scheduleDrag(() => {
+        if (this.pendingSplitX === null) return;
+        this.splitRatioLast = this.pendingSplitX;
+        this.splitArea()?.style.setProperty(
+          "--split-ratio",
+          `${(this.splitRatioLast * 100).toFixed(1)}%`,
+        );
+      });
     });
     window.addEventListener("mouseup", () => {
       if (!this.resizing) return;
       this.resizing = false;
+      this.pendingSplitX = null;
       el?.classList.remove("dragging");
       document.body.classList.remove("dragging-split");
+      // 松手才落盘（拖动中每次写 localStorage 会让手感发涩）
+      try {
+        localStorage.setItem("my-editor.splitRatio", String(this.splitRatioLast));
+      } catch {
+        // localStorage 不可用时静默降级为会话内记忆
+      }
     });
     el?.addEventListener("dblclick", () => {
       this.splitArea()?.style.setProperty("--split-ratio", "50%");

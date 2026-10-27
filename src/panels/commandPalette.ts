@@ -5,7 +5,8 @@
  * 不含宏录制/回放，故无「运行宏」条目。
  */
 
-import { fuzzyScore } from "../core/fuzzy";
+import { fuzzyMatch, fuzzyScore } from "../core/fuzzy";
+import { appendHighlighted } from "../ui/highlight";
 
 export interface CommandItem {
   id: string;
@@ -23,6 +24,8 @@ export class CommandPalette {
   private listEl: HTMLElement | null = null;
   private selectedIndex = 0;
   private visible: CommandItem[] = [];
+  /** 上次渲染时的查询：查询变了就要把选中项复位（否则回车会打开"意外那条"） */
+  private lastQuery = "";
 
   /** 最近使用的命令 id（localStorage 持久化，跨会话保留） */
   private static readonly RECENT_KEY = "my-editor.palette.recent";
@@ -105,7 +108,8 @@ export class CommandPalette {
   private move(delta: number): void {
     if (this.visible.length === 0) return;
     this.selectedIndex = (this.selectedIndex + delta + this.visible.length) % this.visible.length;
-    this.renderList();
+    // 只切选中样式：重建整表会让按住方向键时掉帧
+    this.updateSelection();
   }
 
   /** 执行命令并记录到「最近使用」 */
@@ -158,6 +162,10 @@ export class CommandPalette {
       });
 
     this.visible = scored.map((s) => s.cmd);
+    if (query !== this.lastQuery) {
+      this.lastQuery = query;
+      this.selectedIndex = 0;
+    }
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.visible.length - 1));
     this.listEl.innerHTML = "";
 
@@ -173,7 +181,12 @@ export class CommandPalette {
       const item = document.createElement("div");
       item.className = `palette-item${i === this.selectedIndex ? " selected" : ""}`;
       const label = document.createElement("span");
-      label.textContent = cmd.section ? `${cmd.section}: ${cmd.title}` : cmd.title;
+      if (cmd.section) label.append(document.createTextNode(`${cmd.section}: `));
+      // 只高亮命中的命令名，不把 "编辑:" 这类分组名也点亮
+      const positions = new Set<number>();
+      const match = fuzzyMatch(query, cmd.title);
+      if (match) for (const pos of match.positions) positions.add(pos);
+      appendHighlighted(label, cmd.title, positions);
       item.append(label);
       const shortcut = this.shortcutText(cmd);
       if (shortcut) {

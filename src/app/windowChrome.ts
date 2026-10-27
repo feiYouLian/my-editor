@@ -29,6 +29,12 @@ type ResizeDirection =
 const EXIT_TIMEOUT_MS = 2500;
 
 export interface WindowChromeDeps {
+  /**
+   * 退出前的确认（未保存文件三选等）。返回 false = 取消本次退出。
+   * 必须在 withTimeout 之外执行：用户可能思考超过 2.5s，
+   * 放进超时窗口会导致"还没点完窗口就被销毁"。
+   */
+  confirmExit?: () => Promise<boolean>;
   /** 关闭前清理：flush 会话与草稿、停止子进程、释放大文件会话 */
   onBeforeExit: () => Promise<void>;
   /** 清理超时时间，默认 2500ms；调试/测试可覆盖 */
@@ -150,6 +156,21 @@ export class WindowChrome {
   private async exit(): Promise<void> {
     if (this.exiting) return;
     this.exiting = true;
+    // 确认在超时窗口之外：用户可能对着"要不要保存"想很久
+    if (this.deps.confirmExit) {
+      let ok = true;
+      try {
+        ok = await this.deps.confirmExit();
+      } catch (e) {
+        // 确认流程自身异常：按"取消退出"处理，绝不在不确定的情况下销毁窗口
+        console.error("[exit] 退出确认失败，已取消退出", e);
+        ok = false;
+      }
+      if (!ok) {
+        this.exiting = false;
+        return;
+      }
+    }
     try {
       await withTimeout(
         this.deps.onBeforeExit(),

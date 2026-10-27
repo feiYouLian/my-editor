@@ -77,6 +77,8 @@ export interface Tab {
   virtual?: boolean;
   /** 大文件会话 id（virtual 时有效） */
   largeId?: string;
+  /** 虚拟视图总行数（仅用于状态栏展示：编辑器路径由光标回调提供） */
+  totalLines?: number;
   /** 会话恢复的占位标签：仅登记路径，内容待首次激活时才载入 */
   pending?: boolean;
   /** 磁盘文件被外部修改（状态栏提示，可点击重新载入） */
@@ -247,6 +249,7 @@ class TabStore {
     size: number;
     encoding: string;
     newline: string;
+    totalLines?: number;
   }): Tab {
     const existing = this.tabs.find((t) => t.path === info.path);
     if (existing) {
@@ -283,6 +286,7 @@ class TabStore {
       readonlyReason: "大文件只读视图",
       virtual: true,
       largeId: info.id,
+      totalLines: info.totalLines,
     };
     this.tabs.push(tab);
     // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
@@ -321,6 +325,14 @@ class TabStore {
     this.applyContent(tab, content);
     this.emitStructure();
     return tab;
+  }
+
+  /** 虚拟视图索引完成 / 打开时更新总行数（只影响状态栏文案） */
+  setVirtualTotalLines(id: string, totalLines: number): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab || tab.totalLines === totalLines) return;
+    tab.totalLines = totalLines;
+    this.emitStructure();
   }
 
   /** 标记 / 清除「外部修改」状态 */
@@ -563,6 +575,24 @@ class TabStore {
     tab.savedTrailingNewline = content.endsWith("\n");
     this.refreshDirty(tab);
     this.emitStructure();
+  }
+
+  /**
+   * 保存前清理：非激活标签直接改内存内容（激活标签必须由编辑器侧走事务，
+   * 否则视图与存储会不一致，本方法对它返回 false）。
+   * 不改 savedFingerprint —— 基线统一由 markSaved 用实际写盘文本设置。
+   */
+  applyContentTransform(id: string, fn: (text: string) => string): boolean {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return false;
+    if (this.provider?.docId() === id) return false;
+    const next = fn(tab.content);
+    if (next === tab.content) return false;
+    tab.content = next;
+    tab.contentDirty = false;
+    this.refreshDirty(tab);
+    this.emitContent();
+    return true;
   }
 
   /** 读取标签最新内容：激活标签会先同步编辑器内容（惰性快照，O(n) 且会更新脏标记） */

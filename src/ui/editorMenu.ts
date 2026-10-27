@@ -51,7 +51,7 @@ export class EditorContextMenu {
       this.submenuTimer = null;
       if (this.submenu?.matches(":hover") || this.menu?.matches(":hover")) return;
       this.closeSubmenu();
-    }, 300);
+    }, 150);
   }
 
   private close(): void {

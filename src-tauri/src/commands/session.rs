@@ -38,6 +38,10 @@ pub struct SessionFile {
     pub line: u32,
     /// 光标列（1 基）
     pub col: u32,
+    /// 书签行号（1 基，升序）；旧会话文件缺该字段时为空
+    pub bookmarks: Vec<u32>,
+    /// 折叠区：每项 [起始行, 结束行]（1 基）；旧会话文件缺该字段时为空
+    pub folds: Vec<[u32; 2]>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -355,6 +359,31 @@ fn hash_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 新增的 bookmarks / folds 字段：JSON 往返不丢，且旧会话（无这两个字段）仍可解析
+    #[test]
+    fn session_file_bookmarks_and_folds_roundtrip() {
+        let state = SessionState {
+            open_files: vec![SessionFile {
+                path: "a.txt".to_string(),
+                line: 3,
+                col: 7,
+                bookmarks: vec![2, 9],
+                folds: vec![[4, 12], [20, 21]],
+            }],
+            active_file: Some("a.txt".to_string()),
+            split_ratio: Some(0.5),
+        };
+        let json = serde_json::to_string(&state).expect("序列化");
+        let back: SessionState = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back.open_files[0].bookmarks, vec![2, 9]);
+        assert_eq!(back.open_files[0].folds, vec![[4, 12], [20, 21]]);
+
+        let legacy = r#"{"openFiles":[{"path":"b.txt","line":1,"col":1}],"activeFile":"b.txt"}"#;
+        let old: SessionState = serde_json::from_str(legacy).expect("旧会话应可解析");
+        assert_eq!(old.open_files[0].bookmarks.len(), 0);
+        assert_eq!(old.open_files[0].folds.len(), 0);
+    }
 
     fn temp_file(tag: &str, content: &[u8]) -> PathBuf {
         let mut path = std::env::temp_dir();

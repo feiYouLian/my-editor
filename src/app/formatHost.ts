@@ -10,7 +10,8 @@ import { getConfig } from "../config/settings";
 import { tabStore, type Tab } from "../store/tabs";
 import { effectiveLanguage } from "../editor/languages";
 import { formatDocument, formatSelection, supportsFormatting } from "../editor/format";
-import { confirmAction } from "../ui/dialogs";
+import { confirmAction, showErrorDialog } from "../ui/dialogs";
+import { addNotice } from "./noticeStore";
 
 /** 超过此行数，格式化前弹确认（保存时自动格式化也用它做上限） */
 export const FORMAT_CONFIRM_LINES = 10000;
@@ -55,11 +56,16 @@ export class FormatHost {
       // 这里仅跳过过期标签上的消息刷新
       if (tabStore.active()?.id !== tab.id) return;
       if (!result.ok) {
-        // 不走 window.alert（依赖 dialog 权限且打断流程）：状态栏显示首行
-        // （首行已含安装命令，见 format.ts 的 withInstallHint）+ 控制台完整输出；
-        // 错误停留 8s，留出阅读与照做的时间
-        this.deps.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
-        console.error("[format]", result.message);
+        // 失败详情常是"首行安装提示 + 后几行真实报错"，状态栏装不下也复制不了：
+        // 一律进可复制的错误对话框（与 Git 失败同一套行为）
+        this.deps.showMessage("格式化失败（点击查看详情）");
+        showErrorDialog("格式化失败", result.message);
+        addNotice(
+          "formatFail",
+          `格式化失败：「${tab.name}」`,
+          [{ label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) }],
+          `fmt:${tab.id}`,
+        );
         return;
       }
       this.deps.showMessage(result.message);
@@ -84,8 +90,14 @@ export class FormatHost {
       const result = await formatSelection(this.deps.getView(), key, tab.path);
       if (tabStore.active()?.id !== tab.id) return;
       if (!result.ok) {
-        this.deps.showMessage(result.message.split("\n")[0] || "格式化失败", 8000);
-        console.error("[format]", result.message);
+        this.deps.showMessage("格式化失败（点击查看详情）");
+        showErrorDialog("格式化失败", result.message);
+        addNotice(
+          "formatFail",
+          `格式化失败：「${tab.name}」`,
+          [{ label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) }],
+          `fmt:${tab.id}`,
+        );
         return;
       }
       this.deps.showMessage(result.message);

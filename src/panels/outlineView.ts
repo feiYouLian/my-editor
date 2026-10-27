@@ -56,6 +56,10 @@ export class OutlineView {
   private listEl!: HTMLElement;
   private countEl!: HTMLElement;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** 已渲染的行（行号升序）：光标跟随用 */
+  private rows: { line: number; el: HTMLElement }[] = [];
+  /** 上次高亮的行，避免每次光标移动都重排 */
+  private currentLine = -1;
 
   constructor(
     private host: HTMLElement,
@@ -113,19 +117,40 @@ export class OutlineView {
 
   private renderEmpty(text: string): void {
     this.listEl.innerHTML = "";
+    this.rows = [];
+    this.currentLine = -1;
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.textContent = text;
     this.listEl.append(empty);
   }
 
+  /**
+   * 光标跟随：高亮"包含当前行的最后一个符号"（光标所在的章节 / 函数）。
+   * 由 main 的光标回调驱动；只切 class + 必要时滚动，不重建列表。
+   */
+  followCursor(line: number): void {
+    if (line === this.currentLine) return;
+    this.currentLine = line;
+    if (this.rows.length === 0) return;
+    let index = -1;
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i].line <= line) index = i;
+      else break;
+    }
+    this.rows.forEach((row, i) => row.el.classList.toggle("current", i === index));
+    if (index >= 0) this.rows[index].el.scrollIntoView({ block: "nearest" });
+  }
+
   private renderItems(items: OutlineItem[]): void {
     this.listEl.innerHTML = "";
+    this.rows = [];
     const frag = document.createDocumentFragment();
     for (const item of items.slice(0, MAX_ITEMS)) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "outline-item";
+      this.rows.push({ line: item.line, el: row });
       row.style.paddingLeft = `${8 + item.depth * 12}px`;
       row.title = `L${item.line}: ${item.label}`;
       const label = document.createElement("span");

@@ -1494,6 +1494,16 @@ button:disabled:hover {
   color: var(--text-primary);
 }
 
+/* 危险操作（放弃选中）：与暂存按钮区分开，避免误点 */
+.git-group-action.danger {
+  color: var(--danger);
+}
+
+.git-group-action.danger:hover {
+  color: var(--danger);
+  opacity: 0.8;
+}
+
 .git-group-action:disabled {
   opacity: 0.45;
   cursor: default;
@@ -1561,13 +1571,27 @@ button:disabled:hover {
   background: rgba(255, 107, 107, 0.16);
 }
 
-.git-path {
-  flex: 1;
+/* 文件名优先：目录只作辅助（淡色小字，空间不够先截目录） */
+.git-name {
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+  font-weight: 500;
+}
+
+.git-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  font-size: 10.5px;
 }
 
 .git-row-action {
@@ -1957,6 +1981,12 @@ button:disabled:hover {
   padding: 4px 0;
 }
 
+/* 光标所在符号（大纲跟随光标，见 panels/outlineView.ts） */
+.outline-item.current {
+  background: var(--bg-elevated);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .outline-item {
   display: flex;
   gap: 8px;
@@ -1998,6 +2028,59 @@ button:disabled:hover {
 
 .tree-empty button {
   margin-top: 8px;
+}
+
+/* ---------- 文件树过滤（扁平匹配模式） ---------- */
+.tree-filter {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tree-filter-input {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input, transparent);
+  color: var(--text-primary);
+  font-size: 11px;
+  outline: none;
+}
+
+.tree-filter-input:focus {
+  border-color: var(--accent);
+}
+
+.tree-body {
+  min-height: 0;
+}
+
+/* 扁平结果行：文件名主色 + 目录淡色（与源代码管理同一套约定） */
+.tree-flat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tree-flat-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.tree-flat-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  font-size: 10.5px;
 }
 
 .tree-label {
@@ -2082,6 +2165,17 @@ button:disabled:hover {
   padding: 4px 0;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   font-size: 12px;
+  /* 条目多了要能滚到末项（"行操作"加入后右键菜单可达 10+ 项）。
+     placeMenu 的翻转计算读的是 offsetHeight，这里先夹住高度才能算对。 */
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 禁用项：不可点也不应像可点的样子（部分菜单会给 item 加 disabled 类） */
+.context-menu-item.disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 .context-menu-item {
@@ -2363,11 +2457,28 @@ button:disabled:hover {
   border-radius: 3px;
   padding: 0 3px;
   color: var(--text-secondary);
+  /* 未悬停时不占视觉重量：hover 或激活标签才显示 */
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
 }
 
 .tab-close:hover {
   background: var(--danger);
   color: #fff;
+}
+
+/* 外部修改标记：后台标签也能看见（状态栏只反映激活标签） */
+.tab-external {
+  flex: none;
+  margin-right: 2px;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1;
 }
 
 /* ---------- 命令面板 ---------- */
@@ -2425,6 +2536,13 @@ button:disabled:hover {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+/* 命中字符：只提亮字色，不加底色，避免整行花掉 */
+.palette-item mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* 快速打开底部统计 / 空态提示 */
@@ -3075,8 +3193,11 @@ button.danger:hover {
   color: var(--text-primary);
 }
 
+/* 选中态要一眼看出来：只改字色在深色主题下几乎无感，补一圈强调色描边 */
 .status-toggle.on {
   color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 /* ---------- 状态栏 ---------- */
@@ -3178,6 +3299,154 @@ button.danger:hover {
 .status-external {
   color: var(--danger);
   cursor: pointer;
+}
+
+/* 常驻错误（保存失败等）：与 3 秒瞬时消息分开放，不会被覆盖 */
+.status-error {
+  color: var(--danger);
+  font-weight: 600;
+  cursor: default;
+}
+
+/* 通知中心入口（有未处理提示时才显示） */
+.status-notice {
+  color: var(--danger);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notice-panel {
+  min-width: 340px;
+  max-width: 480px;
+  padding: 0;
+}
+
+.notice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.notice-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.notice-clear:hover {
+  color: var(--text-primary);
+}
+
+.notice-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.notice-empty {
+  padding: 14px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.notice-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.notice-item + .notice-item {
+  border-top: 1px solid var(--border);
+}
+
+.notice-kind {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-app);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.notice-kind-external {
+  color: #d7ba7d;
+}
+
+.notice-kind-saveFail,
+.notice-kind-formatFail,
+.notice-kind-gitFail {
+  color: var(--danger);
+}
+
+.notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notice-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.notice-action {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.notice-dismiss {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.notice-dismiss:hover {
+  color: var(--text-primary);
+}
+
+/* 长任务进行中：纯 CSS 旋转，不占 JS 定时器 */
+.status-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+}
+
+.status-busy-dot {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: busy-spin 800ms linear infinite;
+}
+
+@keyframes busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-busy-dot {
+    animation: none;
+  }
 }
 
 .status-message {
@@ -3475,15 +3744,7 @@ button.danger:hover {
   white-space: nowrap;
 }
 
-.lv-meta {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
+/* 文件名 / 体积 / 行数 / 编码 / 换行只在状态栏展示（.lv-meta 已移除，避免与右侧重复） */
 
 .lv-filter {
   width: 200px;
@@ -3742,9 +4003,43 @@ button.danger:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* 设置搜索：跨分类过滤（见 panels/settingsPanel.ts） */
+.settings-search {
+  flex: 1;
+  max-width: 320px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-search:focus {
+  border-color: var(--accent);
+}
+
+.settings-search-group {
+  margin: 12px 0 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-search-empty {
+  padding: 16px 4px;
+  color: var(--text-secondary);
+  line-height: 1.8;
 }
 
 .settings-head h3 {
@@ -3862,6 +4157,10 @@ button.danger:hover {
 
 .settings-row-check input {
   cursor: pointer;
+  width: 14px;
+  height: 14px;
+  /* 深色主题下原生勾选框对比度低，用强调色填充勾选态 */
+  accent-color: var(--accent);
 }
 
 .settings-row-check span {
@@ -4080,6 +4379,19 @@ button.settings-kb-key:hover {
 
 .settings-status-field input {
   cursor: pointer;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+.settings-status-field:hover {
+  background: var(--bg-elevated);
+}
+
+/* 全站勾选 / 单选统一用强调色填充：深色主题下原生勾选态几乎看不见 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
 }
 
 .settings-status-move {
@@ -4377,4 +4689,111 @@ button.settings-kb-key:hover {
   color: var(--accent);
   font-size: 14px;
   pointer-events: none;
+}
+
+/* ---------- 浮层进场动效 ----------
+ * 只用 opacity / transform，不参与布局，不影响输入法候选框定位。
+ * 进场走 CSS animation：元素一插入即播放，无需 JS 记录状态（不会残留）。
+ * 退场不做动画：15+ 处浮层各自 close() 直接 remove，改退场要动全部调用点，
+ * 收益（省 100ms 的白屏感）远小于风险，故明确不做。
+ */
+:root {
+  --dur-fast: 90ms;
+  --dur-base: 140ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes overlay-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes overlay-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes menu-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.palette-overlay {
+  animation: overlay-fade-in var(--dur-base) var(--ease-out);
+}
+
+.palette-overlay .palette-box {
+  animation: overlay-pop-in var(--dur-base) var(--ease-out);
+}
+
+.dialog-backdrop {
+  animation: overlay-fade-in var(--dur-base) var(--ease-out);
+}
+
+.dialog-backdrop .dialog {
+  animation: overlay-pop-in var(--dur-base) var(--ease-out);
+}
+
+/* 对话框退场：JS 先加 .motion-leave，120ms 后移除节点（见 ui/dialogs.ts dismiss） */
+.dialog-backdrop {
+  transition: opacity 120ms var(--ease-out);
+}
+
+.dialog-backdrop .dialog {
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.dialog-backdrop.motion-leave {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dialog-backdrop.motion-leave .dialog {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-backdrop,
+  .dialog-backdrop .dialog {
+    transition: none;
+  }
+}
+
+.context-menu {
+  transform-origin: top left;
+  animation: menu-pop-in var(--dur-fast) var(--ease-out);
+}
+
+/* 状态栏 / 侧栏的细碎状态变化：只加颜色过渡，避免"硬切" */
+.tab {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette-overlay,
+  .palette-overlay .palette-box,
+  .dialog-backdrop,
+  .dialog-backdrop .dialog,
+  .context-menu,
+  .tab {
+    animation: none;
+    transition: none;
+  }
 }

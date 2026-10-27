@@ -7,7 +7,6 @@ import { ENCODINGS, MINIMAP_WIDTH } from "./constants";
 
 export interface LargeViewDom {
   titleEl: HTMLSpanElement;
-  metaEl: HTMLSpanElement;
   indexEl: HTMLSpanElement;
   scrollEl: HTMLDivElement;
   spacerEl: HTMLDivElement;
@@ -44,8 +43,9 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   title.className = "lv-title";
   // 具体是日志还是普通大文件由 open() 按扩展名覆盖
   title.textContent = "大文件视图";
-  const metaEl = document.createElement("span");
-  metaEl.className = "lv-meta";
+
+  // 文件名 / 体积 / 行数 / 编码 / 换行 一律由**状态栏**承载：
+  // 早先这里也有一段 meta 文案，与右侧状态栏完全重复，且索引未完成时行数还是旧值。
 
   const filterInput = document.createElement("input");
   filterInput.className = "lv-filter";
@@ -83,7 +83,6 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
 
   bar.append(
     title,
-    metaEl,
     filterInput,
     caseBtn,
     regexBtn,
@@ -121,7 +120,6 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
 
   return {
     titleEl: title,
-    metaEl,
     indexEl,
     scrollEl,
     spacerEl,

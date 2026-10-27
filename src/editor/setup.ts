@@ -10,20 +10,31 @@
  * 每标签状态缓存在 stateCache.ts；本文件只做 view 生命周期与状态机。
  */
 
-import { EditorState } from "@codemirror/state";
+import { EditorState, Transaction, type StateEffect } from "@codemirror/state";
 import { EditorView, placeholder } from "@codemirror/view";
 import { settings } from "../config/settings";
 import { loadLanguage, languageKeyFromPath } from "./languages";
 import {
   createCompartments,
   dynamicEffects,
+  globalIndentStyle,
   hasLongLine,
   initialExtensions,
+  perDocumentEffects,
   whitespaceExtension,
   wrapExtension,
   readOnlyExtensions,
   type EditorCompartments,
 } from "./extensions";
+import { detectIndent, type IndentStyle } from "../core/indentDetect";
+import {
+  addBookmark,
+  addBookmarks,
+  bookmarkLinesOf,
+  removeBookmark,
+  restoreBookmarkLines,
+} from "./bookmarks";
+import { foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 import { DocumentStateCache } from "./stateCache";
 
 /** 选区字符数（多选区求和；列选择会产生多个 range） */
@@ -45,6 +56,10 @@ export interface EditorCallbacks {
   }) => void;
   /** 高亮因性能保护被禁用时通知一次 */
   onHighlightDisabled?: (reason: "lines" | "longLine") => void;
+  /** 书签增删（用于把书签写进会话；已做 400ms 防抖，不必自己节流） */
+  onBookmarkChange?: () => void;
+  /** 折叠状态变化（同上） */
+  onFoldChange?: () => void;
 }
 
 export interface EditorHandle {
@@ -84,6 +99,23 @@ export interface EditorHandle {
   gotoLine: (line: number) => void;
   /** 应用当前 settings 到编辑器（配置载入/热更新后调用） */
   applySettings: () => void;
+  /**
+   * 对整篇文档做一次文本变换（保存前清理用）。
+   * history=false 时不进撤销栈：用户按一次 Ctrl+Z 不该"撤销一次看不见的空白清理"。
+   */
+  applyDocTransform: (fn: (text: string) => string, opts?: { history?: boolean }) => boolean;
+  /** 当前文档的缩进风格（状态栏展示用） */
+  indentStyle: () => IndentStyle;
+  /** 手动指定当前文档的缩进（会话级，不写配置） */
+  setIndent: (style: IndentStyle) => void;
+  /** 某标签的书签行号（会话保存用；标签已关闭时返回空数组） */
+  bookmarksOf: (docId: string) => number[];
+  /** 恢复某标签的书签（标签尚未载入时排队，载入后生效） */
+  restoreBookmarks: (docId: string, lines: number[]) => void;
+  /** 某标签的折叠区（[起始行, 结束行]，1 基；会话保存用） */
+  foldsOf: (docId: string) => number[][];
+  /** 恢复某标签的折叠区（未载入时排队） */
+  restoreFolds: (docId: string, ranges: number[][]) => void;
 }
 
 export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): EditorHandle {
@@ -105,22 +137,98 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   let wordWrapOn = settings.wordWrap;
   /** 当前生效的只读态（切换标签时随文档恢复） */
   let currentReadonly = false;
+  /** 当前文档的缩进风格（检测优先，未启用/不可靠时取全局配置） */
+  let currentIndent: IndentStyle = globalIndentStyle();
+  /** 每个文档检测到的缩进：会话级（不落配置，重启重新检测） */
+  const indentByDoc = new Map<string, IndentStyle>();
+  /**
+   * 每个文档的书签行号（会话持久化用）。
+   * 不直接读 stateCache：缓存有 8 条的淘汰上限，超出的标签会丢书签。
+   */
+  const bookmarksByDoc = new Map<string, number[]>();
+  /** 恢复会话时暂存的书签：目标标签尚未载入（占位标签）时排队，载入后再应用 */
+  const pendingBookmarks = new Map<string, number[]>();
+  /** 每文档的折叠区（[起始行, 结束行]，1 基）：会话持久化用 */
+  const foldsByDoc = new Map<string, number[][]>();
+  /** 待恢复的折叠区（标签尚未载入） */
+  const pendingFolds = new Map<string, number[][]>();
 
   const stateCache = new DocumentStateCache();
   let activeDocKey: string | null = null;
   /** 配置（含空白 / 换行等开关）每次变更 +1，用于判断缓存状态是否过期 */
   let configGeneration = 0;
 
+  /** 取该文档的缩进风格：已检测过直接复用，否则按内容检测一次 */
+  function resolveIndent(docKey: string | null, content: string): IndentStyle {
+    if (!settings.detectIndent) return globalIndentStyle();
+    if (docKey) {
+      const cached = indentByDoc.get(docKey);
+      if (cached) return cached;
+    }
+    const detected = detectIndent(content, {
+      tabSize: settings.tabSize,
+      insertSpaces: settings.insertSpaces,
+    });
+    if (docKey) indentByDoc.set(docKey, detected);
+    return detected;
+  }
+
+  /** 当前状态的折叠区（[起始行, 结束行]，1 基） */
+  function foldsOf(state: EditorState): number[][] {
+    const out: number[][] = [];
+    foldedRanges(state).between(0, state.doc.length, (from, to) => {
+      out.push([state.doc.lineAt(from).number, state.doc.lineAt(to).number]);
+    });
+    return out;
+  }
+
+  /** 按行号对恢复折叠：越界 / 非法区间忽略（文件被外部改动后行数可能变少） */
+  function restoreFoldRanges(target: EditorView, ranges: readonly number[][]): void {
+    const doc = target.state.doc;
+    const effects: StateEffect<{ from: number; to: number }>[] = [];
+    for (const range of ranges) {
+      if (!Array.isArray(range) || range.length < 2) continue;
+      const fromLine = Math.max(1, Math.min(Math.floor(range[0]), doc.lines));
+      const toLine = Math.max(1, Math.min(Math.floor(range[1]), doc.lines));
+      if (toLine <= fromLine) continue;
+      effects.push(foldEffect.of({ from: doc.line(fromLine).from, to: doc.line(toLine).to }));
+    }
+    if (effects.length > 0) target.dispatch({ effects });
+  }
+
   function createState(doc: string): EditorState {
     // history 等基础扩展已在 initialExtensions 内（勿重复添加：双 history = 双撤销栈）
     return EditorState.create({
       doc,
       extensions: [
-        ...initialExtensions(c, { whitespaceOn, wordWrapOn, readonly: currentReadonly }),
+        ...initialExtensions(c, {
+          whitespaceOn,
+          wordWrapOn,
+          readonly: currentReadonly,
+          indent: currentIndent,
+        }),
         placeholder("打开文件开始编辑（Ctrl+S 保存）"),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && loadingDepth === 0 && !switching) {
             callbacks.onDocChange?.();
+          }
+          // 书签变化：记到内存映射并通知会话落盘（书签不是文档内容，不能靠 docChanged 捕获）
+          const bookmarkTouched = update.transactions.some((tr) =>
+            tr.effects.some(
+              (e) => e.is(addBookmark) || e.is(addBookmarks) || e.is(removeBookmark),
+            ),
+          );
+          if (bookmarkTouched && activeDocKey !== null && !switching) {
+            bookmarksByDoc.set(activeDocKey, bookmarkLinesOf(update.state));
+            callbacks.onBookmarkChange?.();
+          }
+          // 折叠状态同理：不进文档内容，只能靠 effect 捕获
+          const foldTouched = update.transactions.some((tr) =>
+            tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect)),
+          );
+          if (foldTouched && activeDocKey !== null && !switching) {
+            foldsByDoc.set(activeDocKey, foldsOf(update.state));
+            callbacks.onFoldChange?.();
           }
           if ((update.selectionSet || update.docChanged) && !switching) {
             const head = update.state.selection.main.head;
@@ -202,6 +310,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     try {
       currentPath = path;
       currentReadonly = readonly;
+      // 缩进按文档生效：必须先算，后面 createState / dynamicEffects 都要用
+      currentIndent = resolveIndent(key, content);
       if (!sameDoc) {
         // 离开当前标签：先把状态（含撤销历史）存起来
         if (activeDocKey !== null) cacheActiveState(activeDocKey);
@@ -226,13 +336,16 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
             view.dispatch({
               effects: [
                 c.readOnly.reconfigure(readOnlyExtensions(readonly)),
+                // 按文档生效的扩展（缩进 / 自动闭合 / 补全）即使在快速路径也要重配，
+                // 否则会停留在上一个标签的值上（例如缩进宽度串味）
+                ...perDocumentEffects(c, { readonly, indent: currentIndent }),
                 scroll,
               ],
             });
           } else {
             view.dispatch({
               effects: [
-                ...dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly }),
+                ...dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly, indent: currentIndent }),
                 scroll,
               ],
             });
@@ -257,10 +370,25 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         }
       } else {
         view.dispatch({
-          effects: dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly }),
+          effects: dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly, indent: currentIndent }),
         });
         await applyLanguage(languageOverride);
         if (seq !== docLoadSeq) return;
+      }
+      // 恢复书签 / 折叠：占位标签首次载入、从缓存恢复时都走这里
+      if (key !== null && activeDocKey === key) {
+        const pending = pendingBookmarks.get(key);
+        if (pending && pending.length > 0) {
+          pendingBookmarks.delete(key);
+          restoreBookmarkLines(view, pending);
+          bookmarksByDoc.set(key, bookmarkLinesOf(view.state));
+        }
+        const pendingFold = pendingFolds.get(key);
+        if (pendingFold && pendingFold.length > 0) {
+          pendingFolds.delete(key);
+          restoreFoldRanges(view, pendingFold);
+          foldsByDoc.set(key, foldsOf(view.state));
+        }
       }
       // 快速连点标签时，晚到的载入不要覆盖当前标签的状态栏光标
       if (activeDocKey === key) notifyCursor(view.state);
@@ -272,6 +400,11 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** 关闭标签时丢弃其缓存状态；若关闭的是当前标签，避免下次切换再把它写回缓存 */
   function forgetDocument(docId: string): void {
     stateCache.delete(docId);
+    indentByDoc.delete(docId);
+    bookmarksByDoc.delete(docId);
+    pendingBookmarks.delete(docId);
+    foldsByDoc.delete(docId);
+    pendingFolds.delete(docId);
     // 作废在飞的语言加载：否则关闭后它仍可能把语言作用到其它文档
     languageSeq++;
     if (activeDocKey === docId) {
@@ -289,8 +422,18 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     whitespaceOn = settings.showWhitespace;
     wordWrapOn = settings.wordWrap;
     configGeneration++;
+    // 关闭"检测缩进"后立即回落到全局配置；开启时沿用当前文档已检测的结果
+    currentIndent = settings.detectIndent
+      ? (activeDocKey !== null ? indentByDoc.get(activeDocKey) : undefined) ??
+        resolveIndent(activeDocKey, view.state.doc.toString())
+      : globalIndentStyle();
     view.dispatch({
-      effects: dynamicEffects(c, { whitespaceOn, wordWrapOn, readonly: currentReadonly }),
+      effects: dynamicEffects(c, {
+        whitespaceOn,
+        wordWrapOn,
+        readonly: currentReadonly,
+        indent: currentIndent,
+      }),
     });
   }
 
@@ -324,6 +467,63 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       const from = view.state.doc.line(n).from;
       view.dispatch({ selection: { anchor: from }, scrollIntoView: true });
       view.focus();
+    },
+    bookmarksOf: (docId) => {
+      if (docId === activeDocKey) {
+        const live = bookmarkLinesOf(view.state);
+        bookmarksByDoc.set(docId, live);
+        return live;
+      }
+      return bookmarksByDoc.get(docId) ?? [];
+    },
+    restoreBookmarks: (docId, lines) => {
+      if (lines.length === 0) return;
+      bookmarksByDoc.set(docId, lines);
+      if (docId === activeDocKey) {
+        restoreBookmarkLines(view, lines);
+        bookmarksByDoc.set(docId, bookmarkLinesOf(view.state));
+      } else {
+        // 占位标签 / 未激活标签：等 loadDocument 载入后再应用
+        pendingBookmarks.set(docId, lines);
+      }
+    },
+    foldsOf: (docId) => {
+      if (docId === activeDocKey) {
+        const live = foldsOf(view.state);
+        foldsByDoc.set(docId, live);
+        return live;
+      }
+      return foldsByDoc.get(docId) ?? [];
+    },
+    restoreFolds: (docId, ranges) => {
+      if (ranges.length === 0) return;
+      foldsByDoc.set(docId, ranges);
+      if (docId === activeDocKey) {
+        restoreFoldRanges(view, ranges);
+        foldsByDoc.set(docId, foldsOf(view.state));
+      } else {
+        pendingFolds.set(docId, ranges);
+      }
+    },
+    indentStyle: () => currentIndent,
+    setIndent: (style) => {
+      currentIndent = style;
+      if (activeDocKey !== null) indentByDoc.set(activeDocKey, style);
+      configGeneration++;
+      view.dispatch({
+        effects: perDocumentEffects(c, { readonly: currentReadonly, indent: style }),
+      });
+    },
+    applyDocTransform: (fn, opts) => {
+      const before = view.state.doc.toString();
+      const after = fn(before);
+      if (after === before) return false;
+      view.dispatch({
+        changes: { from: 0, to: before.length, insert: after },
+        annotations:
+          opts?.history === false ? Transaction.addToHistory.of(false) : undefined,
+      });
+      return true;
     },
     applySettings,
   };

@@ -283,6 +283,7 @@ pub async fn search_workspace(
     query: String,
     case_sensitive: bool,
     regex: bool,
+    whole_word: bool,
     ignore_dirs: Vec<String>,
     max_files: usize,
     max_matches: usize,
@@ -296,10 +297,24 @@ pub async fn search_workspace(
             &ignore_dirs,
             max_files.max(1),
             max_matches.max(1),
+            whole_word,
         )
     })
     .await
     .map_err(|e| format!("任务失败: {e}"))?
+}
+
+/// \b 只对 ASCII 单词边界有意义：中文没有词边界概念（regex crate 也不支持 lookaround），
+/// 因此非 ASCII 查询直接忽略 whole_word，避免出现"勾了却什么也没变"的困惑。
+fn apply_whole_word(pattern: String, query: &str, whole_word: bool) -> String {
+    if !whole_word {
+        return pattern;
+    }
+    let ascii_word = query.is_ascii() && query.chars().any(|c| c.is_alphanumeric());
+    if !ascii_word {
+        return pattern;
+    }
+    format!(r"\b(?:{pattern})\b")
 }
 
 fn search_blocking(
@@ -310,6 +325,7 @@ fn search_blocking(
     ignore_dirs: &[String],
     max_files: usize,
     max_matches: usize,
+    whole_word: bool,
 ) -> Result<SearchReport, String> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
@@ -328,6 +344,7 @@ fn search_blocking(
     } else {
         regex::escape(query)
     };
+    let pattern = apply_whole_word(pattern, query, whole_word);
     let matcher = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!case_sensitive)
         .size_limit(4 * 1024 * 1024)
@@ -465,6 +482,7 @@ pub async fn replace_in_files(
     replacement: String,
     case_sensitive: bool,
     regex: bool,
+    whole_word: bool,
     keep_history: bool,
     targets: Vec<String>,
 ) -> Result<ReplaceReport, String> {
@@ -502,6 +520,7 @@ pub async fn replace_in_files(
             &replacement,
             case_sensitive,
             regex,
+            whole_word,
             &scoped,
             &watch_state,
             history_dir.as_deref(),
@@ -518,6 +537,7 @@ fn replace_blocking(
     replacement: &str,
     case_sensitive: bool,
     regex: bool,
+    whole_word: bool,
     targets: &[(String, PathBuf)],
     watch: &crate::commands::watch::WatchState,
     history_dir: Option<&Path>,
@@ -528,6 +548,8 @@ fn replace_blocking(
     } else {
         regex::escape(query)
     };
+    // 与搜索保持同一口径：搜索勾了全词，替换也必须只替换全词
+    let pattern = apply_whole_word(pattern, query, whole_word);
     let matcher = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!case_sensitive)
         .size_limit(4 * 1024 * 1024)
@@ -834,6 +856,21 @@ mod tests {
             &ignore_dirs,
             max_files,
             max_matches,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn search_whole_word(root: &Path, query: &str) -> SearchReport {
+        search_blocking(
+            root.to_str().unwrap(),
+            query,
+            false,
+            false,
+            &[],
+            10,
+            100,
+            true,
         )
         .unwrap()
     }
@@ -852,6 +889,26 @@ mod tests {
         // 列号是字符列（1 基）：第二行 "world hello" 的 hello 从第 7 列开始
         assert_eq!((matches[0].line, matches[0].col), (1, 1));
         assert_eq!((matches[1].line, matches[1].col), (2, 7));
+    }
+
+    #[test]
+    fn whole_word_skips_substring_matches() {
+        let dir = temp_dir("whole_word");
+        std::fs::write(dir.join("a.txt"), "cat\nconcat cats\nCat\n").unwrap();
+
+        // 报告口径是"每行一条命中"：三行都含 cat 子串（忽略大小写）
+        assert_eq!(search(&dir, "cat", false, false, &[], 10, 100).total_matches, 3);
+        // 全词：只剩第 1 行 cat 与第 3 行 Cat；"concat"/"cats" 不再算命中
+        assert_eq!(search_whole_word(&dir, "cat").total_matches, 2);
+    }
+
+    #[test]
+    fn whole_word_is_ignored_for_non_ascii_query() {
+        let dir = temp_dir("whole_word_cjk");
+        std::fs::write(dir.join("a.txt"), "中文测试\n测试用例\n").unwrap();
+
+        // 中文没有词边界：勾了全词也应等价于普通搜索，不能变成 0 命中
+        assert_eq!(search_whole_word(&dir, "测试").total_matches, 2);
     }
 
     #[test]
@@ -1066,6 +1123,7 @@ mod tests {
             "bar",
             true,
             false,
+            false,
             &[(raw, path)],
             &crate::commands::watch::WatchState::default(),
             None,
@@ -1119,6 +1177,7 @@ mod tests {
             "y",
             true,
             false,
+            false,
             &[
                 (a.to_string_lossy().to_string(), a),
                 (b.to_string_lossy().to_string(), b),
@@ -1147,6 +1206,7 @@ mod tests {
             "foo",
             "bar",
             true,
+            false,
             false,
             &[(file.to_string_lossy().to_string(), file.clone())],
             &crate::commands::watch::WatchState::default(),

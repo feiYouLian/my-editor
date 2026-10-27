@@ -43,6 +43,14 @@ export interface SessionHostDeps {
   onLoadPendingTab: (tab: Tab) => Promise<boolean>;
   /** 当前标签与磁盘内容比较（外部修改提示用；不要求有未保存改动） */
   onDiffDisk: () => void;
+  /** 某标签的书签行号（写进会话，重启后恢复） */
+  getBookmarks: (tabId: string) => number[];
+  /** 某标签的折叠区（[起始行, 结束行]，写进会话） */
+  getFolds: (tabId: string) => number[][];
+  /** 关闭标签（文件已不存在时给用户的出路） */
+  onCloseTab?: (tabId: string) => void;
+  /** 外部修改发生在"当前正看着的标签"上：立即询问是否重新载入（后台标签不打扰） */
+  onExternalOnActive?: (tab: Tab) => void;
 }
 
 export class SessionHost {
@@ -79,15 +87,15 @@ export class SessionHost {
       if (this.sessionDirty || this.sessionTimer) this.saveNow();
     });
 
-    // 外部修改：Rust 侧监听，前端仅提示、不自动重载
+    // 外部修改：不在后台打扰。
+    // 后台标签只在标签上加 ⟳；用户切到该标签时才弹确认（由 main.ts 的订阅触发），
+    // 这样"没选中就不管、选中时才问"成为默认行为。
     void onFileChanged((path) => {
       const tab = tabStore.findByPath(path);
       if (!tab || tab.externallyChanged) return;
       tabStore.markExternal(tab.id, true);
       this.deps.refreshStatus();
-      this.deps.showMessage(
-        `「${tab.name}」已被外部修改（点击状态栏「外部修改」可重新载入）`,
-      );
+      if (tabStore.active()?.id === tab.id) this.deps.onExternalOnActive?.(tab);
     }).catch((e) => console.warn("[watch] 订阅失败", e));
 
     this.externalBadgeEl.addEventListener("click", (e) => {
@@ -138,7 +146,13 @@ export class SessionHost {
     for (const tab of tabStore.list()) {
       if (tab.kind !== "text" || !tab.path) continue;
       const pos = this.cursorPos.get(tab.id);
-      openFiles.push({ path: tab.path, line: pos?.line ?? 1, col: pos?.col ?? 1 });
+      openFiles.push({
+        path: tab.path,
+        line: pos?.line ?? 1,
+        col: pos?.col ?? 1,
+        bookmarks: this.deps.getBookmarks(tab.id),
+        folds: this.deps.getFolds(tab.id),
+      });
     }
     return {
       openFiles,
@@ -440,10 +454,13 @@ export class SessionHost {
     }, 600);
   }
 
-  /** 从磁盘重新载入标签（外部修改后由状态栏触发） */
-  async reloadFromDisk(tab: Tab): Promise<void> {
+  /**
+   * 从磁盘重新载入标签。
+   * force=true：调用方已在自己的对话框里问过"确认覆盖"，不再二次确认。
+   */
+  async reloadFromDisk(tab: Tab, opts: { force?: boolean } = {}): Promise<void> {
     if (tab.kind !== "text" || !tab.path) return;
-    if (tab.dirty) {
+    if (tab.dirty && !opts.force) {
       const ok = await confirmAction(
         `「${tab.name}」有未保存的修改，重新载入将丢弃这些修改。继续？`,
         "丢弃并重载",
@@ -463,7 +480,17 @@ export class SessionHost {
       this.refreshWatched();
       this.deps.showMessage(`已重新载入：${tab.name}`);
     } catch (e) {
-      this.deps.showMessage(`重新载入失败：${String(e).split("\n")[0]}`);
+      const raw = String(e);
+      // 文件已被删除 / 移动：只报"重新载入失败"是死路，必须给出下一步
+      if (/not found|no such file|不存在|os error 2|系统找不到/i.test(raw)) {
+        const close = await confirmAction(
+          `「${tab.name}」在磁盘上已不存在（可能被删除或移动）。\n关闭该标签可清理；取消则保留当前内容，可用「另存为」保存到别处。`,
+          "关闭标签",
+        );
+        if (close) this.deps.onCloseTab?.(tab.id);
+        return;
+      }
+      this.deps.showMessage(`重新载入失败：${raw.split("\n")[0]}`);
     }
   }
 }

@@ -45,6 +45,8 @@ export class TerminalPanel {
   private resizeObserver: ResizeObserver | null = null;
   private resizeTimer: number | null = null;
   private keyHandler: ((e: KeyboardEvent) => void) | null = null;
+  /** 右键：有选中则复制，否则粘贴（Windows 终端惯例） */
+  private contextHandler: ((e: MouseEvent) => void) | null = null;
   private lastCols = 0;
   private lastRows = 0;
 
@@ -98,6 +100,25 @@ export class TerminalPanel {
       }
     };
     this.host.addEventListener("keydown", this.keyHandler, true);
+
+    // 右键：命中选区就复制并清除选区，否则粘贴（与 Windows Terminal / VS Code 一致）。
+    // 同时禁用浏览器默认右键菜单 —— 它会把 xterm 的隐藏 textarea 暴露出来。
+    this.contextHandler = (e: MouseEvent) => {
+      e.preventDefault();
+      const selection = this.term?.getSelection() ?? "";
+      if (selection) {
+        void navigator.clipboard.writeText(selection).catch(() => {});
+        this.term?.clearSelection();
+        return;
+      }
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) this.term?.paste(text);
+        })
+        .catch(() => {});
+    };
+    this.host.addEventListener("contextmenu", this.contextHandler);
 
     this.scheduleFit();
   }

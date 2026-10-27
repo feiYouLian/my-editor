@@ -34,6 +34,8 @@ export class BranchPicker {
   private visible: GitBranch[] = [];
   private selected = 0;
   private loading = false;
+  /** 上次渲染时的查询：查询变了要把选中项复位 */
+  private lastQuery = "";
 
   constructor(private deps: BranchPickerDeps) {}
 
@@ -128,7 +130,7 @@ export class BranchPicker {
   private move(delta: number): void {
     if (this.visible.length === 0) return;
     this.selected = (this.selected + delta + this.visible.length) % this.visible.length;
-    this.renderList();
+    this.updateSelection();
   }
 
   private pick(branch: GitBranch): void {
@@ -165,6 +167,10 @@ export class BranchPicker {
       });
 
     this.visible = scored.map((s) => s.branch);
+    if (query !== this.lastQuery) {
+      this.lastQuery = query;
+      this.selected = 0;
+    }
     this.selected = Math.min(this.selected, Math.max(0, this.visible.length - 1));
     this.listEl.innerHTML = "";
 

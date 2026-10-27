@@ -22,13 +22,20 @@ export interface OpenGestureOptions {
   onOpen: () => void;
   /** 双击模式下的首次点击反馈（通常是选中行） */
   onSelect?: () => void;
+  /**
+   * 固定单击打开，不受 files.openWithDoubleClick 影响。
+   * 用于源代码管理行：VS Code 里点一下就看 diff，双击被调用方另行定义（打开文件）。
+   */
+  forceSingleClick?: boolean;
 }
 
 export function bindOpenGesture(el: HTMLElement, opts: OpenGestureOptions): void {
   el.addEventListener("click", () => {
-    if (isDoubleClickOpen()) opts.onSelect?.();
-    else opts.onOpen();
+    if (opts.forceSingleClick || !isDoubleClickOpen()) opts.onOpen();
+    else opts.onSelect?.();
   });
+  // 固定单击模式：双击语义由调用方自己绑定，这里不再插手
+  if (opts.forceSingleClick) return;
   el.addEventListener("dblclick", (e) => {
     if (!isDoubleClickOpen()) return;
     // 行内小按钮（暂存 / 撤回 / 关闭）双击有自己的含义，不当作打开

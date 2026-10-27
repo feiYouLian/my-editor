@@ -18,6 +18,9 @@ import {
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 import { history } from "@codemirror/commands";
 import { settings, type ColumnModifier } from "../config/settings";
+import type { IndentStyle } from "../core/indentDetect";
+import { autoCloseExtensions, autoIndentExtension, completionExtensions } from "./input";
+import { rulerExtension } from "./rulers";
 import { editorThemeFor } from "./theme";
 import { occurrences } from "./occurrences";
 import { rainbowBrackets } from "./rainbowBrackets";
@@ -31,6 +34,12 @@ export interface EditorCompartments {
   whitespace: Compartment;
   indent: Compartment;
   keymap: Compartment;
+  /** 自动闭合括号 / 引号 */
+  autoClose: Compartment;
+  /** 输入时自动缩进 */
+  autoIndent: Compartment;
+  /** 文档内单词补全 */
+  completion: Compartment;
   bracket: Compartment;
   rainbowBrackets: Compartment;
   indentGuides: Compartment;
@@ -50,6 +59,9 @@ export function createCompartments(): EditorCompartments {
     whitespace: new Compartment(),
     indent: new Compartment(),
     keymap: new Compartment(),
+    autoClose: new Compartment(),
+    autoIndent: new Compartment(),
+    completion: new Compartment(),
     bracket: new Compartment(),
     rainbowBrackets: new Compartment(),
     indentGuides: new Compartment(),
@@ -96,10 +108,15 @@ export function hasLongLine(state: EditorState): boolean {
   return found;
 }
 
-function indentationExtensions(): Extension[] {
+/** 全局缩进配置（未检测 / 检测失败时的兜底） */
+export function globalIndentStyle(): IndentStyle {
+  return { tabSize: settings.tabSize, insertSpaces: settings.insertSpaces, confidence: "high" };
+}
+
+function indentationExtensions(indent: IndentStyle): Extension[] {
   return [
-    indentUnit.of(settings.insertSpaces ? " ".repeat(settings.tabSize) : "\t"),
-    EditorState.tabSize.of(settings.tabSize),
+    indentUnit.of(indent.insertSpaces ? " ".repeat(indent.tabSize) : "\t"),
+    EditorState.tabSize.of(indent.tabSize),
   ];
 }
 
@@ -108,11 +125,12 @@ function themeExtensions(): Extension[] {
   return editorThemeFor(settings.editorTheme, settings.editorFontSize);
 }
 
-/** 行号 / 活动行高亮（layout 配置可开关） */
+/** 行号 / 活动行高亮 / 列标尺（随配置热更新，走 chrome Compartment） */
 function chromeExtensions(): Extension[] {
   const exts: Extension[] = [];
   if (settings.showLineNumbers) exts.push(lineNumbers());
   if (settings.showActiveLine) exts.push(highlightActiveLine(), highlightActiveLineGutter());
+  exts.push(...rulerExtension());
   return exts;
 }
 
@@ -168,7 +186,7 @@ function minimapExtensions(): Extension[] {
 /** 各 Compartment 的初始内容 */
 export function initialExtensions(
   c: EditorCompartments,
-  opts: { whitespaceOn: boolean; wordWrapOn: boolean; readonly: boolean },
+  opts: { whitespaceOn: boolean; wordWrapOn: boolean; readonly: boolean; indent?: IndentStyle },
 ): Extension[] {
   return [
     c.chrome.of(chromeExtensions()),
@@ -176,7 +194,10 @@ export function initialExtensions(
     history(),
     // 列选择前提：允许多选区（rectangularSelection 来自 @codemirror/view 核心）
     EditorState.allowMultipleSelections.of(true),
-    c.indent.of(indentationExtensions()),
+    c.indent.of(indentationExtensions(opts.indent ?? globalIndentStyle())),
+    c.autoClose.of(autoCloseExtensions(settings.autoCloseBrackets && !opts.readonly)),
+    c.autoIndent.of(autoIndentExtension(settings.autoIndent && !opts.readonly)),
+    c.completion.of(completionExtensions({ readonly: opts.readonly })),
     c.keymap.of(buildKeymap()),
     c.bracket.of(settings.bracketMatching ? bracketMatching() : []),
     c.rainbowBrackets.of(settings.rainbowBrackets ? rainbowBrackets() : []),
@@ -195,14 +216,34 @@ export function initialExtensions(
   ];
 }
 
+/**
+ * 随"当前文档"变化而必须重配的扩展（缩进 / 自动闭合 / 补全）。
+ * 缓存状态快速路径（setup.loadDocument）也要单独调用它 —— 否则快速切标签时
+ * 这些按文档生效的扩展会停留在上一个文档的值上。
+ */
+export function perDocumentEffects(
+  c: EditorCompartments,
+  opts: { readonly: boolean; indent?: IndentStyle },
+): StateEffect<unknown>[] {
+  return [
+    c.indent.reconfigure(indentationExtensions(opts.indent ?? globalIndentStyle())),
+    c.autoClose.reconfigure(autoCloseExtensions(settings.autoCloseBrackets && !opts.readonly)),
+    c.autoIndent.reconfigure(autoIndentExtension(settings.autoIndent && !opts.readonly)),
+    c.completion.reconfigure(completionExtensions({ readonly: opts.readonly })),
+  ];
+}
+
 /** 受配置影响的扩展：配置热更新与标签状态恢复时统一重配 */
 export function dynamicEffects(
   c: EditorCompartments,
-  opts: { whitespaceOn: boolean; wordWrapOn: boolean; readonly: boolean },
+  opts: { whitespaceOn: boolean; wordWrapOn: boolean; readonly: boolean; indent?: IndentStyle },
 ): StateEffect<unknown>[] {
   return [
     c.chrome.reconfigure(chromeExtensions()),
-    c.indent.reconfigure(indentationExtensions()),
+    c.indent.reconfigure(indentationExtensions(opts.indent ?? globalIndentStyle())),
+    c.autoClose.reconfigure(autoCloseExtensions(settings.autoCloseBrackets && !opts.readonly)),
+    c.autoIndent.reconfigure(autoIndentExtension(settings.autoIndent && !opts.readonly)),
+    c.completion.reconfigure(completionExtensions({ readonly: opts.readonly })),
     c.keymap.reconfigure(buildKeymap()),
     c.bracket.reconfigure(settings.bracketMatching ? bracketMatching() : []),
     c.rainbowBrackets.reconfigure(settings.rainbowBrackets ? rainbowBrackets() : []),

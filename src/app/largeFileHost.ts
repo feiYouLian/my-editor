@@ -20,6 +20,8 @@ export interface LargeFileHostDeps {
   onCheckMojibake: (tabId: string) => void;
   /** 虚拟标签转换后重载当前标签（main.ts 的标签切换状态机） */
   onReloadActiveTab: () => Promise<void>;
+  /** 索引完成后回报真实总行数（状态栏展示用；虚拟视图自身不再重复展示） */
+  onVirtualMetrics?: (totalLines: number, newline: string) => void;
 }
 
 export class LargeFileHost {
@@ -33,6 +35,7 @@ export class LargeFileHost {
       this.instance = new LargeView(document.getElementById("large-view")!, {
         onMessage: this.deps.showMessage,
         onOpenInEditor: (info) => void this.openInEditor(info),
+        onTotalLines: (lines, newline) => this.deps.onVirtualMetrics?.(lines, newline),
       });
     }
     return this.instance;

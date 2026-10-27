@@ -213,10 +213,33 @@ export function setLanguageOverrides(map: Record<string, string>): void {
   }
 }
 
+/**
+ * 无扩展名 / 点开头文件（`Dockerfile`、`Makefile`、`CMakeLists.txt`、`.env`…）。
+ * 只映射到**已注册**的语言：dockerfile/makefile/cmake 没有专用高亮，
+ * 先落 properties（`#` 注释 + 键值结构近似）；日后加了专用语言改这一行即可。
+ */
+const basenameToLanguage: Record<string, string> = {
+  dockerfile: "properties",
+  "dockerfile.dev": "properties",
+  makefile: "properties",
+  gnumakefile: "properties",
+  "cmakelists.txt": "properties",
+  ".env": "properties",
+  ".gitignore": "properties",
+  ".gitattributes": "properties",
+  ".npmrc": "properties",
+  ".editorconfig": "properties",
+};
+
 export function languageKeyFromPath(path: string): string | null {
-  const dot = path.lastIndexOf(".");
+  // 先按文件名整体匹配：`D:/a.b/Makefile` 这类路径用扩展名算法会算出带分隔符的"扩展名"
+  const base = path.replace(/^.*[\\/]/, "").toLowerCase();
+  const byName = basenameToLanguage[base];
+  if (byName) return overrides[`/${base}`] ?? byName;
+  const dot = base.lastIndexOf(".");
+  // 注意：`.env` 的 dot === 0 是有意的（当扩展名处理），不能改成 dot <= 0
   if (dot < 0) return null;
-  const ext = path.slice(dot).toLowerCase();
+  const ext = base.slice(dot);
   return overrides[ext] ?? extensionToLanguage[ext] ?? null;
 }
 

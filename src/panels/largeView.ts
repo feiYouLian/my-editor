@@ -8,7 +8,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { formatSize } from "../core/format";
 import {
   DEFAULT_PADDING_LINES,
   ENCODINGS,
@@ -33,6 +32,11 @@ export interface LargeViewDeps {
   onMessage: (text: string) => void;
   /** 逃生门：改用编辑器打开 */
   onOpenInEditor: (info: LargeFileInfo) => void;
+  /**
+   * 索引完成后的真实总行数：虚拟视图自己不再展示"名字·体积·行数"，
+   * 一律交给状态栏，所以这里必须把最新行数回报给上层。
+   */
+  onTotalLines?: (totalLines: number, newline: string) => void;
 }
 
 export class LargeView {
@@ -126,7 +130,6 @@ export class LargeView {
     this.el.titleEl.textContent = /\.log$/i.test(info.path) ? "日志视图" : "大文件视图";
     this.el.encodingSelect.value = ENCODINGS.includes(info.encoding) ? info.encoding : "UTF-8";
     this.el.filterInput.value = "";
-    this.updateMeta();
     this.updateIndexHint();
     this.el.scrollEl.scrollTop = 0;
 
@@ -166,7 +169,7 @@ export class LargeView {
         this.info.complete = true;
         this.info.indexedBytes = this.info.size;
         this.el.indexEl.textContent = "";
-        this.updateMeta();
+        this.deps.onTotalLines?.(this.info.totalLines, this.info.newline);
         void this.loadDensity();
         this.resizeSpacer();
         void this.loadWindow();
@@ -226,13 +229,6 @@ export class LargeView {
     );
     void this.loadWindow();
     this.drawMinimap();
-  }
-
-  private updateMeta(): void {
-    const info = this.info;
-    if (!info) return;
-    this.el.metaEl.textContent = `${info.name} · ${formatSize(info.size)} · ${info.totalLines} 行 · ${info.encoding} · ${info.newline}`;
-    this.el.metaEl.title = info.path;
   }
 
   private updateIndexHint(): void {
@@ -453,7 +449,6 @@ export class LargeView {
       await invoke("set_large_encoding", { id: info.id, encoding: next });
       info.encoding = next;
       this.cache.clear();
-      this.updateMeta();
       await this.loadWindow();
       this.deps.onMessage(`已按 ${next} 重新解释（只读视图，不写盘）`);
     } catch (e) {

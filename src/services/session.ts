@@ -12,6 +12,10 @@ export interface SessionFile {
   line: number;
   /** 光标列（1 基） */
   col: number;
+  /** 书签行号（1 基，升序）；旧会话文件缺省为空 */
+  bookmarks?: number[];
+  /** 折叠区：[起始行, 结束行]（1 基）；旧会话文件缺省为空 */
+  folds?: number[][];
 }
 
 export interface SessionState {

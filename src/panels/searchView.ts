@@ -93,6 +93,8 @@ export class SearchView {
   private requestId = 0;
   private caseSensitive = false;
   private regexOn = false;
+  /** 全词匹配：仅对 ASCII 查询生效（Rust 侧会忽略非 ASCII 查询的该开关） */
+  private wholeWord = false;
   /** 已折叠的文件分组（按绝对路径记，刷新后仍保持折叠状态） */
   private collapsed = new Set<string>();
   /** 勾选要替换的文件（每次新搜索结果默认全选） */
@@ -173,6 +175,14 @@ export class SearchView {
     const regexBtn = makeToggle(".*", "使用正则表达式", () => {
       this.regexOn = !this.regexOn;
     });
+    const wordBtn = makeToggle("ab", "全词匹配（仅对英文、数字等 ASCII 单词有效）", () => {
+      this.wholeWord = !this.wholeWord;
+      // 中文没有词边界：与其"勾了没反应"，不如当场说清楚
+      const query = this.queryEl.value.trim();
+      if (this.wholeWord && query && !/^[\x20-\x7e]+$/.test(query)) {
+        this.deps.showMessage("全词匹配只对 ASCII 单词生效，当前查询含中文等字符，已按普通匹配处理");
+      }
+    });
 
     // 替换模式开关（默认收起，不改变现有搜索体验）
     const replaceToggle = document.createElement("button");
@@ -189,7 +199,7 @@ export class SearchView {
       this.renderList();
     });
 
-    toolbar.append(this.queryEl, caseBtn, regexBtn, replaceToggle);
+    toolbar.append(this.queryEl, caseBtn, regexBtn, wordBtn, replaceToggle);
 
     // 替换行：输入框 + 全部替换（勾选文件后可用）
     this.replaceRowEl = document.createElement("div");
@@ -267,6 +277,7 @@ export class SearchView {
         query,
         caseSensitive: this.caseSensitive,
         regex: this.regexOn,
+        wholeWord: this.wholeWord,
         ignoreDirs: this.deps.getIgnoreDirs(),
         maxFiles: MAX_FILES,
         maxMatches: MAX_MATCHES,
@@ -521,6 +532,7 @@ export class SearchView {
         replacement: this.replaceEl.value,
         caseSensitive: this.caseSensitive,
         regex: this.regexOn,
+        wholeWord: this.wholeWord,
         keepHistory,
         targets: writable.map((t) => t.path),
       });

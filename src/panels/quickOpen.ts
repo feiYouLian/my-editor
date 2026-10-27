@@ -7,7 +7,8 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { fuzzyScore } from "../core/fuzzy";
+import { fuzzyMatch, fuzzyScore } from "../core/fuzzy";
+import { appendHighlighted } from "../ui/highlight";
 
 interface WorkspaceFile {
   path: string;
@@ -41,6 +42,12 @@ export class QuickOpen {
   private loading = false;
   private visible: WorkspaceFile[] = [];
   private selected = 0;
+  /** 上次渲染时的查询：查询变了要把选中项复位 */
+  private lastQuery = "";
+  /** 输入法组合中：组合期不刷新列表（拼音字母会造成大量无意义重算） */
+  private composing = false;
+  /** 渲染合帧句柄 */
+  private renderRaf: number | null = null;
 
   constructor(private deps: QuickOpenDeps) {}
 
@@ -62,7 +69,19 @@ export class QuickOpen {
     const input = document.createElement("input");
     input.className = "palette-input";
     input.placeholder = "跳转到文件…（输入文件名或路径片段，Esc 关闭）";
-    input.addEventListener("input", () => this.renderList());
+    // 合帧 + 跳过输入法组合期：中文输入时每个拼音字母都会触发 input，
+    // 逐次对最多 5000 个文件全量打分会让输入框明显发涩
+    input.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    input.addEventListener("compositionend", () => {
+      this.composing = false;
+      this.scheduleRender();
+    });
+    input.addEventListener("input", () => {
+      if (this.composing) return;
+      this.scheduleRender();
+    });
     input.addEventListener("keydown", (e) => this.onKeydown(e));
 
     const list = document.createElement("div");
@@ -89,11 +108,24 @@ export class QuickOpen {
   }
 
   close(): void {
+    if (this.renderRaf !== null) {
+      cancelAnimationFrame(this.renderRaf);
+      this.renderRaf = null;
+    }
     this.overlay?.remove();
     this.overlay = null;
     this.input = null;
     this.listEl = null;
     this.hintEl = null;
+  }
+
+  /** 一帧最多算一次；同一帧内的多次输入只保留最后一次 */
+  private scheduleRender(): void {
+    if (this.renderRaf !== null) return;
+    this.renderRaf = requestAnimationFrame(() => {
+      this.renderRaf = null;
+      this.renderList();
+    });
   }
 
   private onKeydown(e: KeyboardEvent): void {
@@ -116,7 +148,8 @@ export class QuickOpen {
   private move(delta: number): void {
     if (this.visible.length === 0) return;
     this.selected = (this.selected + delta + this.visible.length) % this.visible.length;
-    this.renderList();
+    // 只切选中样式：重建 200 行 + 重新打分会让按住方向键时明显掉帧
+    this.updateSelection();
   }
 
   private pick(file: WorkspaceFile): void {
@@ -183,6 +216,10 @@ export class QuickOpen {
       });
 
     this.visible = scored.map((s) => s.file);
+    if (query !== this.lastQuery) {
+      this.lastQuery = query;
+      this.selected = 0;
+    }
     this.selected = Math.min(this.selected, Math.max(0, this.visible.length - 1));
     this.listEl.innerHTML = "";
 
@@ -209,9 +246,15 @@ export class QuickOpen {
       const name = document.createElement("span");
       name.textContent = file.name;
 
+      // 命中位置高亮：多关键词（AND）逐个取位置后合并，重复命中的字符只包一次
       const path = document.createElement("span");
       path.className = "palette-shortcut";
-      path.textContent = file.relative;
+      const marks = new Set<number>();
+      for (const word of words) {
+        const m = fuzzyMatch(word, file.relative);
+        if (m) for (const pos of m.positions) marks.add(pos);
+      }
+      appendHighlighted(path, file.relative, marks);
 
       item.append(name, path);
       item.addEventListener("click", () => this.pick(file));

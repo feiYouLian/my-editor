@@ -8,6 +8,10 @@
 
 import type { EditorView } from "@codemirror/view";
 import { redo, undo } from "@codemirror/commands";
+import { foldAll, unfoldAll } from "@codemirror/language";
+import { selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
+import { applyLineOp, type LineOp } from "../editor/lineOps";
+import { getConfig } from "../config/settings";
 import { type Tab } from "../store/tabs";
 import type { MenuEntry } from "../ui/editorMenu";
 import { copyFromEditor, pasteIntoEditor } from "../editor/clipboard";
@@ -109,6 +113,19 @@ export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
     find.push({ label: "切换书签", shortcut: "Ctrl+F2", run: () => toggleBookmark(view) });
     find.push({ label: "下一个书签", shortcut: "F2", run: () => gotoBookmark(view, 1) });
   }
+  if (!readonly && hasSelection) {
+    find.push({ separator: true });
+    find.push({
+      label: "选中下一个相同词",
+      shortcut: "Ctrl+Alt+D",
+      run: () => selectNextOccurrence(view),
+    });
+    find.push({
+      label: "选中全部相同词",
+      shortcut: "Ctrl+Alt+Shift+D",
+      run: () => selectSelectionMatches(view),
+    });
+  }
   top.push({ separator: true });
   top.push({ label: "查找与书签", submenu: find });
 
@@ -146,6 +163,9 @@ export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
   if (!readonly) {
     if (code.length > 0) code.push({ separator: true });
     code.push({ label: "列编辑器", shortcut: "Alt+C", run: () => openColumnEditor(view) });
+    code.push({ separator: true });
+    code.push({ label: "折叠全部", shortcut: "Ctrl+Alt+[", run: () => { foldAll(view); } });
+    code.push({ label: "展开全部", shortcut: "Ctrl+Alt+]", run: () => { unfoldAll(view); } });
   }
   if (code.length > 0) top.push({ label: "代码", submenu: code });
 
@@ -185,6 +205,28 @@ export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
       }
     }
     top.push({ label: "格式转换", submenu: convertItems });
+  }
+
+  // 行操作：按"整行"语义，不需要用户先精确选中整行
+  if (!readonly && tab && tab.kind === "text" && !tab.virtual) {
+    const runLine = (op: LineOp): void => {
+      deps.showMessage(applyLineOp(view, op, getConfig().tabSize).message);
+    };
+    top.push({
+      label: "行操作",
+      submenu: [
+        { label: "按升序排序", run: () => runLine({ kind: "sort", options: {} }) },
+        { label: "按降序排序", run: () => runLine({ kind: "sort", options: { desc: true } }) },
+        { label: "按数字升序排序", run: () => runLine({ kind: "sort", options: { numeric: true } }) },
+        { label: "去除重复行", run: () => runLine({ kind: "dedupe" }) },
+        { label: "反转行序", run: () => runLine({ kind: "reverse" }) },
+        { label: "删除空行", run: () => runLine({ kind: "removeEmpty" }) },
+        { separator: true },
+        { label: "删除行尾空白", run: () => runLine({ kind: "trimTrailing" }) },
+        { label: "缩进：Tab 转空格", run: () => runLine({ kind: "indent", toSpaces: true }) },
+        { label: "缩进：空格转 Tab", run: () => runLine({ kind: "indent", toSpaces: false }) },
+      ],
+    });
   }
 
   // 文本转换（子菜单，需选中文本）

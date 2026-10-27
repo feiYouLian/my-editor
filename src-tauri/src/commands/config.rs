@@ -35,6 +35,16 @@ pub struct EditorEnhancements {
     pub word_wrap: bool,
     /// 代码折叠：gutter 折叠标记 + 折叠快捷键
     pub code_folding: bool,
+    /// 自动闭合括号 / 引号
+    pub auto_close_brackets: bool,
+    /// 输入时按语言自动缩进
+    pub auto_indent: bool,
+    /// 文档内单词补全（无词库、无后台连接）
+    pub word_completion: bool,
+    /// 按文件检测缩进（Tab 宽度 / 空格 or Tab）
+    pub detect_indent: bool,
+    /// 列标尺：在这些字符列画竖线（空数组 = 关闭）
+    pub rulers: Vec<u32>,
 }
 
 impl Default for EditorEnhancements {
@@ -50,6 +60,11 @@ impl Default for EditorEnhancements {
             rainbow_brackets: true,
             word_wrap: false,
             code_folding: true,
+            auto_close_brackets: true,
+            auto_indent: true,
+            word_completion: true,
+            detect_indent: true,
+            rulers: Vec::new(),
         }
     }
 }
@@ -268,12 +283,21 @@ impl Default for GlobalReplaceSettings {
 pub struct FileSettings {
     /// 打开手势：true = 双击（首次点击仅选中），false = 单击
     pub open_with_double_click: bool,
+    /// 保存前删除行尾空白（默认关：会改动用户文件）
+    pub trim_trailing_whitespace_on_save: bool,
+    /// 保存前补最终换行（默认关）
+    pub ensure_final_newline_on_save: bool,
+    /// 按文件记忆编码（默认开：只在自动检测不可靠时生效）
+    pub encode_memory: bool,
 }
 
 impl Default for FileSettings {
     fn default() -> Self {
         Self {
             open_with_double_click: false,
+            trim_trailing_whitespace_on_save: false,
+            ensure_final_newline_on_save: false,
+            encode_memory: true,
         }
     }
 }
@@ -562,6 +586,47 @@ mod tests {
         assert!(cfg.layout.minimap);
         assert!(!cfg.layout.show_line_numbers);
         assert!((cfg.layout.split_ratio - 0.6).abs() < f64::EPSILON);
+    }
+
+    /// 输入手感 / 保存清理四组开关：JSON 往返不丢（新增字段必须有往返测试）
+    #[test]
+    fn input_and_save_cleanup_fields_roundtrip() {
+        let mut cfg = AppConfig::default();
+        cfg.editor_enhancements.auto_close_brackets = false;
+        cfg.editor_enhancements.auto_indent = false;
+        cfg.editor_enhancements.word_completion = false;
+        cfg.editor_enhancements.detect_indent = false;
+        cfg.files.trim_trailing_whitespace_on_save = true;
+        cfg.files.ensure_final_newline_on_save = true;
+        cfg.files.encode_memory = false;
+        cfg.editor_enhancements.rulers = vec![80, 120];
+
+        let json = serde_json::to_string(&cfg).expect("序列化");
+        let back: AppConfig = serde_json::from_str(&json).expect("反序列化");
+
+        assert!(!back.editor_enhancements.auto_close_brackets);
+        assert!(!back.editor_enhancements.auto_indent);
+        assert!(!back.editor_enhancements.word_completion);
+        assert!(!back.editor_enhancements.detect_indent);
+        assert!(back.files.trim_trailing_whitespace_on_save);
+        assert!(back.files.ensure_final_newline_on_save);
+        assert!(!back.files.encode_memory);
+        assert_eq!(back.editor_enhancements.rulers, vec![80, 120]);
+    }
+
+    /// 旧配置缺少新字段时取默认值（默认开的三项不能被当成 false）
+    #[test]
+    fn legacy_config_without_input_fields_uses_defaults() {
+        let legacy = r#"{"version":2,"editorEnhancements":{"bracketMatching":false}}"#;
+        let cfg: AppConfig = serde_json::from_str(legacy).expect("旧配置应可解析");
+        assert!(cfg.editor_enhancements.auto_close_brackets);
+        assert!(cfg.editor_enhancements.auto_indent);
+        assert!(cfg.editor_enhancements.word_completion);
+        assert!(cfg.editor_enhancements.detect_indent);
+        assert!(!cfg.files.trim_trailing_whitespace_on_save);
+        assert!(!cfg.files.ensure_final_newline_on_save);
+        assert!(cfg.files.encode_memory);
+        assert!(!cfg.editor_enhancements.bracket_matching);
     }
 
     /// 显式关闭后往返一次不丢字段

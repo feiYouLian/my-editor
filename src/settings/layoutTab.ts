@@ -4,7 +4,15 @@
 
 import type { ColumnModifier, StatusBarFieldEntry } from "../config/settings";
 import { getConfig } from "../config/settings";
-import { checkRow, numberRow, radioGroup, section, selectRow, sliderRow } from "../ui/formControls";
+import {
+  checkRow,
+  numberRow,
+  radioGroup,
+  section,
+  selectRow,
+  sliderRow,
+  textRow,
+} from "../ui/formControls";
 import {
   COLUMN_MODIFIERS,
   editorEnhancements,
@@ -50,7 +58,10 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   );
   main.append(previewSection.el);
 
-  const editorSection = section("编辑器", "显示项与缩进行为，即时生效。");
+  const editorSection = section(
+    "编辑器",
+    "显示项与缩进行为，即时生效。多光标：Ctrl+点击；列选择：Alt+拖选（VS Code 用 Alt+点击，在本项目是列选择）。",
+  );
   editorSection.body.append(
     checkRow("显示行号", cfg.layout.showLineNumbers, (value) => {
       saveSettings({ layout: { ...layout(), showLineNumbers: value } });
@@ -79,6 +90,19 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
         saveSettings({
           editorEnhancements: { ...editorEnhancements(), rainbowBrackets: value },
         });
+      },
+    ),
+    checkRow("自动闭合括号 / 引号", cfg.editorEnhancements.autoCloseBrackets, (value) => {
+      saveSettings({ editorEnhancements: { ...editorEnhancements(), autoCloseBrackets: value } });
+    }),
+    checkRow("输入时自动缩进", cfg.editorEnhancements.autoIndent, (value) => {
+      saveSettings({ editorEnhancements: { ...editorEnhancements(), autoIndent: value } });
+    }),
+    checkRow(
+      "单词补全（Ctrl+Space / Alt+/，仅从本文档取词）",
+      cfg.editorEnhancements.wordCompletion,
+      (value) => {
+        saveSettings({ editorEnhancements: { ...editorEnhancements(), wordCompletion: value } });
       },
     ),
     checkRow("自动换行（长行按编辑区宽度折行）", cfg.editorEnhancements.wordWrap, (value) => {
@@ -114,6 +138,27 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
     checkRow("Tab 插入空格（否则插入制表符）", cfg.insertSpaces, (value) => {
       saveSettings({ insertSpaces: value });
     }),
+    checkRow(
+      "按文件检测缩进（覆盖上面的全局宽度，状态栏可改）",
+      cfg.editorEnhancements.detectIndent,
+      (value) => {
+        saveSettings({ editorEnhancements: { ...editorEnhancements(), detectIndent: value } });
+      },
+    ),
+    textRow(
+      "列标尺（逗号分隔的列号，留空关闭）",
+      (cfg.editorEnhancements.rulers ?? []).join(", "),
+      "例如 80, 120",
+      (value) => {
+        const rulers = value
+          .split(/[,，\s]+/)
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n) && n > 0)
+          .map((n) => Math.floor(n))
+          .slice(0, 6);
+        saveSettings({ editorEnhancements: { ...editorEnhancements(), rulers } });
+      },
+    ),
     checkRow("保存时自动格式化（大文件跳过）", cfg.formatOnSave, (value) => {
       saveSettings({ formatOnSave: value });
     }),

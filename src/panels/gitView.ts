@@ -9,7 +9,7 @@
  */
 
 import { placeMenu } from "../ui/menu";
-import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
+import { bindOpenGesture } from "../ui/openGesture";
 
 export interface GitFileEntry {
   path: string;
@@ -59,6 +59,10 @@ export class GitView {
   private error = "";
   /** 折叠的分组（只记会话状态：重新挂载 / 重启后默认全展开） */
   private collapsed = new Set<"staged" | "changes">();
+  /** 多选集合：key 带组前缀（同一文件可能同时出现在"已暂存"和"更改"两组） */
+  private selection = new Set<string>();
+  /** Shift 连选的锚点（按组记） */
+  private lastIndex = new Map<"staged" | "changes", number>();
 
   private bodyEl!: HTMLElement;
   private messageEl!: HTMLTextAreaElement;
@@ -80,7 +84,27 @@ export class GitView {
   update(status: GitStatus | null): void {
     this.status = status;
     this.error = "";
+    // 提交 / 放弃后条目会消失：把已不存在的选中项清掉，避免"已选 3 项"却只剩 1 项
+    if (status) {
+      const alive = new Set<string>();
+      for (const e of status.staged) alive.add(this.keyOf(e, true));
+      for (const e of status.changes) alive.add(this.keyOf(e, false));
+      for (const key of [...this.selection]) {
+        if (!alive.has(key)) this.selection.delete(key);
+      }
+    } else {
+      this.selection.clear();
+    }
     this.render();
+  }
+
+  private keyOf(entry: GitFileEntry, staged: boolean): string {
+    return `${staged ? "S" : "C"}|${entry.path}`;
+  }
+
+  /** 该组当前被选中的条目（无选中时返回空数组） */
+  private selectedIn(entries: GitFileEntry[], staged: boolean): GitFileEntry[] {
+    return entries.filter((e) => this.selection.has(this.keyOf(e, staged)));
   }
 
   /** 刷新失败：保留旧列表，仅在顶部提示 */
@@ -137,8 +161,16 @@ export class GitView {
 
   private syncCommitButton(): void {
     const staged = this.status?.staged.length ?? 0;
-    this.commitBtn.disabled =
-      this.busy || staged === 0 || this.messageEl.value.trim() === "";
+    const emptyMessage = this.messageEl.value.trim() === "";
+    this.commitBtn.disabled = this.busy || staged === 0 || emptyMessage;
+    // 灰掉的按钮必须说明原因，否则用户只能猜
+    this.commitBtn.title = this.busy
+      ? "正在提交…"
+      : staged === 0
+        ? "先暂存要提交的更改"
+        : emptyMessage
+          ? "填写提交信息后即可提交（Ctrl+Enter）"
+          : "提交（Ctrl+Enter）";
   }
 
   private render(): void {
@@ -201,23 +233,64 @@ export class GitView {
     chevron.className = "git-chevron";
     const label = document.createElement("span");
     label.className = "git-group-label";
-    label.textContent = `${title} (${entries.length})`;
+    const selected = this.selectedIn(entries, staged);
+    label.textContent =
+      selected.length > 0
+        ? `${title} (${entries.length}) · 已选 ${selected.length}`
+        : `${title} (${entries.length})`;
     head.append(chevron, label);
 
     if (entries.length > 0) {
+      // 有选中就只作用于选中项，否则整组（与 VS Code 的 SCM 一致）
+      const target = selected.length > 0 ? selected : entries;
       const action = document.createElement("button");
       action.type = "button";
       action.className = "git-group-action";
-      action.textContent = staged ? "全部取消" : "全部暂存";
+      action.textContent = staged
+        ? selected.length > 0
+          ? `取消选中 ${selected.length}`
+          : "全部取消"
+        : selected.length > 0
+          ? `暂存选中 ${selected.length}`
+          : "全部暂存";
       action.disabled = this.busy;
       action.addEventListener("click", (e) => {
         // 按钮在组头内：拦下冒泡，否则点「全部暂存」会顺带折叠该组
         e.stopPropagation();
-        if (staged) this.deps.onUnstage(entries);
-        else this.deps.onStage(entries);
+        this.selection.clear();
+        if (staged) this.deps.onUnstage(target);
+        else this.deps.onStage(target);
       });
       head.append(action);
+
+      if (selected.length > 0) {
+        const discard = document.createElement("button");
+        discard.type = "button";
+        discard.className = "git-group-action danger";
+        discard.textContent = `放弃选中 ${selected.length}`;
+        discard.title = "放弃所选文件的更改（会二次确认）";
+        discard.disabled = this.busy;
+        discard.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.selection.clear();
+          this.deps.onDiscard(selected, staged);
+        });
+        head.append(discard);
+      }
     }
+
+    // 刷新按钮常显：原来只藏在组头右键菜单里，用户不知道能刷新
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "git-group-action";
+    refreshBtn.textContent = "⟳";
+    refreshBtn.title = "刷新状态";
+    refreshBtn.setAttribute("aria-label", "刷新状态");
+    refreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation(); // 否则会顺带折叠该组
+      this.deps.onRefresh();
+    });
+    head.append(refreshBtn);
 
     // 组头即折叠开关（VS Code 的 SCM 分组行为），点击标题展开 / 收起该组列表
     const syncCollapsed = (): void => {
@@ -247,7 +320,9 @@ export class GitView {
       empty.textContent = "无";
       list.append(empty);
     } else {
-      for (const entry of entries) list.append(this.renderRow(entry, staged));
+      for (const [index, entry] of entries.entries()) {
+        list.append(this.renderRow(entry, staged, index, entries));
+      }
     }
 
     group.append(head, list);
@@ -255,53 +330,100 @@ export class GitView {
     return group;
   }
 
-  private renderRow(entry: GitFileEntry, staged: boolean): HTMLElement {
+  private renderRow(
+    entry: GitFileEntry,
+    staged: boolean,
+    index: number,
+    entries: GitFileEntry[],
+  ): HTMLElement {
     const row = document.createElement("div");
     row.className = "git-row";
-    const display = entry.orig_relative
+    const groupKey: "staged" | "changes" = staged ? "staged" : "changes";
+    const selKey = this.keyOf(entry, staged);
+    if (this.selection.has(selKey)) row.classList.add("row-selected");
+    // 文件名优先：长路径下所有行共享前缀，只有文件名能区分（完整路径放 title）
+    const { name, dir } = splitRelative(entry.relative);
+    row.title = entry.orig_relative
       ? `${entry.orig_relative} → ${entry.relative}`
       : entry.relative;
-    row.title = display;
 
     const status = document.createElement("span");
     status.className = "git-status";
     status.dataset.status = entry.status;
     status.textContent = entry.status;
 
-    const path = document.createElement("span");
-    path.className = "git-path";
-    path.textContent = display;
+    const nameEl = document.createElement("span");
+    nameEl.className = "git-name";
+    nameEl.textContent = name;
 
-    // 撤回（放弃更改）：悬停显示，与右键菜单同一动作
-    const discard = document.createElement("button");
-    discard.type = "button";
-    discard.className = "git-row-action git-row-discard";
-    discard.title = staged ? "放弃更改（还原到 HEAD）" : "放弃更改";
-    discard.setAttribute("aria-label", discard.title);
-    discard.disabled = this.busy;
-    discard.innerHTML =
-      '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5h6.5a3 3 0 0 1 0 6H7"/><path d="M5.8 4.2 2.5 7.5l3.3 3.3"/></svg>';
-    discard.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.deps.onDiscard([entry], staged);
-    });
+    row.append(status, nameEl);
+    if (dir) {
+      const dirEl = document.createElement("span");
+      dirEl.className = "git-dir";
+      dirEl.textContent = dir;
+      row.append(dirEl);
+    }
 
+    // 行内只保留"暂存 / 取消暂存"；放弃更改（不可撤销）只在右键菜单里，
+    // 避免与高频按钮紧挨着被误点（原实现的红色撤回按钮就在旁边）
     const action = document.createElement("button");
     action.type = "button";
     action.className = "git-row-action";
-    action.textContent = staged ? "−" : "+";
     action.title = staged ? "取消暂存" : "暂存";
+    action.setAttribute("aria-label", action.title);
     action.disabled = this.busy;
+    action.innerHTML = staged
+      ? '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>';
     action.addEventListener("click", (e) => {
       e.stopPropagation();
       if (staged) this.deps.onUnstage([entry]);
       else this.deps.onStage([entry]);
     });
+    row.append(action);
 
-    row.append(status, path, discard, action);
+    // 修饰键多选：必须在 openGesture 之前注册，靠 stopImmediatePropagation
+    // 挡住"打开 diff"（同级监听器按注册顺序执行，capture 标记在 target 上无效）
+    row.addEventListener("click", (e) => {
+      const modifier = e.ctrlKey || e.metaKey || e.shiftKey;
+      if (!modifier) {
+        // 普通点击：清掉选中并继续走"看 diff"
+        if (this.selection.size > 0) {
+          this.selection.clear();
+          this.render();
+        }
+        return;
+      }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.shiftKey) {
+        const from = this.lastIndex.get(groupKey) ?? index;
+        const [lo, hi] = from <= index ? [from, index] : [index, from];
+        if (!e.ctrlKey && !e.metaKey) {
+          const prefix = staged ? "S|" : "C|";
+          for (const key of [...this.selection]) {
+            if (key.startsWith(prefix)) this.selection.delete(key);
+          }
+        }
+        for (let i = lo; i <= hi; i++) this.selection.add(this.keyOf(entries[i], staged));
+      } else if (this.selection.has(selKey)) {
+        this.selection.delete(selKey);
+      } else {
+        this.selection.add(selKey);
+      }
+      this.lastIndex.set(groupKey, index);
+      // 组头要显示"已选 N 项"，直接整体重绘（SCM 列表规模很小）
+      this.render();
+    });
+
+    // 固定单击看 diff（不受"双击打开"配置影响）；双击在编辑器中打开文件
     bindOpenGesture(row, {
-      onSelect: () => selectRowIn(row),
+      forceSingleClick: true,
       onOpen: () => this.deps.onOpenDiff(entry.path, staged),
+    });
+    row.addEventListener("dblclick", () => {
+      if (entry.status.includes("D")) return; // 已删除的文件没有内容可开
+      this.deps.onOpenFile(entry.path);
     });
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -428,6 +550,13 @@ export class GitView {
     this.menu?.remove();
     this.menu = null;
   }
+}
+
+/** 拆出文件名与所在目录（git 的 relative 一律用 `/`，这里兼容 `\`） */
+function splitRelative(relative: string): { name: string; dir: string } {
+  const idx = Math.max(relative.lastIndexOf("/"), relative.lastIndexOf("\\"));
+  if (idx < 0) return { name: relative, dir: "" };
+  return { name: relative.slice(idx + 1), dir: relative.slice(0, idx) };
 }
 
 /** 取父目录（兼 Windows `\` 与 POSIX `/`） */

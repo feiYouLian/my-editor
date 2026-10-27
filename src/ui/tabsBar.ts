@@ -14,6 +14,8 @@ export interface TabsBarCallbacks {
   onClose: (tabId: string) => void;
   /** 右键「与当前标签比较」 */
   onCompareWith: (tabId: string) => void;
+  /** 右键「重新载入（从磁盘）」：文件被外部改动 / 保存失败后的固定入口 */
+  onReload?: (tabId: string) => void;
   /** 批量关闭（main.ts 负责关闭前的草稿清理） */
   onBulkClose: (kind: "left" | "right" | "others" | "all", tabId: string) => void;
   /** 双击标签栏空白处 */
@@ -23,6 +25,8 @@ export interface TabsBarCallbacks {
 export class TabsBar {
   /** 上次渲染的标签签名：输入时标签集未变则跳过整栏重建 */
   private signature = "";
+  /** 上次渲染时的激活标签 id（用于只切 class 的增量路径） */
+  private activeId = "";
   private menu: HTMLElement | null = null;
 
   /** 标签栏右侧常驻「新建」按钮（双击空白仍可用，此处只为发现性） */
@@ -179,25 +183,59 @@ export class TabsBar {
     this.dropMarker = null;
   }
 
+  /** 结构签名（不含激活项）：只有增删/改名/脏标记变化才重建整栏 */
   private renderSignature(): string {
-    const activeId = tabStore.active()?.id ?? "";
-    const list = tabStore
+    return tabStore
       .list()
-      .map((t) => `${t.id}\u0001${t.name}\u0001${t.dirty ? 1 : 0}`)
+      .map(
+        (t) =>
+          `${t.id}\u0001${t.name}\u0001${t.dirty ? 1 : 0}\u0001${t.externallyChanged ? 1 : 0}`,
+      )
       .join("\u0002");
-    return `${activeId}\u0003${list}`;
+  }
+
+  /** 只切激活类：切标签时整栏重建会闪一下，并丢掉鼠标 hover 状态 */
+  private syncActive(): void {
+    const activeId = tabStore.active()?.id ?? "";
+    if (activeId === this.activeId) return;
+    this.activeId = activeId;
+    this.container.querySelectorAll<HTMLElement>(".tab").forEach((el) => {
+      el.classList.toggle("active", el.dataset.tabId === activeId);
+    });
+    this.scrollActiveIntoView();
+  }
+
+  /** 标签过多溢出时，将激活标签滚入视野 */
+  private scrollActiveIntoView(): void {
+    this.container
+      .querySelector<HTMLElement>(".tab.active")
+      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
   render(): void {
     const signature = this.renderSignature();
-    if (signature === this.signature) return;
+    if (signature === this.signature) {
+      this.syncActive();
+      return;
+    }
     this.signature = signature;
+    this.activeId = tabStore.active()?.id ?? "";
 
     this.container.innerHTML = "";
     for (const tab of tabStore.list()) {
       const el = document.createElement("div");
       el.className = `tab${tab.id === tabStore.active()?.id ? " active" : ""}`;
       el.dataset.tabId = tab.id;
+
+      // 外部修改标记：后台标签也可见（状态栏只显示激活标签，靠它才不会错过）
+      if (tab.externallyChanged) {
+        el.classList.add("external");
+        const mark = document.createElement("span");
+        mark.className = "tab-external";
+        mark.textContent = "⟳";
+        mark.title = "磁盘文件已被外部修改";
+        el.append(mark);
+      }
 
       const name = document.createElement("span");
       name.className = "tab-name";
@@ -218,6 +256,12 @@ export class TabsBar {
       });
 
       el.append(name, close);
+      // 中键关闭（与浏览器 / VS Code 一致）
+      el.addEventListener("auxclick", (e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        this.callbacks.onClose(tab.id);
+      });
       el.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         this.showMenu(e.clientX, e.clientY, tab.id);
@@ -225,10 +269,7 @@ export class TabsBar {
       this.container.append(el);
     }
     this.container.classList.toggle("hidden", tabStore.list().length === 0);
-    // 标签过多溢出时，将激活标签滚入视野
-    this.container
-      .querySelector<HTMLElement>(".tab.active")
-      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    this.scrollActiveIntoView();
   }
 
   private closeMenu(): void {
@@ -243,12 +284,19 @@ export class TabsBar {
 
     const items: { label: string; run: () => void }[] = [
       { label: "与当前标签比较", run: () => this.callbacks.onCompareWith(tabId) },
+    ];
+    // 只有磁盘上的文本文件才有"从磁盘重载"的意义（未命名 / 图片 / 虚拟视图没有）
+    const target = tabStore.findById(tabId);
+    if (target?.path && target.kind === "text" && !target.virtual && this.callbacks.onReload) {
+      items.push({ label: "重新载入（从磁盘）", run: () => this.callbacks.onReload?.(tabId) });
+    }
+    items.push(
       { label: "关闭当前", run: () => this.callbacks.onClose(tabId) },
       { label: "关闭左侧", run: () => this.callbacks.onBulkClose("left", tabId) },
       { label: "关闭右侧", run: () => this.callbacks.onBulkClose("right", tabId) },
       { label: "关闭其他", run: () => this.callbacks.onBulkClose("others", tabId) },
       { label: "关闭全部", run: () => this.callbacks.onBulkClose("all", tabId) },
-    ];
+    );
     for (const item of items) {
       const el = document.createElement("div");
       el.className = "context-menu-item";

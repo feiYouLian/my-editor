@@ -137,6 +137,26 @@ export function bookmarkAllMatches(view: EditorView): void {
   if (lines.length > 0) view.dispatch({ effects: addBookmarks.of(lines) });
 }
 
+/** 当前书签行号（升序）：会话持久化用 */
+export function bookmarkLinesOf(state: EditorState): number[] {
+  return bookmarkLines(state);
+}
+
+/** 从行号恢复书签：越界 / 非法行号直接忽略（文件被外部改动后行数可能变少） */
+export function restoreBookmarkLines(view: EditorView, lines: readonly number[]): void {
+  const total = view.state.doc.lines;
+  const valid = [
+    ...new Set(
+      lines
+        .filter((n) => Number.isFinite(n))
+        .map((n) => Math.floor(n))
+        .filter((n) => n >= 1 && n <= total),
+    ),
+  ];
+  if (valid.length === 0) return;
+  view.dispatch({ effects: addBookmarks.of(valid) });
+}
+
 export const bookmarkKeymap: readonly KeyBinding[] = [
   { key: "Ctrl-F2", preventDefault: true, run: (v) => (toggleBookmark(v), true) },
   { key: "F2", preventDefault: true, run: (v) => (gotoBookmark(v, 1), true) },

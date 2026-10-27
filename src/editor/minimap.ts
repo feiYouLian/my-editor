@@ -38,6 +38,12 @@ const LINE_WIDTH_CAP = 120;
 const CLASSIFY_MAX_LINES = 20_000;
 /** 文档变更后重建密度的合并窗口（ms） */
 const REBUILD_DELAY_MS = 150;
+/**
+ * 每行在 minimap 上的最大像素高度。
+ * 短文档（如 10 行）若按"铺满整列"换算，每行会被拉到几十像素，看起来像一堆粗条；
+ * 这里封顶后内容只占顶部，剩余留白，与 VS Code 一致。
+ */
+const MAX_ROW_PX = 2.5;
 
 const DOM_CLASS = "cm-minimap";
 const HIDDEN_CLASS = "cm-minimap-hidden";
@@ -198,6 +204,8 @@ class MinimapPlugin implements PluginValue {
   private hasDoc = false;
   private canvasHeight = 0;
   private canvasWidth = 0;
+  /** 内容实际绘制高度（短文档时小于 canvasHeight） */
+  private contentHeight = 0;
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
   private rebuildTimer: number | null = null;
@@ -313,9 +321,11 @@ class MinimapPlugin implements PluginValue {
     const height = this.measureHeight();
     this.syncVisibility();
     this.hasDoc = this.view.state.doc.length > 0;
-    this.bands = this.hasDoc
-      ? buildDensity(this.view.state.doc, Math.max(1, height))
-      : null;
+    // 桶数不能超过行数：短文档若仍按可视高度分桶，10 行会被摊到 800px 上，
+    // 表现为"行距被拉得极大"。桶数 = min(高度, 行数) 后每行固定占 1 桶。
+    const lines = this.view.state.doc.lines;
+    const buckets = Math.max(1, Math.min(height, lines));
+    this.bands = this.hasDoc ? buildDensity(this.view.state.doc, buckets) : null;
     this.draw(height);
     this.updateViewport();
   }
@@ -371,8 +381,11 @@ class MinimapPlugin implements PluginValue {
       if (fill > maxFill) maxFill = fill;
     }
 
-    const rowH = height / buckets;
+    // 每行最多占 MAX_ROW_PX：短文档时画布仍与编辑区等高（视口框沿用原坐标系），
+    // 但内容只画在顶部，剩下的留空 —— 与 VS Code 的行为一致
+    const rowH = Math.min(MAX_ROW_PX, height / buckets);
     const barH = Math.max(1, rowH);
+    this.contentHeight = buckets * rowH;
     const lenBase = Math.max(1, Math.min(maxAvgLen, LINE_WIDTH_CAP));
     for (let i = 0; i < buckets; i += 1) {
       const fill = bands.fill[i];
@@ -434,8 +447,10 @@ class MinimapPlugin implements PluginValue {
       this.viewportEl.style.display = "none";
       return;
     }
-    const boxH = Math.max(8, Math.min(this.canvasHeight, (viewH / total) * this.canvasHeight));
-    const maxTop = Math.max(0, this.canvasHeight - boxH);
+    // 内容实际绘制高度（短文档小于画布）：视口框按它算，否则会出现"整列都被框住"
+    const contentH = Math.max(1, Math.min(this.canvasHeight, this.contentHeight || this.canvasHeight));
+    const boxH = Math.max(8, Math.min(contentH, (viewH / total) * contentH));
+    const maxTop = Math.max(0, contentH - boxH);
     const maxScroll = Math.max(0, total - viewH);
     const top = maxScroll > 0 ? (scroller.scrollTop / maxScroll) * maxTop : 0;
     this.viewportEl.style.display = "";

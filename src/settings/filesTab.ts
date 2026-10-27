@@ -20,8 +20,29 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
     checkRow("双击打开（单击仅选中）", cfg.files.openWithDoubleClick, (value) => {
       saveSettings({ files: { ...getConfig().files, openWithDoubleClick: value } });
     }),
+    checkRow(
+      "按文件记忆编码（自动检测不可靠时优先用上次的选择）",
+      cfg.files.encodeMemory,
+      (value) => {
+        saveSettings({ files: { ...getConfig().files, encodeMemory: value } });
+      },
+    ),
   );
   main.append(openSection.el);
+
+  const saveSection = section(
+    "保存时清理",
+    "默认关闭：开启后每次保存都会改动磁盘内容（编辑器内的对应改动不进撤销栈）。",
+  );
+  saveSection.body.append(
+    checkRow("删除行尾空白", cfg.files.trimTrailingWhitespaceOnSave, (value) => {
+      saveSettings({ files: { ...getConfig().files, trimTrailingWhitespaceOnSave: value } });
+    }),
+    checkRow("补最终换行（文件末尾无换行时）", cfg.files.ensureFinalNewlineOnSave, (value) => {
+      saveSettings({ files: { ...getConfig().files, ensureFinalNewlineOnSave: value } });
+    }),
+  );
+  main.append(saveSection.el);
 
   const sessionSection = section("会话与草稿", "启动恢复与未保存内容的本地兜底。");
   sessionSection.body.append(

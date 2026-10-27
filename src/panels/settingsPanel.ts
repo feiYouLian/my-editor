@@ -26,6 +26,9 @@ export class SettingsPanel {
   private category: Category = "theme";
   /** 录制中的清理函数（快捷键重绑定） */
   private stopRecording: (() => void) | null = null;
+  /** 搜索框（跨分类过滤用） */
+  private searchEl: HTMLInputElement | null = null;
+  private searchTimer: number | null = null;
 
   constructor(private readonly callbacks: SettingsPanelCallbacks) {
     setSettingsNotify(callbacks.onMessage);
@@ -71,6 +74,14 @@ export class SettingsPanel {
     const title = document.createElement("h3");
     title.textContent = "设置";
     head.append(title);
+    // 搜索框：四页共约 40 项，靠翻分类找人太慢
+    const searchInput = document.createElement("input");
+    searchInput.type = "search";
+    searchInput.className = "settings-search";
+    searchInput.placeholder = "搜索设置项…";
+    searchInput.setAttribute("aria-label", "搜索设置项");
+    head.append(searchInput);
+
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "settings-close";
@@ -128,12 +139,66 @@ export class SettingsPanel {
       if (e.key === "Escape" && !this.stopRecording) done();
     });
 
+    this.searchEl = searchInput;
+    searchInput.addEventListener("input", () => {
+      if (this.searchTimer !== null) clearTimeout(this.searchTimer);
+      this.searchTimer = window.setTimeout(() => {
+        this.searchTimer = null;
+        const query = searchInput.value.trim();
+        if (!main.isConnected) return;
+        if (query === "") this.renderCategory(main);
+        else this.renderSearch(main, query);
+      }, 150);
+    });
+
     this.renderCategory(main);
+  }
+
+  /**
+   * 跨分类搜索：把四个分类各渲染到离屏容器里，按行文本匹配后再搬到主区。
+   * 这样做的好处是不需要维护一份"设置项 → 关键词"的索引表 —— 索引迟早与页面漂移。
+   */
+  private renderSearch(main: HTMLElement, query: string): void {
+    this.stopRecording?.();
+    main.innerHTML = "";
+    main.scrollTop = 0;
+    const ctx = this.tabContext();
+    const needle = query.toLowerCase();
+    let hits = 0;
+    for (const cat of CATEGORY_LABELS) {
+      const tmp = document.createElement("div");
+      if (cat.id === "theme") renderTheme(tmp, ctx);
+      else if (cat.id === "keybindings") renderKeybindings(tmp, ctx);
+      else if (cat.id === "files") renderFiles(tmp, ctx);
+      else renderLayout(tmp, ctx);
+
+      const matched = [...tmp.querySelectorAll<HTMLElement>(".settings-row")].filter((row) =>
+        (row.textContent ?? "").toLowerCase().includes(needle),
+      );
+      if (matched.length === 0) continue;
+      hits += matched.length;
+      const group = document.createElement("div");
+      group.className = "settings-search-group";
+      group.textContent = cat.label;
+      main.append(group);
+      for (const row of matched) main.append(row);
+    }
+    if (hits === 0) {
+      const empty = document.createElement("div");
+      empty.className = "settings-search-empty";
+      empty.textContent = `没有匹配「${query}」的设置项。命令也可以用 Ctrl+Shift+P 搜。`;
+      main.append(empty);
+    }
   }
 
   close(): void {
     // 先取消录制：否则窗口级 keydown 监听会残留，且全局派发仍处挂起状态
     this.stopRecording?.();
+    if (this.searchTimer !== null) {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = null;
+    }
+    this.searchEl = null;
     this.backdrop?.remove();
     this.backdrop = null;
   }
@@ -145,6 +210,8 @@ export class SettingsPanel {
 
   private switchCategory(cat: Category): void {
     this.category = cat;
+    // 切分类即退出搜索：否则会看到"分类页里混着搜索结果"
+    if (this.searchEl && this.searchEl.value !== "") this.searchEl.value = "";
     if (!this.backdrop) return;
     this.backdrop.querySelectorAll(".settings-nav-item").forEach((btn) => {
       btn.classList.toggle("active", (btn as HTMLElement).dataset.cat === cat);

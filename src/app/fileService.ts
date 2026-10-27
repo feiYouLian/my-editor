@@ -46,8 +46,18 @@ export interface FileServiceDeps {
   largeHost: LargeFileHost;
   /** 保存前格式化（仅激活标签；failed 也会继续保存原内容） */
   formatBeforeSave?: (tab: Tab) => Promise<"applied" | "skipped" | "failed">;
+  /** 保存前文本清理（行尾空白 / 最终换行），必须在 snapshotOf 之前执行 */
+  cleanupBeforeSave?: (tab: Tab) => void;
   /** 写盘成功后（用于刷新 Git 状态等派生视图） */
   onAfterSave?: () => void;
+  /** 按文件记忆的编码（打开时仅在自动检测置信度低时采用） */
+  preferredEncoding?: (path: string) => string | null;
+  /** 记录本次使用的编码（写回 config.json 的 fileEncodingMemory） */
+  rememberEncoding?: (path: string, encoding: string) => void;
+  /** 写盘失败：弹可复制详情的对话框 + 状态栏常驻错误（不得静默） */
+  reportSaveError: (tab: Tab, error: unknown) => void;
+  /** 写盘成功：清掉常驻错误 */
+  clearSaveError: () => void;
 }
 
 /** 编码回退列表（与状态栏编码菜单共用） */
@@ -130,12 +140,27 @@ export class FileService {
         }
       }
       // 编辑器路径：经只读守卫——命中阈值或日志扩展名时仍载入但标记只读
-      const data = await invoke<FileContent>("open_text_file", {
+      let data = await invoke<FileContent>("open_text_file", {
         path,
         largeFileThreshold: settings.largeFileThreshold,
         logExtensions: getConfig().largeFile.logExtensions,
       });
+      // 记忆编码：只在自动检测不可靠（confidence=low）时用上一次的选择重读一次。
+      // 检测可靠时以检测结果为准，避免旧记忆把已被转存为 UTF-8 的文件读成乱码。
+      const remembered = this.deps.preferredEncoding?.(path) ?? null;
+      if (
+        remembered &&
+        data.encoding_confidence === "low" &&
+        remembered !== data.encoding
+      ) {
+        try {
+          data = await readDiskAs(path, remembered);
+        } catch (e) {
+          console.warn("[encoding] 按记忆编码重读失败，沿用自动检测:", e);
+        }
+      }
       const tab = tabStore.open(data);
+      this.deps.rememberEncoding?.(path, data.encoding);
       pushRecentFile(data.path);
       this.deps.onCheckMojibake(tab.id);
       if (opts.silent) return;
@@ -168,7 +193,12 @@ export class FileService {
       await this.saveFileAs();
       return;
     }
-    await this.writeTo(tab, tab.path);
+    // 失败已由 writeTo 经 reportSaveError 提示；这里吞掉拒绝，避免 unhandledrejection
+    try {
+      await this.writeTo(tab, tab.path);
+    } catch {
+      /* 已提示 */
+    }
   }
 
   async saveFileAs(): Promise<void> {
@@ -184,7 +214,11 @@ export class FileService {
       this.deps.showMessage("标签已关闭，已取消另存为");
       return;
     }
-    await this.writeTo(current, target);
+    try {
+      await this.writeTo(current, target);
+    } catch {
+      /* 已由 reportSaveError 提示 */
+    }
   }
 
   /** 另存为指定编码：编码对话框 → 系统保存对话框 */
@@ -292,18 +326,27 @@ export class FileService {
   async writeTo(tab: Tab, path: string, encodingOverride?: string): Promise<void> {
     // 保存前格式化（配置开启且是激活标签时）；失败不阻塞保存
     await this.deps.formatBeforeSave?.(tab);
+    // 保存前清理：必须在 snapshotOf 之前，否则基线会与磁盘内容不一致
+    this.deps.cleanupBeforeSave?.(tab);
     // 经 snapshotOf 取内容：激活标签会先把编辑器里的最新内容落回（惰性快照）
     const encoding = encodingOverride ?? tab.encoding;
     const newline = tab.newline;
     // 这份文本就是最终落盘的内容：保存期间的新输入不能算进基线
     const written = tabStore.snapshotOf(tab);
-    const result = await invoke<SaveResult>("save_file", {
-      path,
-      content: written,
-      newline,
-      hasBom: tab.has_bom,
-      encoding,
-    });
+    let result: SaveResult;
+    try {
+      result = await invoke<SaveResult>("save_file", {
+        path,
+        content: written,
+        newline,
+        hasBom: tab.has_bom,
+        encoding,
+      });
+    } catch (e) {
+      // 磁盘满 / 权限 / 文件被占用：必须让用户知道，否则会以为已保存
+      this.deps.reportSaveError(tab, e);
+      throw e;
+    }
     // 指定编码另存：标签编码与基线一并切到新编码，避免残留脏标记
     if (encodingOverride) tabStore.applySavedEncoding(tab.id, encodingOverride);
     if (path !== tab.path) {
@@ -319,6 +362,7 @@ export class FileService {
     if (tabStore.findById(tab.id)?.dirty) this.deps.onPersistDraft(tab.id);
     else void this.deps.onDiscardDraft(tab.id);
     tabStore.markExternal(tab.id, false);
+    this.deps.clearSaveError();
     this.deps.syncWatchedFiles();
     this.deps.refreshStatus();
     this.deps.onAfterSave?.();

@@ -11,10 +11,19 @@
 
 import type { EditorView } from "@codemirror/view";
 import { redo, undo } from "@codemirror/commands";
-import { openSearchPanel } from "@codemirror/search";
+import {
+  openSearchPanel,
+  selectNextOccurrence,
+  selectSelectionMatches,
+} from "@codemirror/search";
+import { foldAll, unfoldAll } from "@codemirror/language";
 import type { CommandDef } from "../core/commands";
 import { localStamps, newUuid } from "../core/stamps";
 import { CASE_LABELS, type CaseMode } from "../editor/transforms";
+import { applyLineOp, type LineOp } from "../editor/lineOps";
+import { textStats } from "../core/textOps";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { tabStore } from "../store/tabs";
 import { openColumnEditor } from "../editor/columnEditor";
 import { gotoBookmark, toggleBookmark } from "../editor/bookmarks";
 import { copyFromEditor, pasteIntoEditor } from "../editor/clipboard";
@@ -105,6 +114,12 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
   } = ctx;
   const { showMessage, toggleWhitespace } = ctx.statusBar;
 
+  /** 行操作的统一入口：只读拦截 + Tab 宽度取当前配置 + 结果消息 */
+  const runLineOp = (op: LineOp): void => {
+    if (blockIfReadonly()) return;
+    showMessage(applyLineOp(getView(), op, getConfig().tabSize).message);
+  };
+
   return [
     // ---- 文件 ----
     { id: "file.open", title: "打开文件…", section: "文件", defaultKey: "Mod-O", menu: "file", menuOrder: 20, run: () => void fileService.openFileDialog() },
@@ -147,7 +162,24 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     // ---- 编辑 ----
     { id: "edit.format", title: "格式化文档（Shift+Alt+F）", section: "编辑", defaultKey: "Shift-Alt-F", altKeys: ["Mod-Shift-L"], menu: "edit", menuLabel: "格式化文档", menuOrder: 90, menuSeparatorBefore: true, run: () => void formatHost.formatCurrent() },
     { id: "edit.formatSelection", title: "格式化选中内容", section: "编辑", menu: "edit", menuOrder: 100, run: () => void formatHost.formatSelectionCurrent() },
+    // 选中同词：Ctrl+Alt+D / Ctrl+Alt+Shift+D（不改动 Mod-D = 删除当前行）
+    { id: "edit.selectNextOccurrence", title: "选中下一个相同词", section: "编辑", defaultKey: "Mod-Alt-D", menu: "edit", menuOrder: 104, run: () => { if (!blockIfReadonly()) selectNextOccurrence(getView()); } },
+    { id: "edit.selectAllOccurrences", title: "选中全部相同词", section: "编辑", defaultKey: "Mod-Alt-Shift-D", menu: "edit", menuOrder: 105, run: () => { if (!blockIfReadonly()) selectSelectionMatches(getView()); } },
+    // 折叠全部：能力来自 foldKeymap，这里只补"可发现性"（菜单 + 快捷键速查）
+    { id: "edit.foldAll", title: "折叠全部（Ctrl+Alt+[）", section: "编辑", defaultKey: "Ctrl-Alt-[", fixed: true, menu: "edit", menuLabel: "折叠全部", menuOrder: 107, hidden: true, run: () => { foldAll(getView()); } },
+    { id: "edit.unfoldAll", title: "展开全部（Ctrl+Alt+]）", section: "编辑", defaultKey: "Ctrl-Alt-]", fixed: true, menu: "edit", menuLabel: "展开全部", menuOrder: 108, hidden: true, run: () => { unfoldAll(getView()); } },
+    { id: "edit.complete", title: "触发补全（Ctrl+Space / Alt+/）", section: "编辑", defaultKey: "Ctrl-Space", fixed: true, hidden: true, run: () => { /* 由 CM6 键位处理，仅用于速查展示 */ } },
     { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", defaultKey: "Alt-C", fixed: true, menu: "edit", menuLabel: "列编辑器", menuOrder: 110, run: () => { if (!blockIfReadonly()) openColumnEditor(getView()); } },
+    // 行操作：按行语义（有选区取整行，无选区整篇），不占用默认键位
+    { id: "edit.sortLinesAsc", title: "行操作：按升序排序", section: "编辑", run: () => runLineOp({ kind: "sort", options: {} }) },
+    { id: "edit.sortLinesDesc", title: "行操作：按降序排序", section: "编辑", run: () => runLineOp({ kind: "sort", options: { desc: true } }) },
+    { id: "edit.sortLinesAscNumeric", title: "行操作：按数字升序排序", section: "编辑", run: () => runLineOp({ kind: "sort", options: { numeric: true } }) },
+    { id: "edit.dedupeLines", title: "行操作：去除重复行", section: "编辑", run: () => runLineOp({ kind: "dedupe" }) },
+    { id: "edit.reverseLines", title: "行操作：反转行序", section: "编辑", run: () => runLineOp({ kind: "reverse" }) },
+    { id: "edit.removeEmptyLines", title: "行操作：删除空行", section: "编辑", run: () => runLineOp({ kind: "removeEmpty" }) },
+    { id: "edit.trimTrailing", title: "行操作：删除行尾空白", section: "编辑", run: () => runLineOp({ kind: "trimTrailing" }) },
+    { id: "edit.tabsToSpaces", title: "行操作：缩进 Tab 转空格", section: "编辑", run: () => runLineOp({ kind: "indent", toSpaces: true }) },
+    { id: "edit.spacesToTabs", title: "行操作：缩进空格转 Tab", section: "编辑", run: () => runLineOp({ kind: "indent", toSpaces: false }) },
     { id: "edit.toggleWhitespace", title: "切换空白字符显示", section: "编辑", defaultKey: "", run: () => toggleWhitespace() },
     // ---- 查找 ----
     { id: "search.results", title: "查找结果面板", section: "查找", defaultKey: "", menu: "edit", menuOrder: 80, run: () => toggleResultsPanel() },
@@ -229,6 +261,24 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       } },
     { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
     { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
+    { id: "view.toggleFullscreen", title: "全屏 / 退出全屏", section: "视图", defaultKey: "F11", menu: "view", menuLabel: "全屏 / 退出全屏", menuOrder: 20, run: () => {
+        const win = getCurrentWindow();
+        void win
+          .isFullscreen()
+          .then((on) => win.setFullscreen(!on))
+          .catch((e) => showMessage(`全屏切换失败：${String(e).split("\n")[0]}`));
+      } },
+    { id: "view.docStats", title: "文档统计（行 / 词 / 字符）", section: "视图", menu: "view", menuLabel: "文档统计…", menuOrder: 22, run: () => {
+        const tab = getActiveTab();
+        if (!tab || tab.kind !== "text") {
+          showMessage("当前标签没有可统计的文本");
+          return;
+        }
+        const stats = textStats(tabStore.snapshotOf(tab));
+        showMessage(
+          `${stats.lines} 行 · ${stats.words} 词 · ${stats.chars} 字符（不含换行 ${stats.charsNoBreak}）`,
+        );
+      } },
     { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 35, menuSeparatorBefore: true, run: () => showSidebarView("open") },
     { id: "view.sidebarGit", title: "侧栏：源代码管理", section: "视图", menu: "view", menuLabel: "侧栏：源代码管理", menuOrder: 38, run: () => showSidebarView("git") },
     { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 40, run: () => showSidebarView("files") },
