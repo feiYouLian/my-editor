@@ -18,6 +18,8 @@ export interface LargeViewDom {
   clearBtn: HTMLButtonElement;
   caseBtn: HTMLButtonElement;
   regexBtn: HTMLButtonElement;
+  /** 换行开关：长日志行不换行时只能靠横向滚动，二者互补 */
+  wrapBtn: HTMLButtonElement;
   encodingSelect: HTMLSelectElement;
   editorBtn: HTMLButtonElement;
 }
@@ -53,6 +55,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   filterInput.spellcheck = false;
   const caseBtn = toggleBtn("Aa", "区分大小写");
   const regexBtn = toggleBtn(".*", "使用正则表达式");
+  const wrapBtn = toggleBtn("↵", "自动换行（长行折行显示，不再横向滚动）");
   const filterBtn = document.createElement("button");
   filterBtn.type = "button";
   filterBtn.className = "lv-btn";
@@ -86,6 +89,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     filterInput,
     caseBtn,
     regexBtn,
+    wrapBtn,
     filterBtn,
     clearBtn,
     encodingSelect,
@@ -131,6 +135,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     clearBtn,
     caseBtn,
     regexBtn,
+    wrapBtn,
     encodingSelect,
     editorBtn,
   };

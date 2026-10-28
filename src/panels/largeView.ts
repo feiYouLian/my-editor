@@ -48,6 +48,12 @@ export class LargeView {
   private caseOn = false;
   private regexOn = false;
   private loading = false;
+  /** 自动换行：长日志行折行显示（关掉时靠横向滚动查看完整内容） */
+  private wrapOn = false;
+  /** 已见最长行字符数：决定横向滚动宽度，只增不减以避免滚动条抖动 */
+  private maxLineChars = 0;
+  /** 等宽字符宽度（px）：懒测量，用于算横向滚动宽度 */
+  private charWidth = 0;
   private paddingLines = DEFAULT_PADDING_LINES;
   private rafId = 0;
   private unlisteners: Array<() => void> = [];
@@ -81,6 +87,7 @@ export class LargeView {
         void this.runFilter();
       }
     });
+    el.wrapBtn.addEventListener("click", () => this.toggleWrap());
     el.encodingSelect.addEventListener("change", () => void this.changeEncoding());
     el.editorBtn.addEventListener("click", () => {
       if (this.info) this.deps.onOpenInEditor(this.info);
@@ -130,6 +137,11 @@ export class LargeView {
     this.el.titleEl.textContent = /\.log$/i.test(info.path) ? "日志视图" : "大文件视图";
     this.el.encodingSelect.value = ENCODINGS.includes(info.encoding) ? info.encoding : "UTF-8";
     this.el.filterInput.value = "";
+    // 换行开关是会话级偏好（跨文件保留），但"最长行"必须按新文件重算
+    this.maxLineChars = 0;
+    this.el.rowsEl.style.width = "";
+    this.host.classList.toggle("lv-wrap", this.wrapOn);
+    this.el.wrapBtn.classList.toggle("on", this.wrapOn);
     this.updateIndexHint();
     this.el.scrollEl.scrollTop = 0;
 
@@ -281,12 +293,16 @@ export class LargeView {
     }
 
     const firstVisible = Math.floor(this.el.scrollEl.scrollTop / LINE_HEIGHT);
-    const visibleCount = Math.ceil(this.el.scrollEl.clientHeight / LINE_HEIGHT) + 1;
+    // 换行模式下行会变高：少渲染一些行，避免一屏内容溢出到视口外太远
+    const perLine = this.wrapOn ? LINE_HEIGHT * 2.5 : LINE_HEIGHT;
+    const visibleCount = Math.ceil(this.el.scrollEl.clientHeight / perLine) + 2;
+    const pad = this.wrapOn ? 0 : this.paddingLines;
 
     const matches = this.matchBuf.view();
     if (matches) {
-      const from = Math.max(0, firstVisible - 40);
-      const to = Math.min(matches.length, firstVisible + visibleCount + 40);
+      const overscan = this.wrapOn ? 4 : 40;
+      const from = Math.max(0, firstVisible - overscan);
+      const to = Math.min(matches.length, firstVisible + visibleCount + overscan);
       // 局部数组只覆盖视口附近的行，不影响常驻内存
       const missing: number[] = [];
       for (let i = from; i < to; i += 1) {
@@ -305,8 +321,8 @@ export class LargeView {
       return;
     }
 
-    const start = Math.max(0, firstVisible - this.paddingLines);
-    const end = Math.min(total, firstVisible + visibleCount + this.paddingLines);
+    const start = Math.max(0, firstVisible - pad);
+    const end = Math.min(total, firstVisible + visibleCount + pad);
     this.loading = true;
     try {
       await this.fetchRange(start, end - start);
@@ -357,17 +373,59 @@ export class LargeView {
       body.className = "lv-text";
       body.textContent = text || " ";
       body.title = text;
+      if (text.length > this.maxLineChars) this.maxLineChars = text.length;
       row.append(gutter, body);
       frag.append(row);
     }
     this.el.rowsEl.style.transform = `translateY(${from * LINE_HEIGHT}px)`;
     this.el.rowsEl.innerHTML = "";
     this.el.rowsEl.append(frag);
+    this.applyRowsWidth();
 
     const total = this.virtualCount();
+    const wrapHint = this.wrapOn ? " · 换行模式（滚动按行定位）" : "";
     this.el.statusEl.textContent = this.matchBuf.active
-      ? `命中 ${this.matchBuf.length} 行 · 显示第 ${from + 1}–${to} 条`
-      : `显示第 ${from + 1}–${to} 行 / 共 ${total} 行`;
+      ? `命中 ${this.matchBuf.length} 行 · 显示第 ${from + 1}–${to} 条${wrapHint}`
+      : `显示第 ${from + 1}–${to} 行 / 共 ${total} 行${wrapHint}`;
+  }
+
+  /** 自动换行开关：关掉时靠横向滚动看完整长行，两者互补 */
+  private toggleWrap(): void {
+    this.wrapOn = !this.wrapOn;
+    this.el.wrapBtn.classList.toggle("on", this.wrapOn);
+    this.host.classList.toggle("lv-wrap", this.wrapOn);
+    this.applyRowsWidth();
+    void this.loadWindow();
+    this.deps.onMessage(
+      this.wrapOn
+        ? "已开启自动换行：长行折行显示（横向滚动关闭）"
+        : "已关闭自动换行：长行可横向滚动查看",
+    );
+  }
+
+  /** 横向滚动宽度：按"已见最长行"算，只增不减，避免滚动条随窗口抖动 */
+  private applyRowsWidth(): void {
+    const rows = this.el.rowsEl;
+    if (this.wrapOn) {
+      rows.style.width = "";
+      return;
+    }
+    // 行号列 64 + 文本左内边距 8 + 右侧余量
+    const width = this.maxLineChars * this.measureCharWidth() + 80;
+    rows.style.width = `${Math.max(0, Math.round(width))}px`;
+  }
+
+  /** 等宽字符宽度：懒测量一次（与 .lv-row 的字体族/字号保持一致） */
+  private measureCharWidth(): number {
+    if (this.charWidth > 0) return this.charWidth;
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx) {
+      ctx.font = '12px Consolas, "Cascadia Mono", "Cascadia Code", monospace';
+      this.charWidth = Math.max(4, ctx.measureText("0123456789").width / 10);
+    } else {
+      this.charWidth = 7;
+    }
+    return this.charWidth;
   }
 
   // ---- 过滤 ----

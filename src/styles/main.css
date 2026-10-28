@@ -3816,8 +3816,8 @@ button.danger:hover {
 .lv-scroll {
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  /* 长行不再被裁掉：两个方向都可滚动（换行模式下宽度回落到 100%，横条自然消失） */
+  overflow: auto;
 }
 
 .lv-spacer {
@@ -3828,7 +3828,7 @@ button.danger:hover {
   position: absolute;
   top: 0;
   left: 0;
-  right: 0;
+  /* 宽度由 JS 按"已见最长行"设置（见 applyRowsWidth），不再 right:0 裁死 */
   will-change: transform;
 }
 
@@ -3841,6 +3841,22 @@ button.danger:hover {
   white-space: pre;
 }
 
+/* 换行模式：行高自适应，内容折行，取消横向滚动 */
+.large-view.lv-wrap .lv-rows {
+  width: 100% !important;
+}
+
+.large-view.lv-wrap .lv-row {
+  height: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.large-view.lv-wrap .lv-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .lv-row:hover {
   background: rgba(255, 255, 255, 0.05);
 }
@@ -3851,7 +3867,11 @@ button.danger:hover {
   padding-right: 8px;
   text-align: right;
   color: var(--text-secondary);
-  opacity: 0.65;
+  /* 横向滚动时行号固定在左侧（底色必须不透明，否则文字会透出来） */
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--bg-panel);
   user-select: none;
   border-right: 1px solid var(--border);
 }
@@ -3860,8 +3880,10 @@ button.danger:hover {
   flex: 1;
   min-width: 0;
   padding-left: 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 不再用省略号截断：截掉的那段往往正是要看的报错细节 */
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre;
 }
 
 .lv-status {
