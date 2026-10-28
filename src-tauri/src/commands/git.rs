@@ -6,8 +6,10 @@
 //! 分支名拒绝 `-` 开头与空白 / 控制字符。
 
 use serde::Serialize;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::paths::PathGuard;
 
@@ -350,23 +352,132 @@ fn unstage_one(root: &str, rel: &str) -> Result<(), String> {
     git(root, &["reset", "HEAD", "--", rel]).map(|_| ())
 }
 
-/// 放弃更改：把指定路径恢复到「暂存区 / HEAD」的状态（不可撤销）。
+/// 放弃更改前的快照上限：单文件
+const MAX_SNAPSHOT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// 放弃更改前的快照上限：单次总量
+const MAX_SNAPSHOT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+/// 保留最近多少批放弃备份
+const KEEP_DISCARD_BACKUPS: usize = 10;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardOutcome {
+    pub count: usize,
+    /// 备份目录（没有可备份的文件时为 None）
+    pub backup_dir: Option<String>,
+    /// 因体积超限未备份的文件数
+    pub skipped: usize,
+}
+
+/// 放弃更改前，把它将要覆盖 / 删除的工作区内容复制到配置目录。
+///
+/// 目录结构按相对路径保留，并写一份 `manifest.json`（仓库根 / 时间 / 文件清单），
+/// 用户事后即使不在应用内也能直接翻文件找回。体积超限的文件跳过并计数。
+fn snapshot_for_discard(
+    repo_root: &str,
+    relatives: &[String],
+    backup_root: &Path,
+) -> Result<(Option<String>, usize), String> {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = backup_root.join(stamp.to_string());
+    let mut saved: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    let mut total = 0u64;
+    for rel in relatives {
+        let src = Path::new(repo_root).join(rel);
+        let Ok(meta) = fs::metadata(&src) else {
+            continue; // 已被外部删除：没有可备份的内容
+        };
+        if !meta.is_file() {
+            continue; // git restore 只处理文件，目录不在放弃范围内
+        }
+        if meta.len() > MAX_SNAPSHOT_FILE_BYTES || total + meta.len() > MAX_SNAPSHOT_TOTAL_BYTES {
+            skipped += 1;
+            continue;
+        }
+        let dst = dir.join(rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建备份目录失败: {e}"))?;
+        }
+        fs::copy(&src, &dst).map_err(|e| format!("备份 {rel} 失败: {e}"))?;
+        total += meta.len();
+        saved.push(rel.clone());
+    }
+    if saved.is_empty() {
+        return Ok((None, skipped));
+    }
+    let body = format!(
+        "{{\"repoRoot\":{},\"savedAtUnixMs\":{},\"files\":{},\"skipped\":{}}}\n",
+        serde_json::to_string(repo_root).unwrap_or_else(|_| "\"\"".to_string()),
+        stamp,
+        serde_json::to_string(&saved).unwrap_or_else(|_| "[]".to_string()),
+        skipped,
+    );
+    fs::write(dir.join("manifest.json"), body).map_err(|e| format!("写入备份说明失败: {e}"))?;
+    Ok((Some(dir.to_string_lossy().to_string()), skipped))
+}
+
+/// 只保留最近 KEEP_DISCARD_BACKUPS 批（目录名即 epoch 毫秒，可直接排序）
+fn prune_discard_backups(backup_root: &Path) {
+    let Ok(entries) = fs::read_dir(backup_root) else {
+        return;
+    };
+    let mut stamps: Vec<u64> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<u64>().ok())
+        .collect();
+    if stamps.len() <= KEEP_DISCARD_BACKUPS {
+        return;
+    }
+    stamps.sort_unstable();
+    let drop_count = stamps.len() - KEEP_DISCARD_BACKUPS;
+    for stamp in stamps.into_iter().take(drop_count) {
+        let _ = fs::remove_dir_all(backup_root.join(stamp.to_string()));
+    }
+}
+
+/// 放弃更改：把指定路径恢复到「暂存区 / HEAD」的状态。
 ///
 /// 按每个路径的实际状态分别处理，不信任前端传来的分组：
 /// - 未跟踪（`??`）：无版本可恢复，删除文件（`git clean -f`）；
 /// - 已暂存：先取消暂存；新增文件取消后成为未跟踪，同样删除；
 /// - 其余：`git restore --worktree` 用索引内容覆盖工作区。
+///
+/// **动作本身仍不可撤销**，但覆盖 / 删除前会先把工作区内容快照到
+/// `<配置目录>/discard-backup/<时间戳>/`，并在结果里带出目录路径。
 #[tauri::command]
 pub async fn git_discard(
+    app: tauri::AppHandle,
     state: tauri::State<'_, PathGuard>,
     root: String,
     paths: Vec<String>,
-) -> Result<usize, String> {
+) -> Result<DiscardOutcome, String> {
+    use tauri::Manager;
     state.ensure_file_scope(&root)?;
     let relatives = normalize_relatives(&paths)?;
-    tauri::async_runtime::spawn_blocking(move || discard_blocking(&root, &relatives))
-        .await
-        .map_err(|e| format!("任务失败: {e}"))?
+    let backup_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("获取配置目录失败: {e}"))?
+        .join("discard-backup");
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::create_dir_all(&backup_root).map_err(|e| format!("创建备份目录失败: {e}"))?;
+        prune_discard_backups(&backup_root);
+        let repo_root = repo_root_of(&root)?;
+        let (backup_dir, skipped) = snapshot_for_discard(&repo_root, &relatives, &backup_root)?;
+        let count = discard_blocking(&root, &relatives)?;
+        Ok(DiscardOutcome {
+            count,
+            backup_dir,
+            skipped,
+        })
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
 }
 
 fn discard_blocking(dir: &str, relatives: &[String]) -> Result<usize, String> {
@@ -961,5 +1072,50 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a\n");
         let st = git_status_blocking(&dir_str).unwrap();
         assert!(st.staged.is_empty() && st.changes.is_empty());
+    }
+
+    /// 放弃前快照：按相对路径保留目录结构，内容与工作区一致，并带 manifest
+    #[test]
+    fn discard_snapshot_keeps_worktree_content() {
+        let dir = temp_dir("discard_snapshot");
+        let root = dir.to_string_lossy().to_string();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("a.txt"), "modified\n").unwrap();
+        let backup_root = dir.join("backups");
+        std::fs::create_dir_all(&backup_root).unwrap();
+
+        let (backup, skipped) =
+            snapshot_for_discard(&root, &["sub/a.txt".to_string()], &backup_root).unwrap();
+
+        assert_eq!(skipped, 0);
+        let backup = backup.expect("应产生备份目录");
+        let saved = std::fs::read_to_string(Path::new(&backup).join("sub").join("a.txt")).unwrap();
+        assert_eq!(saved, "modified\n");
+        assert!(Path::new(&backup).join("manifest.json").exists());
+    }
+
+    /// 超过单文件上限的内容不备份，但必须计数（不能静默当成备份成功）
+    #[test]
+    fn discard_snapshot_skips_oversized_file() {
+        let dir = temp_dir("discard_snapshot_big");
+        let root = dir.to_string_lossy().to_string();
+        let big = dir.join("big.bin");
+        std::fs::write(&big, "x").unwrap();
+        let handle = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        handle.set_len(MAX_SNAPSHOT_FILE_BYTES + 1).unwrap();
+        drop(handle);
+        std::fs::write(dir.join("small.txt"), "s\n").unwrap();
+        let backup_root = dir.join("backups");
+        std::fs::create_dir_all(&backup_root).unwrap();
+
+        let (backup, skipped) = snapshot_for_discard(
+            &root,
+            &["big.bin".to_string(), "small.txt".to_string()],
+            &backup_root,
+        )
+        .unwrap();
+
+        assert_eq!(skipped, 1);
+        assert!(backup.is_some());
     }
 }

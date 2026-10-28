@@ -58,7 +58,9 @@ export class FormatHost {
       if (!result.ok) {
         // 失败详情常是"首行安装提示 + 后几行真实报错"，状态栏装不下也复制不了：
         // 一律进可复制的错误对话框（与 Git 失败同一套行为）
-        this.deps.showMessage("格式化失败（点击查看详情）");
+        // 状态栏消息没有点击回调：这里只说明结果，详情由紧接的错误对话框与通知中心承接，
+        // 不要写「点击查看详情」这种做不到的承诺。
+        this.deps.showMessage("格式化失败，详情见弹窗");
         showErrorDialog("格式化失败", result.message);
         addNotice(
           "formatFail",
@@ -90,7 +92,9 @@ export class FormatHost {
       const result = await formatSelection(this.deps.getView(), key, tab.path);
       if (tabStore.active()?.id !== tab.id) return;
       if (!result.ok) {
-        this.deps.showMessage("格式化失败（点击查看详情）");
+        // 状态栏消息没有点击回调：这里只说明结果，详情由紧接的错误对话框与通知中心承接，
+        // 不要写「点击查看详情」这种做不到的承诺。
+        this.deps.showMessage("格式化失败，详情见弹窗");
         showErrorDialog("格式化失败", result.message);
         addNotice(
           "formatFail",

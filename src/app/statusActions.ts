@@ -234,11 +234,15 @@ export class StatusActions {
 
   // ---- 乱码检测（打开文件后自动诊断；只提示，不改文件、不自动切编码）----
 
-  /** 对标签做一次乱码检测并记录结论；只读标签同样适用（检测不改内容） */
-  async checkMojibake(tabId: string): Promise<void> {
+  /**
+   * 对标签做一次乱码检测并记录结论；只读标签同样适用（检测不改内容）。
+   * 返回 false 表示检**测本身失败**（IPC / 读文件失败），与「检测了但没乱码」是两回事，
+   * 调用方必须区分：把手动检测失败显示成「未检测到乱码」是错误结论。
+   */
+  async checkMojibake(tabId: string): Promise<boolean> {
     const tab = tabStore.findById(tabId);
-    if (!tab || tab.kind !== "text" || !tab.path || tab.pending || tab.virtual) return;
-    if (tab.size > MOJIBAKE_MAX_BYTES) return;
+    if (!tab || tab.kind !== "text" || !tab.path || tab.pending || tab.virtual) return true;
+    if (tab.size > MOJIBAKE_MAX_BYTES) return true;
     try {
       const report = await invoke<MojibakeReport>("detect_mojibake", {
         path: tab.path,
@@ -246,7 +250,7 @@ export class StatusActions {
         current: tab.encoding,
       });
       const current = tabStore.findById(tabId);
-      if (!current) return;
+      if (!current) return true; // 标签已关闭：没有结论，但也不算检测失败
       tabStore.setMojibake(
         tabId,
         report.suspicious ? report.suggested : "",
@@ -255,8 +259,10 @@ export class StatusActions {
       if (report.suspicious && tabStore.active()?.id === tabId) {
         this.deps.showMessage(report.reason);
       }
+      return true;
     } catch (e) {
       console.warn("[mojibake] 检测失败", e);
+      return false;
     }
   }
 
@@ -272,9 +278,14 @@ export class StatusActions {
       return;
     }
     void (async () => {
-      await this.checkMojibake(tab.id);
+      const detected = await this.checkMojibake(tab.id);
       const fresh = tabStore.findById(tab.id);
       if (!fresh) return;
+      if (!detected) {
+        // 检测失败不能显示成「未检测到乱码」：那是把错误包装成了结论
+        this.deps.showMessage("乱码检测失败：未能读取文件内容或编码信息");
+        return;
+      }
       if (!fresh.mojibakeReason) {
         this.deps.showMessage("未检测到乱码");
         return;

@@ -1,9 +1,22 @@
 mod commands;
 
+use tauri::Manager;
+
 /// 应用入口：注册插件与命令
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 计时必须在 Builder 之前：窗口出现到前端就绪都算这一次采样
+    commands::startup::mark_start();
     tauri::Builder::default()
+        // 单实例必须第一个注册（官方要求）。第二个实例把已有窗口拉到前台后自行退出，
+        // 避免两个进程并发写 session.json / drafts 互相覆盖。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
@@ -65,6 +78,8 @@ pub fn run() {
             commands::config::load_config,
             commands::config::save_config,
             commands::config::config_path,
+            commands::config::reveal_config_dir,
+            commands::startup::frontend_ready,
             commands::format::run_cli_formatter,
             commands::diff::diff_texts,
             commands::diff::diff_files,

@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { GitFileEntry, GitStatus, GitView } from "../panels/gitView";
 import type { GitBranch } from "../panels/branchPicker";
+import { addNotice } from "./noticeStore";
 
 export interface GitHostDeps {
   getRoot: () => string | null;
@@ -91,17 +92,30 @@ export class GitHost {
   }
 
   /**
-   * 放弃更改（不可撤销）：后端按每个文件的实际状态恢复——
+   * 放弃更改：后端按每个文件的实际状态恢复——
    * 工作区修改回退到索引、未跟踪与已暂存的新增文件删除。
+   * 动作本身不可撤销，但后端会在覆盖 / 删除前把工作区内容快照到配置目录，
+   * 所以结果里带回 `backupDir`：必须把「去哪儿找」说出来，否则备份等于没备份。
    * 确认交互由调用方（main.ts）负责，这里只管执行与刷新。
    */
   discard(entries: GitFileEntry[]): void {
     this.act("放弃更改", async () => {
-      const count = await invoke<number>("git_discard", {
+      const outcome = await invoke<{
+        count: number;
+        backupDir: string | null;
+        skipped: number;
+      }>("git_discard", {
         root: this.requireRoot(),
         paths: expandPaths(entries),
       });
-      this.deps.showMessage(`已放弃 ${count} 个文件的更改`, 4000);
+      const backupNote = outcome.backupDir
+        ? "，原内容已备份到配置目录 discard-backup/"
+        : "";
+      const skipNote = outcome.skipped > 0 ? `（${outcome.skipped} 个过大文件未备份）` : "";
+      this.deps.showMessage(
+        `已放弃 ${outcome.count} 个文件的更改${backupNote}${skipNote}`,
+        6000,
+      );
       this.deps.onWorkspaceChanged?.();
     });
   }
@@ -162,9 +176,17 @@ export class GitHost {
         // git 的失败信息是多行 stderr：状态栏只放首行，完整内容进弹窗
         const detail = String(e).trim();
         const first = detail.split("\n")[0];
+        const title = `${label}失败`;
         console.warn(`[git] ${label}失败`, detail);
-        this.deps.showMessage(`${label}失败：${first}`, 8000);
-        this.deps.onError?.(`${label}失败`, detail);
+        this.deps.showMessage(`${title}：${first}`, 8000);
+        this.deps.onError?.(title, detail);
+        // 状态栏 8 秒后消失、弹窗一关就再无入口：进通知中心留一条可回看的记录
+        addNotice(
+          "gitFail",
+          `${title}：${first}`,
+          [{ label: "查看详情", run: () => this.deps.onError?.(title, detail) }],
+          `git:${label}`,
+        );
       } finally {
         // 失败也可能已部分改动磁盘（如放弃更改逐个执行中途失败）：统一重读一次
         try {

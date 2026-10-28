@@ -76,6 +76,8 @@ export interface CommandTableCtx {
   /** 快捷键速查 / 关于（依赖 main.ts 的键位解析，保持注入） */
   showShortcuts: () => void;
   showAbout: () => void;
+  /** 打开「最近消息」（状态栏瞬时消息历史，由通知面板承载） */
+  showMessageHistory: () => void;
 }
 
 export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
@@ -111,6 +113,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     gitPush,
     showShortcuts,
     showAbout,
+    showMessageHistory,
   } = ctx;
   const { showMessage, toggleWhitespace } = ctx.statusBar;
 
@@ -279,6 +282,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
           `${stats.lines} 行 · ${stats.words} 词 · ${stats.chars} 字符（不含换行 ${stats.charsNoBreak}）`,
         );
       } },
+    { id: "view.messageHistory", title: "查看最近消息（状态栏历史）", section: "视图", menu: "view", menuLabel: "最近消息…", menuOrder: 23, run: () => showMessageHistory() },
     { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 35, menuSeparatorBefore: true, run: () => showSidebarView("open") },
     { id: "view.sidebarGit", title: "侧栏：源代码管理", section: "视图", menu: "view", menuLabel: "侧栏：源代码管理", menuOrder: 38, run: () => showSidebarView("git") },
     { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 40, run: () => showSidebarView("files") },

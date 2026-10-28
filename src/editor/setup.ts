@@ -60,6 +60,11 @@ export interface EditorCallbacks {
   onBookmarkChange?: () => void;
   /** 折叠状态变化（同上） */
   onFoldChange?: () => void;
+  /**
+   * 切回某文档时发现其撤销历史已不可用（文档超 2MB 从未缓存，或缓存超 8 条被淘汰）。
+   * 撤销静默失效最容易被误认为「编辑器坏了」，每个文档提示一次。
+   */
+  onUndoHistoryLost?: () => void;
 }
 
 export interface EditorHandle {
@@ -154,6 +159,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   const pendingFolds = new Map<string, number[][]>();
 
   const stateCache = new DocumentStateCache();
+  /** 已提示过「撤销历史已释放」的文档（避免每次切回都刷状态栏） */
+  const undoLostWarned = new Set<string>();
   let activeDocKey: string | null = null;
   /** 配置（含空白 / 换行等开关）每次变更 +1，用于判断缓存状态是否过期 */
   let configGeneration = 0;
@@ -357,6 +364,12 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           view.setState(createState(content));
           languageKey = null;
           activeDocKey = key;
+          // 没有可复用的缓存状态：撤销栈已被释放（超 2MB 从未缓存 / 缓存超 8 条被淘汰）。
+          // 每个文档只提示一次，避免切来切去反复打扰。
+          if (key !== null && !cached && !undoLostWarned.has(key)) {
+            undoLostWarned.add(key);
+            callbacks.onUndoHistoryLost?.();
+          }
           if (cursor !== undefined) {
             // 超限文档没有缓存状态：至少恢复光标，否则切回会跳回文首
             const head = Math.min(cursor, view.state.doc.length);
@@ -400,6 +413,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** 关闭标签时丢弃其缓存状态；若关闭的是当前标签，避免下次切换再把它写回缓存 */
   function forgetDocument(docId: string): void {
     stateCache.delete(docId);
+    undoLostWarned.delete(docId);
     indentByDoc.delete(docId);
     bookmarksByDoc.delete(docId);
     pendingBookmarks.delete(docId);

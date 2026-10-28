@@ -17,6 +17,7 @@ pub mod paths;
 pub mod run;
 pub mod search;
 pub mod session;
+pub mod startup;
 pub mod terminal;
 pub mod watch;
 pub mod workspace;

@@ -338,24 +338,6 @@ impl Default for AiSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
-pub struct LogSettings {
-    pub level: String,
-    pub dir: String,
-    pub enabled: bool,
-}
-
-impl Default for LogSettings {
-    fn default() -> Self {
-        Self {
-            level: "info".into(),
-            dir: "logs".into(),
-            enabled: true,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(default, rename_all = "camelCase")]
 pub struct AppConfig {
     pub version: u32,
     /// "dark" | "light" | "high-contrast" | "system"
@@ -384,7 +366,6 @@ pub struct AppConfig {
     pub file_encoding_memory: BTreeMap<String, String>,
     pub formatters: BTreeMap<String, FormatterEntry>,
     pub ai: AiSettings,
-    pub log: LogSettings,
 }
 
 impl Default for AppConfig {
@@ -415,7 +396,6 @@ impl Default for AppConfig {
             file_encoding_memory: BTreeMap::new(),
             formatters: default_formatters(),
             ai: AiSettings::default(),
-            log: LogSettings::default(),
         }
     }
 }
@@ -483,6 +463,16 @@ fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("获取配置目录失败: {e}"))?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
     Ok(dir)
+}
+
+/// 在系统文件管理器中打开配置目录。
+///
+/// 路径由后端自行解析、不接受前端传入，因此不经 PathGuard
+/// （PathGuard 限制的是"可写文件的作用域"，配置目录不属于工作区）。
+#[tauri::command]
+pub fn reveal_config_dir(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    crate::commands::fs::reveal_path(&dir, false)
 }
 
 fn config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {

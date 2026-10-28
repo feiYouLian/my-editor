@@ -57,6 +57,9 @@ pub struct SearchReport {
     pub files: Vec<FileMatches>,
     pub total_matches: usize,
     pub truncated: bool,
+    /// 因体积超限（> MAX_FILE_BYTES）被跳过的文件数。
+    /// 不返回的话，用户只会觉得「明明有这个关键词却搜不到」。
+    pub skipped_oversize: usize,
 }
 
 /// 构造尊重 .gitignore 且跳过 ignoreDirs 的遍历器。
@@ -336,6 +339,7 @@ fn search_blocking(
             files: Vec::new(),
             total_matches: 0,
             truncated: false,
+            skipped_oversize: 0,
         });
     }
 
@@ -361,6 +365,7 @@ fn search_blocking(
     let mut files: Vec<FileMatches> = Vec::new();
     let mut total_matches = 0usize;
     let mut truncated = false;
+    let mut skipped_oversize = 0usize;
 
     'files: for result in walker(&root_path, ignore_dirs) {
         let entry = match result {
@@ -376,6 +381,7 @@ fn search_blocking(
             Err(_) => continue,
         };
         if meta.len() > MAX_FILE_BYTES {
+            skipped_oversize += 1;
             continue;
         }
         let bytes = match std::fs::read(path) {
@@ -442,6 +448,7 @@ fn search_blocking(
         files,
         total_matches,
         truncated,
+        skipped_oversize,
     })
 }
 
@@ -969,6 +976,25 @@ mod tests {
 
         assert_eq!(report.total_matches, 2);
         assert!(report.truncated);
+    }
+
+    /// 超过 MAX_FILE_BYTES 的文件不参与搜索，但必须被计数：
+    /// 否则前端只能显示「没搜到」，用户分不清「真没有」和「没搜」。
+    #[test]
+    fn oversized_file_is_counted_as_skipped() {
+        let dir = temp_dir("oversize");
+        let big = dir.join("big.txt");
+        std::fs::write(&big, "x").unwrap();
+        let handle = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        handle.set_len(MAX_FILE_BYTES + 1).unwrap();
+        drop(handle);
+        std::fs::write(dir.join("small.txt"), "x\n").unwrap();
+
+        let report = search(&dir, "x", false, false, &[], 10, 100);
+
+        assert_eq!(report.skipped_oversize, 1);
+        assert_eq!(report.total_matches, 1);
+        assert_eq!(report.files.len(), 1);
     }
 
     #[test]

@@ -137,12 +137,6 @@ export interface AiSettings {
   enabled: boolean;
 }
 
-export interface LogSettings {
-  level: string;
-  dir: string;
-  enabled: boolean;
-}
-
 export interface AppConfig {
   version: number;
   theme: ThemeSetting;
@@ -170,7 +164,6 @@ export interface AppConfig {
   fileEncodingMemory: Record<string, string>;
   formatters: Record<string, FormatterEntry>;
   ai: AiSettings;
-  log: LogSettings;
 }
 
 /** 编辑器直接消费的配置子集（由 AppConfig 派生） */
@@ -305,7 +298,6 @@ export function defaultConfig(): AppConfig {
       cpp: { tool: "clang-format", args: ["-style=file", "-assume-filename=__PLACEHOLDER__"] },
     },
     ai: { provider: "ollama", model: "qwen2.5-coder:7b", enabled: false },
-    log: { level: "info", dir: "logs", enabled: true },
   };
 }
 

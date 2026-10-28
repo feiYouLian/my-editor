@@ -14,6 +14,7 @@ import {
   type StatusBarFieldEntry,
 } from "../config/settings";
 import { formatSize } from "../core/format";
+import { recordMessage } from "../core/messageLog";
 import type { Tab } from "../store/tabs";
 
 /** 图片标签下无意义的字段（只读二进制：无行列 / 编码 / 换行 / 语言 / 开关 / 脏标记） */
@@ -67,6 +68,8 @@ export interface StatusBarDeps {
   toggleWhitespace: () => void;
   /** 编辑器设置自动换行 */
   setWordWrap: (on: boolean) => void;
+  /** 点状态栏消息时打开「最近消息」（未注入则不绑定点击） */
+  onShowMessageHistory?: () => void;
 }
 
 export interface StatusBar {
@@ -112,6 +115,12 @@ export function createStatusBar(
   let appliedImageMode: boolean | null = null;
   /** 当前激活图片标签的自然尺寸：只留一条，切换标签即失效（同一标签重进免重算） */
   let imageSize: { tabId: string; width: number; height: number } | null = null;
+
+  // 消息本身可点：显示期间点它打开「最近消息」，消失后也能从命令面板进
+  if (deps.onShowMessageHistory) {
+    elements.message.style.cursor = "pointer";
+    elements.message.addEventListener("click", () => deps.onShowMessageHistory?.());
+  }
 
   function refreshWhitespace(): void {
     const on = deps.isWhitespaceOn();
@@ -207,10 +216,15 @@ export function createStatusBar(
   let messageCount = 0;
 
   function showMessage(text: string, durationMs = 3000): void {
+    // 先记一条历史：这条消息 3 秒后就在界面上消失了，但「刚才说了什么」
+    // 还能从通知面板的「最近消息」里翻回来（存 core/messageLog，不落盘）
+    recordMessage(text);
     const visible = !elements.message.classList.contains("hidden");
     messageCount = visible ? messageCount + 1 : 0;
     elements.message.textContent = messageCount > 0 ? `${text}（+${messageCount}）` : text;
-    elements.message.title = text;
+    elements.message.title = deps.onShowMessageHistory
+      ? `${text}\n（点击查看最近消息）`
+      : text;
     elements.message.classList.remove("hidden");
     if (messageTimer) clearTimeout(messageTimer);
     messageTimer = setTimeout(() => {
@@ -270,7 +284,11 @@ export function createStatusBar(
       configSaveTimer = null;
       const merged = pendingPatch;
       pendingPatch = {};
-      void updateSettings(merged).catch((e) => console.warn("[config] 写回失败", e));
+      void updateSettings(merged).catch((e) => {
+        console.warn("[config] 写回失败", e);
+        // 界面已切换但配置没落地：不说的话，用户重启后发现设置"自己变回去了"
+        showMessage("设置写入 config.json 失败：本次改动重启后可能不会保留", 6000);
+      });
     }, 300);
   }
 

@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use super::paths::PathGuard;
@@ -88,9 +89,12 @@ pub fn rename_path(
     fs::rename(&src, &target).map_err(|e| format!("重命名失败: {e}"))
 }
 
-/// 删除文件或目录（目录递归；调用方必须已弹确认）。
+/// 删除文件或目录（移入系统回收站；调用方必须已弹确认）。
 /// 安全：仅允许已登记工作区根目录之内。
-/// 递归删除可能很慢（node_modules 等）：放 spawn_blocking，避免卡主线程。
+///
+/// 走 `trash` 而不是 `remove_file/remove_dir_all`：确认框是唯一防线时，
+/// 误点就是永久丢失；回收站给了第二道网，且用户能按系统习惯自行还原。
+/// 大目录（node_modules 等）移入回收站也可能很慢：放 spawn_blocking。
 #[tauri::command]
 pub async fn delete_path(
     state: tauri::State<'_, PathGuard>,
@@ -98,15 +102,54 @@ pub async fn delete_path(
 ) -> Result<(), String> {
     let p = state.ensure_root_scope(&path)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let meta = fs::metadata(&p).map_err(|e| format!("读取元信息失败: {e}"))?;
-        if meta.is_dir() {
-            fs::remove_dir_all(&p).map_err(|e| format!("删除目录失败: {e}"))
-        } else {
-            fs::remove_file(&p).map_err(|e| format!("删除文件失败: {e}"))
+        if !p.exists() {
+            return Err("路径不存在（可能已被其它程序删除）".to_string());
         }
+        trash::delete(&p).map_err(|e| format!("移入回收站失败: {e}"))
     })
     .await
     .map_err(|e| format!("任务调度失败: {e}"))?
+}
+
+/// 在系统文件管理器中打开 / 定位某个路径（跨平台，**不做路径校验**，调用方负责）。
+///
+/// `select = true` 表示在父目录中选中该项（文件定位），`false` 表示直接打开该目录。
+pub(crate) fn reveal_path(p: &Path, select: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let result = {
+        use std::os::windows::process::CommandExt;
+        // /select 与路径必须拼成同一个参数；raw_arg 跳过标准参数转义，
+        // 否则含空格的路径会被改写成 \"...\"，explorer 解析失败后落到默认目录
+        let target = p.to_string_lossy().replace('/', "\\");
+        let mut cmd = Command::new("explorer");
+        if select {
+            cmd.raw_arg(format!("/select,\"{target}\""));
+        } else {
+            cmd.raw_arg(format!("\"{target}\""));
+        }
+        cmd.spawn().map(|_| ())
+    };
+
+    #[cfg(target_os = "macos")]
+    let result = {
+        let mut cmd = Command::new("open");
+        if select {
+            cmd.arg("-R");
+        }
+        cmd.arg(p).spawn().map(|_| ())
+    };
+
+    #[cfg(target_os = "linux")]
+    let result = {
+        let target = if select {
+            p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.to_path_buf())
+        } else {
+            p.to_path_buf()
+        };
+        Command::new("xdg-open").arg(target).spawn().map(|_| ())
+    };
+
+    result.map_err(|e| format!("打开文件管理器失败: {e}"))
 }
 
 /// 在系统文件管理器中定位（跨平台）。
@@ -117,27 +160,5 @@ pub fn reveal_in_file_manager(
     path: String,
 ) -> Result<(), String> {
     let p = state.ensure_root_scope(&path)?;
-
-    #[cfg(target_os = "windows")]
-    let result = {
-        use std::os::windows::process::CommandExt;
-        // /select 与路径必须拼成同一个参数；raw_arg 跳过标准参数转义，
-        // 否则含空格的路径会被改写成 \"...\"，explorer 解析失败后落到默认目录
-        let target = p.to_string_lossy().replace('/', "\\");
-        Command::new("explorer")
-            .raw_arg(format!("/select,\"{target}\""))
-            .spawn()
-            .map(|_| ())
-    };
-
-    #[cfg(target_os = "macos")]
-    let result = Command::new("open").arg("-R").arg(&p).spawn().map(|_| ());
-
-    #[cfg(target_os = "linux")]
-    let result = {
-        let parent = p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| p.clone());
-        Command::new("xdg-open").arg(&parent).spawn().map(|_| ())
-    };
-
-    result.map_err(|e| format!("打开文件管理器失败: {e}"))
+    reveal_path(&p, true)
 }

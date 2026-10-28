@@ -41,7 +41,7 @@ main.ts → 全部
 ## 验收基线（每个改动后必跑）
 
 ```bash
-npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --lib)
+npm test && npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --lib)
 ```
 
 Rust 侧约束：

@@ -82,7 +82,6 @@ const GROUPS: Group[] = [
       { key: "fileEncodingMemory / files.encodeMemory", meaning: "按文件路径记忆编码：自动检测置信度低时优先采用上次的选择（含手动「重新打开为」）", effect: "下次打开文件" },
       { key: "formatters", meaning: "CLI 格式化工具与参数（后端按语言键读取；新增语言只需改这里）", effect: "即时" },
       { key: "ai", meaning: "AI 提供商 / 模型 / 启用开关", effect: "预留" },
-      { key: "log", meaning: "运行日志级别与目录", effect: "预留" },
     ],
   },
 ];

@@ -32,6 +32,8 @@ interface SearchReport {
   files: FileMatches[];
   total_matches: number;
   truncated: boolean;
+  /** 因体积超过 2MB 被跳过的文件数（后端 MAX_FILE_BYTES） */
+  skipped_oversize: number;
 }
 
 interface FileReplaceResult {
@@ -298,9 +300,15 @@ export class SearchView {
     this.selected = new Set(
       report.files.filter((f) => !isBackupPath(f.path)).map((f) => f.path),
     );
+    // 跳过的大文件必须说出来：否则用户只会觉得「明明有这个词却搜不到」
+    const skipNote =
+      report.skipped_oversize > 0
+        ? `（已跳过 ${report.skipped_oversize} 个超过 2MB 的文件）`
+        : "";
     this.countEl.textContent =
       `${report.files.length} 个文件 · ${report.total_matches} 处` +
-      (report.truncated ? "（已截断，请细化关键词）" : "");
+      (report.truncated ? "（已截断，请细化关键词）" : "") +
+      skipNote;
     this.renderList();
   }
 

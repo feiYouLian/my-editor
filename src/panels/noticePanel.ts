@@ -11,10 +11,23 @@ import {
   removeNotice,
   subscribeNotices,
 } from "../app/noticeStore";
+import {
+  clearMessages,
+  listMessages,
+  subscribeMessages,
+} from "../core/messageLog";
+
+/** 消息时间戳 → HH:MM:SS */
+function formatClock(at: number): string {
+  const d = new Date(at);
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 
 export class NoticePanel {
   private el: HTMLElement | null = null;
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeMessages: (() => void) | null = null;
 
   constructor(
     private anchor: HTMLElement,
@@ -52,6 +65,21 @@ export class NoticePanel {
     const list = document.createElement("div");
     list.className = "notice-list";
     panel.append(list);
+
+    // 最近消息：状态栏 3 秒就消失的提示在这里留痕（数据在 core/messageLog）
+    const msgHead = document.createElement("div");
+    msgHead.className = "notice-head notice-head-sub";
+    const msgTitle = document.createElement("span");
+    msgTitle.textContent = "最近消息";
+    const msgClear = document.createElement("button");
+    msgClear.type = "button";
+    msgClear.className = "notice-clear";
+    msgClear.textContent = "清空";
+    msgClear.addEventListener("click", () => clearMessages());
+    msgHead.append(msgTitle, msgClear);
+    const msgList = document.createElement("div");
+    msgList.className = "notice-list notice-msg-list";
+    panel.append(msgHead, msgList);
 
     const renderList = (): void => {
       list.innerHTML = "";
@@ -107,7 +135,33 @@ export class NoticePanel {
       }
     };
 
+    const renderMessages = (): void => {
+      msgList.innerHTML = "";
+      const messages = listMessages();
+      if (messages.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "notice-empty";
+        empty.textContent = "本次启动还没有消息";
+        msgList.append(empty);
+        return;
+      }
+      for (const message of messages) {
+        const row = document.createElement("div");
+        row.className = "notice-item notice-msg-item";
+        const time = document.createElement("span");
+        time.className = "notice-msg-time";
+        time.textContent = formatClock(message.at);
+        const text = document.createElement("span");
+        text.className = "notice-text";
+        text.textContent = message.text;
+        text.title = message.text;
+        row.append(time, text);
+        msgList.append(row);
+      }
+    };
+
     renderList();
+    renderMessages();
     document.body.append(panel);
 
     // 贴在状态栏按钮上方
@@ -121,6 +175,7 @@ export class NoticePanel {
 
     this.el = panel;
     this.unsubscribe = subscribeNotices(renderList);
+    this.unsubscribeMessages = subscribeMessages(renderMessages);
     document.addEventListener("click", this.onDocClick, true);
     document.addEventListener("keydown", this.onKeydown);
     this.deps.onMessage("通知中心已打开");
@@ -130,6 +185,8 @@ export class NoticePanel {
     if (!this.el) return;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unsubscribeMessages?.();
+    this.unsubscribeMessages = null;
     document.removeEventListener("click", this.onDocClick, true);
     document.removeEventListener("keydown", this.onKeydown);
     this.el.remove();

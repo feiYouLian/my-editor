@@ -210,7 +210,10 @@ export class TerminalHost {
         panel.show(this.shellLabel, this.cwd, "就绪");
         panel.focus();
         return this.id;
-      } catch {
+      } catch (e) {
+        // 会话还在但面板唤起失败：这条路径不走 startSession 的提示，必须自己说一声
+        console.warn("[terminal] 唤起面板失败", e);
+        this.deps.showMessage("终端面板打开失败");
         return null;
       }
     }

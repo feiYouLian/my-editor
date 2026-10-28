@@ -43,6 +43,8 @@ export class LargeView {
   private info: LargeFileInfo | null = null;
   /** 过滤命中行号（Uint32Array 定长缓冲，上限与后端 MAX_FILTER_MATCHES 一致） */
   private readonly matchBuf = new MatchBuffer();
+  /** 超长行裁剪提示只提示一次（每次打开视图重置） */
+  private clampWarned = false;
   private density: number[] = [];
   private readonly cache = new LineCache();
   private caseOn = false;
@@ -156,7 +158,20 @@ export class LargeView {
     this.filterFinishedId = -1;
     this.matchBuf.reset();
     this.cache.clear();
+    this.clampWarned = false;
     this.host.classList.add("hidden");
+  }
+
+  /**
+   * 后端把超长行裁到 4000 字符并补 `…`。不说明的话，用户会以为文件内容就到这里
+   * （「行尾怎么少了一截」）。只提示一次，避免滚动时反复刷屏。
+   */
+  private noteClampedLine(win: LineWindow): void {
+    if (!win.truncatedLines || this.clampWarned) return;
+    this.clampWarned = true;
+    this.deps.onMessage(
+      "部分超长行已裁剪显示（单行最多 4000 字符），完整内容请用「以编辑器打开」查看",
+    );
   }
 
   private async ensureListeners(): Promise<void> {
@@ -338,6 +353,7 @@ export class LargeView {
     try {
       const win = await invoke<LineWindow>("read_large_lines", { id: info.id, start, count });
       this.cache.remember(win);
+      this.noteClampedLine(win);
     } catch (e) {
       this.el.statusEl.textContent = `读取失败：${String(e).split("\n")[0]}`;
     }
@@ -353,6 +369,7 @@ export class LargeView {
       for (const [start, count] of coalesceLines(lines)) {
         const win = await invoke<LineWindow>("read_large_lines", { id: info.id, start, count });
         this.cache.remember(win);
+        this.noteClampedLine(win);
       }
     } catch (e) {
       this.el.statusEl.textContent = `读取失败：${String(e).split("\n")[0]}`;

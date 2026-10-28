@@ -486,12 +486,18 @@ class TabStore {
   /** 批量关闭（脏标签一次性确认，避免逐个弹窗） */
   private async closeMany(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    const dirtyCount = this.tabs.filter((t) => ids.includes(t.id) && t.dirty).length;
-    if (dirtyCount > 0) {
+    const dirty = this.tabs.filter((t) => ids.includes(t.id) && t.dirty);
+    if (dirty.length > 0) {
+      // 列出具体文件名：只说「有 N 个未保存」等于让用户盲签；同时说明草稿会保留，
+      // 因为关闭前确实会统一落草稿（见 main.ts 的批量关闭路径），这是真实的兜底。
+      const names = dirty.map((t) => t.name);
+      const shown = names.slice(0, 5).join("、");
+      const rest = names.length > 5 ? ` 等 ${names.length} 个` : "";
+      const message =
+        `以下 ${dirty.length} 个标签有未保存的内容，关闭后草稿会保留一段时间，` +
+        `可在下次启动时从「草稿恢复」找回：\n${shown}${rest}\n\n确定关闭？`;
       // 未注入确认回调时直接关闭（启动早期不会触发批量关闭）
-      const ok = this.confirmHandler
-        ? await this.confirmHandler(`有 ${dirtyCount} 个未保存的标签将被关闭，确定？`)
-        : true;
+      const ok = this.confirmHandler ? await this.confirmHandler(message) : true;
       if (!ok) return;
     }
     for (const id of ids) this.close(id);

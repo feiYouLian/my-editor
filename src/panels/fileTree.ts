@@ -607,7 +607,10 @@ export class FileTree {
 
   private async deleteEntry(entry: DirEntry): Promise<void> {
     const ok = await confirmAction(
-      `确定删除${entry.is_dir ? "目录" : "文件"}「${entry.name}」？${entry.is_dir ? "目录将递归删除！" : ""}`,
+      `确定删除${entry.is_dir ? "目录" : "文件"}「${entry.name}」？\n` +
+        (entry.is_dir
+          ? "目录下的全部内容会一起移入系统回收站，可从回收站还原。"
+          : "将移入系统回收站，可从回收站还原。"),
     );
     if (!ok) return;
     try {

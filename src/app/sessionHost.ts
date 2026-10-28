@@ -22,6 +22,7 @@ import {
   type SessionState,
 } from "../services/session";
 import { onFileChanged, watchFiles } from "../services/fsWatch";
+import { addNotice } from "./noticeStore";
 import { confirmAction } from "../ui/dialogs";
 import { openStatusMenu } from "../ui/statusMenu";
 import { pickDraftsToRecover, type DraftRow } from "../panels/draftRecovery";
@@ -70,6 +71,16 @@ export class SessionHost {
   /** 已登记监听的路径集合（用于跳过重复登记） */
   private watchedKey = "";
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 文件监听失败只提示一次：反反复复弹会变成噪音 */
+  private watchWarned = false;
+
+  private warnWatchFailed(e: unknown): void {
+    console.warn("[watch] 失败", e);
+    if (this.watchWarned) return;
+    this.watchWarned = true;
+    // 监听挂了等于「外部修改」永远不提示，属于功能静默降级，必须说一声
+    this.deps.showMessage("文件监听启动失败：外部修改将不会自动提示");
+  }
 
   constructor(
     private deps: SessionHostDeps,
@@ -95,8 +106,27 @@ export class SessionHost {
       if (!tab || tab.externallyChanged) return;
       tabStore.markExternal(tab.id, true);
       this.deps.refreshStatus();
+      // 通知中心留一条：状态栏「外部修改」只在激活标签显示，后台标签只有一个 ⟳，
+      // 错过之后没有任何地方能回看是哪几个文件被动过。
+      addNotice(
+        "external",
+        `「${tab.name}」已被其它程序修改`,
+        [
+          {
+            label: "处理",
+            run: () => {
+              if (tabStore.active()?.id === tab.id) {
+                this.deps.onExternalOnActive?.(tab);
+              } else {
+                this.deps.showMessage(`请先切换到「${tab.name}」（标签上有 ⟳ 标记）`);
+              }
+            },
+          },
+        ],
+        `ext:${tab.id}`,
+      );
       if (tabStore.active()?.id === tab.id) this.deps.onExternalOnActive?.(tab);
-    }).catch((e) => console.warn("[watch] 订阅失败", e));
+    }).catch((e) => this.warnWatchFailed(e));
 
     this.externalBadgeEl.addEventListener("click", (e) => {
       const tab = this.deps.getActiveTab();
@@ -272,7 +302,14 @@ export class SessionHost {
       this.draftKeys.set(tabId, key);
       this.refreshDraftBadge();
     } catch (e) {
+      // 草稿是未保存内容的最后一道网：写失败必须让用户知道，不能只进 console
       console.warn("[draft] 写入失败", e);
+      addNotice(
+        "saveFail",
+        `草稿写入失败：「${tab.name}」未保存的内容可能无法恢复`,
+        [],
+        `draft:${tabId}`,
+      );
     }
   }
 
@@ -438,7 +475,7 @@ export class SessionHost {
     }
     const paths = this.watchedPaths();
     this.watchedKey = paths.join("|");
-    void watchFiles(paths).catch((e) => console.warn("[watch] 登记失败", e));
+    void watchFiles(paths).catch((e) => this.warnWatchFailed(e));
   }
 
   /** 标签集变化时的防抖登记（路径集合未变则跳过） */
@@ -450,7 +487,7 @@ export class SessionHost {
     this.watchTimer = setTimeout(() => {
       this.watchTimer = null;
       this.watchedKey = key;
-      void watchFiles(paths).catch((e) => console.warn("[watch] 登记失败", e));
+      void watchFiles(paths).catch((e) => this.warnWatchFailed(e));
     }, 600);
   }
 

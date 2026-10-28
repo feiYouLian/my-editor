@@ -153,6 +153,9 @@ const statusBar = createStatusBar(
     isWhitespaceOn: () => editorHandle.isWhitespaceOn(),
     toggleWhitespace: () => editorHandle.toggleWhitespace(),
     setWordWrap: (on) => editorHandle.setWordWrap(on),
+    // 点状态栏消息 → 打开通知面板的「最近消息」区。
+    // 箭头函数在点击时才取 noticePanel（其声明晚于 statusBar，此处不能直接引用值）。
+    onShowMessageHistory: () => noticePanel.toggle(),
   },
 );
 
@@ -628,7 +631,9 @@ async function confirmDiscardGitChanges(
   const extra = deleting > 0 ? `，其中 ${deleting} 个未跟踪/新增文件会被删除` : "";
   const backTo = staged ? "上次提交" : "暂存区";
   const ok = await confirmAction(
-    `放弃 ${target} 的更改？磁盘内容将还原为${backTo}的内容${extra}。此操作不可撤销。`,
+    `放弃 ${target} 的更改？磁盘内容将还原为${backTo}的内容${extra}。\n` +
+      `被覆盖 / 删除的内容会先备份到配置目录的 discard-backup/ 下（保留最近 10 次），` +
+      `但应用内不提供一键还原。`,
     "放弃更改",
   );
   if (!ok) return;
@@ -682,8 +687,20 @@ const gitHost = new GitHost({
   getRoot: () => workspaceRoot,
   view: gitView,
   showMessage: statusBar.showMessage,
-  // 命令失败：状态栏给首行，完整 stderr 弹窗（可复制）
-  onError: (title, detail) => showErrorDialog(title, detail),
+  // 命令失败：状态栏给首行，完整 stderr 弹窗（可复制）+ 一条能走出去的路。
+  // 认证失败、合并冲突这类问题无法在应用内解决，只给错误详情等于让人更困惑。
+  onError: (title, detail) =>
+    showErrorDialog(title, detail, [
+      {
+        label: "在终端里打开工作区",
+        run: () => {
+          const root = workspaceRoot;
+          if (root) void terminalHost.openAt(root);
+          else void terminalHost.toggle();
+          statusBar.showMessage("在终端里完成 git 认证或解决冲突后，回到这里重试", 6000);
+        },
+      },
+    ]),
   // 文件树同步染色（文件 + 上级目录）+ 状态栏分支信息
   onStatus: (files, status) => {
     fileTree.setGitStatus(files);
@@ -797,6 +814,13 @@ editorHandle = createEditor($("editor"), {
   onHighlightDisabled: (reason) => {
     console.info(`[editor] 高亮已禁用: ${reason}`);
     statusLanguage.textContent = "纯文本（高亮已禁用）";
+  },
+  onUndoHistoryLost: () => {
+    // 每个文档只触发一次；说明原因，否则「Ctrl+Z 没反应」会被当成 bug
+    statusBar.showMessage(
+      "该标签的撤销历史已释放（文档过大或打开标签过多），只能撤销本次载入后的编辑",
+      6000,
+    );
   },
   // 书签 / 折叠变化写进会话（400ms 防抖），重启后自动恢复
   onBookmarkChange: () => sessionHost.persistSession(),
@@ -1035,6 +1059,9 @@ welcomeView = new WelcomePanel($("welcome"), {
   onNewFile: () => fileService.newUntitled(),
   onOpenDirectory: () => void openWorkspaceDir(),
   onRecent: () => runHost.toggleRecentFiles(),
+  onShowShortcuts: () => showShortcutsDialog(shortcutRows()),
+  onShowAbout: () =>
+    void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
 });
 welcomeView.setVisible(tabStore.list().length === 0);
 
@@ -1329,6 +1356,7 @@ registerCommands(
     showShortcuts: () => showShortcutsDialog(shortcutRows()),
     showAbout: () =>
       void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
+    showMessageHistory: () => noticePanel.toggle(),
   }),
 );
 
@@ -1580,4 +1608,14 @@ window.addEventListener("unhandledrejection", (e) => {
   e.preventDefault();
 });
 
-void bootstrap();
+void (async () => {
+  await bootstrap();
+  // 首帧上屏后再报告「可交互」时刻（双 rAF：脚本跑完 ≠ 已经画出来），
+  // 由 Rust 侧写进 <配置目录>/startup.json，让启动耗时成为可自查的数字。
+  await new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+  void invoke("frontend_ready").catch(() => {
+    // 采样失败不影响使用
+  });
+})();

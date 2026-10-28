@@ -1,5 +1,5 @@
 /**
- * 关于对话框：版本、技术栈、配置 / 日志目录（可复制）与快捷键速查入口。
+ * 关于对话框：版本、技术栈、配置目录（可复制）与快捷键速查入口。
  *
  * 版本优先取 Tauri 运行时（core:app 权限），失败时回退 package.json 的默认值；
  * 目录通过后端 `app_config_dir` 命令读取，避免前端猜测路径。
@@ -68,12 +68,10 @@ export async function showAboutDialog(deps: AboutDeps): Promise<void> {
     return line;
   };
 
-  const sep = configDir.includes("\\") ? "\\" : "/";
   dialog.append(
     row("版本", version),
     row("技术栈", "Tauri 2 · CodeMirror 6 · TypeScript"),
     row("配置目录", configDir, true),
-    row("日志目录", configDir ? `${configDir}${sep}logs` : ""),
   );
 
   const actions = document.createElement("div");
@@ -81,11 +79,21 @@ export async function showAboutDialog(deps: AboutDeps): Promise<void> {
   const shortcutsBtn = document.createElement("button");
   shortcutsBtn.type = "button";
   shortcutsBtn.textContent = "快捷键速查";
+  // 备份 / 迁移设置时最常做的一件事：打开目录自己拷，比做一套导入导出更直接
+  const openDirBtn = document.createElement("button");
+  openDirBtn.type = "button";
+  openDirBtn.textContent = "打开配置目录";
+  openDirBtn.disabled = !configDir;
+  openDirBtn.addEventListener("click", () => {
+    void invoke("reveal_config_dir").catch(() => {
+      // 便利入口：失败时不弹框，用户仍可点「配置目录」复制路径
+    });
+  });
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "primary";
   closeBtn.textContent = "关闭";
-  actions.append(shortcutsBtn, closeBtn);
+  actions.append(openDirBtn, shortcutsBtn, closeBtn);
   dialog.append(actions);
 
   backdrop.append(dialog);

@@ -3393,6 +3393,27 @@ button.danger:hover {
   white-space: nowrap;
 }
 
+/* 最近消息（状态栏瞬时消息历史）：与「待处理」同面板，语义不同所以视觉上更弱 */
+.notice-head-sub {
+  border-top: 1px solid var(--border);
+}
+
+.notice-msg-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.notice-msg-item {
+  color: var(--text-secondary);
+}
+
+.notice-msg-time {
+  flex: none;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
 .notice-actions {
   flex: none;
   display: flex;
@@ -4629,6 +4650,32 @@ input[type="radio"] {
   font-size: 11px;
   color: var(--text-secondary);
   opacity: 0.85;
+}
+
+/* 首屏次级入口：快捷键速查 / 关于（不抢主按钮权重，但要能被点醒） */
+.welcome-links {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.welcome-link {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  opacity: 0.8;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: transparent;
+}
+
+.welcome-link:hover {
+  opacity: 1;
+  text-decoration-color: currentColor;
 }
 
 /* ---------- 草稿恢复列表 ---------- */
