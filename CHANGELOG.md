@@ -13,6 +13,13 @@
 - **自定义语言（关键字级高亮）**：`<配置目录>/languages/<名字>.json` 声明扩展名、注释符、关键字、类型、
   引号与括号，即可为内置 17 种之外的文件类型加高亮，并自动出现在状态栏语言菜单与 Markdown 围栏高亮里。
   与内置语言重名、扩展名冲突、键名拼错都会指名提示并跳过，不顶掉内置高亮。格式见 `docs/USER-GUIDE.md` §5.2。
+- **附加语言（按需加载）**：Shell / PowerShell / TOML / Diff / Dockerfile / CMake / HTTP / Perl / Lua /
+  Ruby / Haskell / C# / Kotlin 共 13 种 CodeMirror 官方流模式，默认关闭，在 设置 → 编辑器与布局 勾选后启用；
+  打开对应扩展名的文件时才加载该分片（不勾选永不加载）。同时修正分包规则：`@codemirror/legacy-modes`
+  不再被并入 vendor chunk（此前 `properties` 模式也因此被提前全量加载）。
+- **转到定义 `F12`（文本级，非 LSP）**：按定义关键字（fn / def / class / struct / interface / …、以及
+  `public void foo(` 这类修饰符形式）在工作区里定位同名符号；唯一命中直接跳，多候选弹列表，
+  一个定义都没有时退回引用列表。跳过 `node_modules` 等忽略目录与 > 2 MB / 二进制文件。
 
 ## [0.4.0] - 2026-10-28
 

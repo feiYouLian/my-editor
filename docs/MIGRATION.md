@@ -37,9 +37,11 @@
 
 | 想做的事 | 迁移后的做法 |
 | --- | --- |
-| 跳到函数定义 / 看类型错误 | **做不到**。用 `Ctrl+Shift+F` 按符号名搜，或 `Ctrl+P` 直接开文件 |
+| 跳到函数定义 | `F12`：工作区文本级定位（定义优先，多个候选弹列表，一个都没有时退回引用）。**没有类型解析**，重载 / 同名不同义会不准 |
+| 看类型错误 / 诊断 | **做不到**（没有 LSP）。需要在 IDE 里看，或靠语言自己的编译器 / linter |
+| 安全重命名符号 | 做不到，用下面那条批量替换 |
 | 全局重命名变量 | 工作区搜索的**批量替换**（带替换历史，可一键撤销最近一次） |
-| 装个新语言高亮 | 做不到。先确认 17 种内置语言里是否已覆盖（`README.md` → 功能列表 / 编辑器内核） |
+| 装个新语言高亮 | 装不了扩展，但有三条路：① 内置 17 种先看一眼（`README.md` → 功能列表）；② 设置 → 编辑器与布局 勾选「附加语言」（Shell / PowerShell / TOML / Diff / Dockerfile / CMake / HTTP / Perl / Lua / Ruby / Haskell / C# / Kotlin）；③ 放一份 `languages/<名字>.json` 自定义关键字级高亮（`docs/USER-GUIDE.md` §5.2） |
 | 格式化代码 | `Shift+Alt+F`：前端走 Prettier（JS/TS/JSON/CSS/MD/HTML/YAML），SQL/XML 内置，其余走系统 CLI（需自行安装 black / gofmt / rustfmt / google-java-format / clang-format） |
 | 看一眼 GB 级日志 | 直接打开：≥ 20 MB 或 `*.log` 自动进只读虚拟视图（过滤 / Minimap / 换编码），不会进编辑器吃内存 |
 | 保存时自动格式化 | 设置 → 文件与会话 → 保存时自动格式化（大文件自动跳过） |

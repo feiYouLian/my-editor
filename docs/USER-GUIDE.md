@@ -215,6 +215,28 @@
 - 写错键名会被跳过并提示「忽略了不认识的键 xxx」；`extensions` 写错格式会直接报错。
 - `config.json` 的 `languageExtensions` 优先级仍最高，可以用它把某个扩展名指向内置或自定义语言。
 
+### 5.3 附加语言（勾选即用）
+
+内置 17 种之外，还有 13 种 CodeMirror 官方流模式，**默认关闭**，在 设置 → 编辑器与布局 →「附加语言」里按需勾选：
+
+| 语言 | 自动识别 | 语言 | 自动识别 |
+| --- | --- | --- | --- |
+| Shell（bash / zsh） | `.sh` `.bash` `.zsh` `.ksh`，`.bashrc` 等 | Perl | `.pl` `.pm` `.t` |
+| PowerShell | `.ps1` `.psm1` `.psd1` | Lua | `.lua` |
+| TOML | `.toml` | Ruby | `.rb` `.rake` `.gemspec`，`Gemfile` |
+| Diff / 补丁 | `.diff` `.patch` | Haskell | `.hs` `.lhs` |
+| Dockerfile | `Dockerfile` `Dockerfile.dev` `Containerfile` | C# | `.cs` |
+| CMake | `.cmake`，`CMakeLists.txt` | Kotlin | `.kt` `.kts` |
+| HTTP 请求 | `.http` `.rest` | | |
+
+规则：
+
+- 勾选后才**注册**，打开对应扩展名的文件时才**加载**该模式的分片——没勾选就永远不加载、不占内存。
+- 设置项存在 `config.json` 的 `legacyLanguages` 数组里（值为上表的模式名，如 `["shell","toml"]`），手写同样有效。
+- 优先级：`languageExtensions` > 自定义语言 > 附加语言 > 内置映射。所以**附加语言不会顶掉**你已有的映射；扩展名被占时它会跳过并在控制台提示。
+- 已打开的标签不会自动换语言，需在状态栏「语言」里重选一次。
+- 这些同样是流模式而不是语法树：有正确的关键字与注释分类，但**没有补全与诊断**。
+
 ## 6 数据存在哪
 
 全部在应用配置目录（「设置 → 关于」里可点击复制路径）：
