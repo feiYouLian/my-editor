@@ -26,6 +26,9 @@ export default defineConfig({
         // vendor chunk 导致失去按需加载能力（首屏全量拉取）。
         manualChunks(id) {
           if (id.includes("@codemirror/lang-")) return undefined;
+          // legacy-modes 的每个模式同样是按需加载的分片（editor/legacyModes.ts 与
+          // languages.ts 的 properties）：并入 vendor 会让"没勾选也照样首屏下载"
+          if (id.includes("@codemirror/legacy-modes")) return undefined;
           if (
             id.includes("@codemirror") ||
             id.includes("@lezer") ||
