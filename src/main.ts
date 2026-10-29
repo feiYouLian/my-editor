@@ -541,6 +541,8 @@ const wsName = $<HTMLSpanElement>("ws-name");
 const btnOpenDir = $<HTMLButtonElement>("btn-open-dir");
 
 const fileTree = new FileTree(fileTreeEl, {
+  // 打开后**不**抢焦点：焦点留在文件树行上，Ctrl+C / Ctrl+X / Ctrl+V 才能作用于文件
+  // （与 VS Code 一致：点开文件后要在编辑区再点一下才能开始输入）
   onOpenFile: (path) => void fileService.openFilePath(path),
   onCompareFile: (path) => void diffService.compareWithPath(path),
   // terminalHost 在下文构造：回调运行时才访问（闭包，无 TDZ 风险）
@@ -550,6 +552,53 @@ const fileTree = new FileTree(fileTreeEl, {
   getIgnoreDirs: () => getConfig().ignoreDirs,
   // 空状态里的「打开目录」按钮（原来只有一行文字）
   onOpenFolder: () => void openWorkspaceDir(),
+  // 删除文件/目录后同步右侧：干净标签直接关（否则一按保存就把文件"复活"），脏标签保留并说明
+  onPathDeleted: (path, isDir) => {
+    const norm = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
+    const key = norm(path);
+    const affected = tabStore.list().filter((tab) => {
+      if (!tab.path) return false;
+      const tabKey = norm(tab.path);
+      return tabKey === key || (isDir && tabKey.startsWith(`${key}/`));
+    });
+    if (affected.length === 0) return;
+    const dirty = affected.filter((tab) => tab.dirty);
+    for (const tab of affected) {
+      if (!tab.dirty) void closeTab(tab.id);
+    }
+    const closed = affected.length - dirty.length;
+    if (dirty.length > 0) {
+      statusBar.showMessage(
+        `已删除：关闭 ${closed} 个标签；${dirty.length} 个有未保存内容已保留，可用「另存为」保住`,
+      );
+    } else if (closed > 0) {
+      statusBar.showMessage(`已删除：关闭 ${closed} 个对应标签`);
+    }
+    statusBar.refresh();
+    breadcrumbView.render();
+    sessionHost.refreshWatched();
+  },
+  // 剪切粘贴 / 重命名之后同步标签路径：不同步的话标签还指旧路径，保存会写回已不存在的位置
+  onPathMoved: (from, to) => {
+    const norm = (p: string): string => p.replace(/\\/g, "/").toLowerCase();
+    const fromKey = norm(from);
+    let updated = 0;
+    for (const tab of tabStore.list()) {
+      if (!tab.path) continue;
+      const key = norm(tab.path);
+      if (key !== fromKey && !key.startsWith(`${fromKey}/`)) continue;
+      const next = `${to}${tab.path.slice(from.length)}`;
+      tabStore.setPath(tab.id, next, basenameOf(next) || next);
+      updated += 1;
+    }
+    if (updated > 0) {
+      statusBar.refresh();
+      breadcrumbView.render();
+      // 监听登记记的是旧路径：不重登记，移动后的文件改外部修改就检测不到了
+      sessionHost.refreshWatched();
+      statusBar.showMessage(`已同步 ${updated} 个标签的路径`);
+    }
+  },
   onWorkspaceStateChange: (state) => {
     workspaceRoot = state.root;
     wsName.textContent = state.root

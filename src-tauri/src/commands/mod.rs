@@ -4,6 +4,7 @@
 //! Windows 会为子进程新建一个控制台窗口——表现为桌面不断闪烁黑框。
 
 pub mod batch;
+pub mod clipboard;
 pub mod config;
 pub mod diff;
 pub mod encoding;

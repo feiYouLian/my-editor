@@ -32,12 +32,23 @@ export interface FileTreeCallbacks {
   getIgnoreDirs?: () => string[];
   /** 空状态里的「打开目录」按钮（与首屏欢迎页一致，不再只是文字提示） */
   onOpenFolder?: () => void;
+  /**
+   * 文件/目录被移动（重命名 / 剪切粘贴）后同步已打开的标签路径。
+   * 不回调的话：标签还指着旧路径，保存会把内容写回已经不存在的位置。
+   */
+  onPathMoved?: (from: string, to: string) => void;
+  /**
+   * 文件/目录被删除后同步右侧主区。
+   * 不回调的话：干净标签还挂着已删除的文件，一点保存就把文件"复活"了。
+   */
+  onPathDeleted?: (path: string, isDir: boolean) => void;
 }
 
 /** 过滤结果最多渲染多少条（超出提示细化关键词） */
 const FILTER_MAX_ROWS = 200;
 /** 过滤输入防抖：与快速打开同量级，避免每个按键都发 IPC */
 const FILTER_DEBOUNCE_MS = 180;
+
 
 interface FlatFile {
   path: string;
@@ -66,6 +77,12 @@ export class FileTree {
   private rootChildren: HTMLElement | null = null;
   /** 进行中的目录加载：revealPath 等它就绪，不再靠轮询猜时间 */
   private pendingLoads = new Map<string, Promise<void>>();
+
+  /** 文件剪贴板（应用内，不碰系统剪贴板；只记一个条目，与资源管理器的单文件复制一致） */
+  private clip: { path: string; name: string; cut: boolean } | null = null;
+  /** 当前选中的条目：右键菜单之外，键盘复制/剪切/粘贴的依据 */
+  private selectedEntry: DirEntry | null = null;
+
 
   constructor(
     private container: HTMLElement,
@@ -312,6 +329,22 @@ export class FileTree {
   }
 
   /**
+   * 移动 / 删除 / 重命名一个目录后，清掉它自己与子路径的展开态和节点缓存。
+   * 不清的话：旧路径还留在 expanded / nodes 里，那个目录下次"展开"时会去读一个已经不存在的路径。
+   */
+  private forgetSubtree(path: string): void {
+    const key = normPath(path);
+    const prefix = `${key}/`;
+    const under = (candidate: string): boolean => {
+      const k = normPath(candidate);
+      return k === key || k.startsWith(prefix);
+    };
+    for (const dir of [...this.expanded]) if (under(dir)) this.expanded.delete(dir);
+    for (const dir of [...this.nodes.keys()]) if (under(dir)) this.nodes.delete(dir);
+    this.persist();
+  }
+
+  /**
    * 目录加载代际：按目录维度记令牌（不能用实例级单一计数）。
    * render() 会对每个已展开目录并发调用本方法，若共用同一个计数器，
    * 后发起的调用会让先发起的全部作废——表现为“展开多个目录时只有最后一个有内容”。
@@ -363,6 +396,9 @@ export class FileTree {
     const row = document.createElement("div");
     row.className = "tree-row";
     row.style.paddingLeft = `${depth * 14 + 6}px`;
+    // 可聚焦（-1）：Ctrl+C / Ctrl+X / Ctrl+V 只在文件树持有焦点时生效，
+    // 不会把编辑器里的复制粘贴抢走
+    row.tabIndex = -1;
     // Git 状态：文件取自身，目录取子项推导值
     const gitStatus = this.statusFor(entry.path, entry.is_dir);
     if (gitStatus) row.dataset.gitStatus = gitStatus;
@@ -381,13 +417,20 @@ export class FileTree {
 
     if (entry.is_dir) {
       // 目录保持单击展开：双击设置只影响「打开文件」
-      row.addEventListener("click", () => this.toggleExpand(entry.path));
+      row.addEventListener("click", () => {
+        this.toggleExpand(entry.path);
+        this.markSelected(row, entry);
+      });
     } else {
       // 单击 / 双击打开由设置决定（config.files.openWithDoubleClick）
       bindOpenGesture(row, {
-        onSelect: () => this.selectRow(entry.path),
+        onSelect: () => {
+          this.selectRow(entry.path);
+          this.markSelected(row, entry);
+        },
         onOpen: () => {
           this.selectRow(entry.path);
+          this.markSelected(row, entry);
           this.callbacks.onOpenFile(entry.path);
         },
       });
@@ -455,6 +498,17 @@ export class FileTree {
   }
 
   /**
+   * 标记选中并接管焦点：键盘复制 / 剪切 / 粘贴需要有"当前项"，
+   * 而浏览器窗口的 Ctrl+C 是否被我们接手，取决于焦点是否在树里。
+   */
+  private markSelected(row: HTMLElement, entry: DirEntry): void {
+    this.container.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
+    row.classList.add("selected");
+    this.selectedEntry = entry;
+    row.focus({ preventScroll: true });
+  }
+
+  /**
    * 展开到指定文件的所有祖先目录并高亮（标签页切换联动）。
    * 子目录懒加载，渲染后用轮询等待行出现（最多 ~1s）。
    */
@@ -518,6 +572,13 @@ export class FileTree {
       items.push({ label: "在终端中打开", action: () => openTerminal(dir) });
     }
     items.push({ label: "复制文件路径", action: () => void this.copyPath(entry.path) });
+    items.push({ label: "复制", action: () => this.setClip(entry, false) });
+    items.push({ label: "剪切", action: () => this.setClip(entry, true) });
+    // 始终显示「粘贴」：来源可能是系统剪贴板（资源管理器复制来的），此时应用内剪贴板是空的
+    items.push({
+      label: this.clip ? `粘贴「${this.clip.name}」到这里` : "粘贴",
+      action: () => void this.pasteInto(entry.is_dir ? entry.path : this.parentOf(entry.path)),
+    });
     items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
     items.push({ label: "删除", action: () => void this.deleteEntry(entry) });
     items.push({
@@ -556,11 +617,141 @@ export class FileTree {
     }
   }
 
+  /**
+   * 记入剪贴板。
+   * 复制会同时写进**系统剪贴板**（CF_HDROP），所以可以直接粘到资源管理器；
+   * 剪切只在应用内生效——跨应用"剪切"意味着删除工作区外的源文件，超出写入作用域。
+   */
+  private setClip(entry: DirEntry, cut: boolean): void {
+    this.clip = { path: entry.path, name: entry.name, cut };
+    // 反馈统一走状态栏（3 秒自动消失，并进「最近消息」可回看），不另造提示区
+    this.callbacks.onNotify?.(cut ? `已剪切 ${entry.name}` : `已复制 ${entry.name}`);
+    if (cut) return;
+    void invoke("clipboard_set_files", { paths: [entry.path] }).catch((e: unknown) => {
+      const reason = e instanceof Error ? e.message : String(e);
+      // 系统剪贴板写不进去不影响应用内使用：说清"还能怎么用"，不要只说失败
+      this.callbacks.onNotify?.(
+        `系统剪贴板不可用（${reason.split("\n")[0]}），仍可在本应用内粘贴`,
+      );
+    });
+  }
+
+  /** 清空剪贴板（silent = 粘贴成功后自动清，不需要再提示一次） */
+  private clearClip(silent = false): void {
+    this.clip = null;
+    if (!silent) this.callbacks.onNotify?.("已清空文件剪贴板");
+  }
+
+  /**
+   * 粘贴到目标目录。
+   * 顺序：**先看系统剪贴板**（从资源管理器复制进来的文件走这条，只复制不移动），
+   * 没有再退回应用内剪贴板（支持剪切/移动）。
+   */
+  private async pasteInto(dir: string): Promise<void> {
+    const clip = this.clip;
+
+    // 1) 应用内剪切优先：系统剪贴板里可能还留着上一次「复制」的旧路径，
+    //    若先读系统剪贴板，剪切后粘贴会变成"把别的文件又复制一遍"
+    if (!clip?.cut) {
+      let external: string[] = [];
+      try {
+        external = await invoke<string[]>("clipboard_get_files");
+      } catch {
+        external = [];
+      }
+      if (external.length > 0) {
+        try {
+          const targets = await invoke<string[]>("paste_files", {
+            sources: external,
+            destDir: dir,
+            cut: false,
+          });
+          this.afterPaste(dir, targets[0] ?? null);
+          this.callbacks.onNotify?.(`已从系统剪贴板粘贴 ${targets.length} 项`);
+        } catch (e) {
+          this.callbacks.onNotify?.(`粘贴失败：${String(e).split("\n")[0]}`);
+        }
+        return;
+      }
+    }
+
+    if (!clip) {
+      this.callbacks.onNotify?.(
+        "剪贴板里没有文件：先在资源管理器里复制文件，或在文件树上右键「复制」",
+      );
+      return;
+    }
+    try {
+      const target = await invoke<string>("copy_path", {
+        from: clip.path,
+        destDir: dir,
+        cut: clip.cut,
+      });
+      if (clip.cut) {
+        // 移动完成：剪贴板已消费掉
+        this.clearClip(true);
+        // 标签还指着旧路径的话，保存会写回已不存在的位置
+        this.callbacks.onPathMoved?.(clip.path, target);
+        // 源目录那一层必须重建：否则被移走的条目还留在树里（点它会报"路径不存在"）
+        const srcParent = this.parentOf(clip.path);
+        this.forgetSubtree(clip.path);
+        // 只在源目录"当前可见"时重建：折叠中的目录重发 list_dir 会让子项在收起状态下冒出来
+        const srcVisible = srcParent === this.root || this.expanded.has(srcParent);
+        if (srcVisible && normPath(srcParent) !== normPath(dir)) this.refreshDir(srcParent);
+      }
+      this.afterPaste(dir, target);
+      this.callbacks.onNotify?.(
+        `${clip.cut ? "已移动" : "已复制"}到「${this.baseName(target)}」`,
+      );
+    } catch (e) {
+      const reason = String(e).split("\n")[0];
+      this.callbacks.onNotify?.(`${clip.cut ? "移动" : "复制"}失败: ${reason}`);
+    }
+  }
+
+  /** 粘贴后的共同收尾：展开目标目录、只重建这一层、选中并闪一下新条目 */
+  private afterPaste(dir: string, select: string | null): void {
+    const wasExpanded = this.expanded.has(dir);
+    this.expanded.add(dir);
+    if (wasExpanded) this.refreshDir(dir);
+    else this.render();
+    if (!select) return;
+    const reveal = (): void => this.selectRow(select);
+    const pending = this.pendingLoads.get(dir);
+    if (pending) void pending.then(reveal);
+    else reveal();
+  }
+
+  private baseName(path: string): string {
+    const idx = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+    return idx >= 0 ? path.slice(idx + 1) : path;
+  }
+
   /** 全局监听挂载点：应用启动时调用一次 */
   mountGlobalListeners(): void {
     document.addEventListener("click", () => this.closeContextMenu());
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.closeContextMenu();
+      if (e.key === "Escape") {
+        this.closeContextMenu();
+        if (this.clip && !isEditableTarget(e.target)) this.clearClip();
+        return;
+      }
+      // 焦点在编辑器 / 输入框里时，Ctrl+C/V 归它们（不能抢走"复制文本"）
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || isEditableTarget(e.target)) return;
+      const entry = this.selectedEntry;
+      if (!entry) return;
+      const key = e.key.toLowerCase();
+      if (key === "c") {
+        e.preventDefault();
+        this.setClip(entry, false);
+      } else if (key === "x") {
+        e.preventDefault();
+        this.setClip(entry, true);
+      } else if (key === "v") {
+        // 不要求应用内剪贴板非空：可能是刚从资源管理器复制的文件
+        e.preventDefault();
+        void this.pasteInto(entry.is_dir ? entry.path : this.parentOf(entry.path));
+      }
     });
   }
 
@@ -594,6 +785,10 @@ export class FileTree {
     const target = `${this.parentOf(entry.path)}${entry.path.includes("\\") ? "\\" : "/"}${name}`;
     try {
       await invoke("rename_path", { from: entry.path, to: target });
+      // 同步已打开的标签：否则标签还指着旧路径，保存会写回一个已不存在的文件
+      this.callbacks.onPathMoved?.(entry.path, target);
+      // 目录改名：旧路径下的展开态 / 子节点缓存全部失效
+      if (entry.is_dir) this.forgetSubtree(entry.path);
       // 只重建父目录这一层，再等它加载完选中新名称（原来走 revealPath 会全树重建）
       const parent = this.parentOf(target);
       this.refreshDir(parent);
@@ -615,12 +810,26 @@ export class FileTree {
     if (!ok) return;
     try {
       await invoke("delete_path", { path: entry.path });
+      // 同步右侧主区：干净标签关掉，脏标签保留（内容还在内存里，否则一保存就"复活"文件）
+      this.callbacks.onPathDeleted?.(entry.path, entry.is_dir);
+      // 目录被删：它下面已展开的子目录缓存也要一并清掉
+      this.forgetSubtree(entry.path);
       // 只重建父目录这一层：全树 render() 会让所有已展开目录重发 list_dir 并闪烁
       this.refreshDir(this.parentOf(entry.path));
     } catch (e) {
       this.callbacks.onNotify?.(`删除失败: ${String(e).split("\n")[0]}`);
     }
   }
+}
+
+/**
+ * 焦点是否在"文本输入场景"里（编辑器 / 输入框 / contenteditable）。
+ * 文件树的 Ctrl+C/X/V 只在**不**处于这些地方时生效，否则会抢走"复制文本"。
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target instanceof HTMLElement ? target : null;
+  if (!el) return false;
+  return el.closest(".cm-editor") !== null || el.closest("input, textarea, [contenteditable]") !== null;
 }
 
 /** Git 状态路径归一化：分隔符与大小写不敏感 */

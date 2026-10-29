@@ -23,8 +23,14 @@ const SIDEBAR_VIEWS: readonly SidebarView[] = ["open", "git", "files", "search",
 /** 锁定分区：高度由计算得出，不响应拖拽、不写回配置 */
 const LOCKED_VIEWS: readonly SidebarView[] = ["open", "files"];
 
-/** 分区标题行高度（与 main.css 的 .sidebar-section-head 一致） */
-const HEAD_H = 30;
+/**
+ * 分区标题行高度的兜底值（CSS 里由 `--section-head-h` 定义）。
+ *
+ * 这里**不再写死一个常量**：历史上 CSS 与 JS 各写一份（30px / 24px 不同步），
+ * 结果是收起的分区多出一段空白、总高溢出还多出滚动条。现在实际高度从 DOM 量，
+ * 常量只用于"侧栏当前不可见、量不到"的兜底。
+ */
+const HEAD_H_FALLBACK = 26;
 
 /** 分隔线高度（与 main.css 的 .sidebar-sash 一致） */
 const SASH_H = 4;
@@ -195,6 +201,8 @@ export class SidebarViews {
     new ResizeObserver(() => {
       // 拖拽中重排会和光标抢高度，等松手再统一处理（见 endDrag）
       if (this.drag) return;
+      // 缩放/换主题可能改变标题行实际高度，缓存随尺寸变化失效
+      this.headHeightPx = 0;
       this.applySizes();
     }).observe(this.sectionsEl);
     this.observeContent();
@@ -325,6 +333,20 @@ export class SidebarViews {
 
   // ---- 几何 ----
 
+  /** 标题行实际高度缓存（量不到时用兜底值，不写死常量以免与 CSS 漂移） */
+  private headHeightPx = 0;
+
+  /** 分区标题行高度：从 DOM 量（CSS 的 --section-head-h 是唯一真源） */
+  private headH(): number {
+    if (this.headHeightPx > 0) return this.headHeightPx;
+    const head = this.sectionsEl.querySelector<HTMLElement>(".sidebar-section-head");
+    const measured = head ? head.getBoundingClientRect().height : 0;
+    // 侧栏隐藏（宽 0 / display:none）时量不到：先用兜底，等 ResizeObserver 之后重算
+    if (measured <= 0) return HEAD_H_FALLBACK;
+    this.headHeightPx = measured;
+    return measured;
+  }
+
   /** 推导锚点 / 贴顶段 / 沉底段 / 可用高度 */
   private geometry(): SidebarGeometry {
     const order = this.domOrder();
@@ -334,9 +356,10 @@ export class SidebarViews {
     const topExpanded = topViews.filter((view) => this.expanded.has(view));
     const collapsedInTop = topViews.length - topExpanded.length;
     const sashH = Math.max(0, order.length - 1) * SASH_H;
+    const headH = this.headH();
     const topAvail = Math.max(
       0,
-      this.sectionsEl.clientHeight - sashH - sunk.length * HEAD_H - collapsedInTop * HEAD_H,
+      this.sectionsEl.clientHeight - sashH - sunk.length * headH - collapsedInTop * headH,
     );
     return { order, anchor, topViews, sunk, topExpanded, topAvail };
   }
@@ -476,9 +499,10 @@ export class SidebarViews {
    * 否则「文件」的保底和它会互相挤，两边都算不出稳定值。
    */
   private openHeight(geo: SidebarGeometry): number {
-    const natural = HEAD_H + this.openContentH;
-    const cap = Math.max(HEAD_H, geo.topAvail * OPEN_MAX_RATIO);
-    return Math.round(clamp(natural, HEAD_H, cap));
+    const headH = this.headH();
+    const natural = headH + this.openContentH;
+    const cap = Math.max(headH, geo.topAvail * OPEN_MAX_RATIO);
+    return Math.round(clamp(natural, headH, cap));
   }
 
   /** 可拖分区能占到的最大高度（扣掉 open 与弹性分区的保底） */
@@ -506,7 +530,7 @@ export class SidebarViews {
     if (isLocked(view) || !this.expanded.has(view)) return false;
     const body = this.panes[view];
     const content = contentHeight(body);
-    const next = content <= 0 ? DEFAULT_SECTION_PX : HEAD_H + content;
+    const next = content <= 0 ? DEFAULT_SECTION_PX : this.headH() + content;
     const prev = this.natural.get(view);
     if (prev !== undefined && Math.abs(prev - next) < 1) return false;
     this.natural.set(view, next);

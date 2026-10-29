@@ -23,6 +23,14 @@ export class DocumentStateCache {
   private cache = new Map<string, CachedState>();
   /** 超限文档不缓存 EditorState，但保留光标：切回时不该跳回文首 */
   private cursors = new Map<string, number>();
+  /**
+   * 「确实丢了撤销历史」的文档。
+   *
+   * 只有**本来有历史、现在拿不到**才算丢：超大文档切走时拒绝了缓存、或缓存超 8 条被淘汰。
+   * 用这个集合决定要不要提示，而不是"缓存里没有就提示"——
+   * 后者会导致每次打开文件都报一次「撤销历史已释放」，而首次打开时根本无历史可丢。
+   */
+  private lost = new Set<string>();
 
   get(key: string): CachedState | undefined {
     return this.cache.get(key);
@@ -33,16 +41,25 @@ export class DocumentStateCache {
     if (entry.state.doc.length > STATE_CACHE_MAX_BYTES) {
       this.cursors.set(key, entry.state.selection.main.head);
       this.cache.delete(key);
+      // 刚才这个文档在编辑器里是有撤销历史的，但体积超限存不下 → 历史确实被释放了
+      this.lost.add(key);
       return;
     }
     this.cursors.delete(key);
     this.cache.delete(key);
     this.cache.set(key, entry);
+    this.lost.delete(key);
     while (this.cache.size > STATE_CACHE_LIMIT) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;
       this.cache.delete(oldest);
+      this.lost.add(oldest);
     }
+  }
+
+  /** 取出并清除「撤销历史已丢失」标记（每个文档只应提示一次，调用方另有去重） */
+  takeLost(key: string): boolean {
+    return this.lost.delete(key);
   }
 
   /** 取出并清除超限文档记录的光标位置 */

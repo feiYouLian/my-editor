@@ -2303,6 +2303,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "trash",
+ "windows",
 ]
 
 [[package]]

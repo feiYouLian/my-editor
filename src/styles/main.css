@@ -11,6 +11,10 @@
   --danger: #ff6b6b;
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  /* 侧栏分区标题行高度：**同时**决定收起态分区高度（.sidebar-section 的 min-height），
+     两处必须同源，否则收起的分区会多出一段空白，还会把总高撑出滚动条。
+     改这一个值即可，JS 侧不再写死常量（sidebar.ts 直接量 DOM）。 */
+  --section-head-h: 26px;
   /* 彩虹括号色板：6 色相 60° 均分 + 暖冷交替排序，相邻层级色相差 ≥90°
      （红→青→琥珀→蓝→绿→紫；配 one-dark 编辑器底色，亮度一致） */
   --rb-0: #ff7b72; /* 红 */
@@ -1150,7 +1154,6 @@ button:disabled:hover {
 /* ---------- 文件树（3.10） ---------- */
 .file-tree {
   flex: 1;
-  overflow: auto;
   padding: 6px 0;
   font-size: 12px;
   user-select: none;
@@ -1159,7 +1162,7 @@ button:disabled:hover {
 /* ---------- 侧栏分区（VS Code 折叠列表） ---------- */
 /* 双段式布局（详见 src/ui/sidebar.ts）：
    以「最后一个展开的分区」为锚点，锚点及其上方贴顶、其后整体沉底；
-   展开区各自内部滚动，收起区只占 30px 标题行。
+   展开区各自内部滚动，收起区只占标题行高度（--section-head-h）。
    每个分区的高度由 sidebar.ts 用内联 flex 逐个设定（锁定区固定 / 填充区吸收），
    这里只给默认值，不参与分配决策。overflow 仅作极端窗口高度下的兜底。 */
 .sidebar-sections {
@@ -1167,6 +1170,9 @@ button:disabled:hover {
   flex: 1;
   min-height: 0;
   flex-direction: column;
+  /* 纵向 auto 仅作极端窗口高度的兜底（正常由 sidebar.ts 精确分配高度）；
+     横向一律隐藏：标题行内容再长也不该让整列长出横向滚动条 */
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -1174,8 +1180,8 @@ button:disabled:hover {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  /* 收起态高度 = 标题行（30px），展开高度由内联 flex 覆盖 */
-  min-height: 30px;
+  /* 收起态高度 = 标题行高度；与标题行同源，否则收起后会多出一段空白 */
+  min-height: var(--section-head-h);
 }
 
 /* 沉底段的起始位置吸收上方全部剩余空间，其后分区自然跟随贴底。
@@ -1235,9 +1241,13 @@ button:disabled:hover {
   outline: none;
 }
 
-/* 最后一个分区保留底边线（其余边界由分隔线承担） */
+/* 最后一个分区保留底边线（其余边界由分隔线承担）。
+   用 inset 阴影而不是 border-bottom：分区高度是 auto / flex-basis 算出来的，
+   border 会在这 1px 之外再加高，整列就比容器多 1px ——
+   表现正是"任意一个分区展开后出现一条怎么也滚不动的滚动条"。
+   阴影不占布局，视觉相同。 */
 .sidebar-sections > .sidebar-section:last-child {
-  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .sidebar-section-head {
@@ -1245,7 +1255,9 @@ button:disabled:hover {
   flex: none;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  /* 26px：比文件树行（22px）略高一点、又不至于像 30px 那样"胖"。
+     改这一个变量即可，收起态高度与 JS 的布局计算都会跟着走 */
+  height: var(--section-head-h);
   padding: 0 8px;
   border: none;
   /* 标题行底色与内容区拉开层次 */
@@ -1304,9 +1316,12 @@ button:disabled:hover {
   display: none;
 }
 
-/* 文件树自身就是滚动容器：不能被分区的 overflow:hidden 裁掉 */
+/* 文件树的滚动交给内层 .tree-body：
+   容器本身 overflow:hidden，过滤框与剪贴板状态条固定不动、不会跟着滚走；
+   滚动条只在真正有内容溢出时出现在列表上（此前容器 overflow:auto + 内层
+   由 padding/min-width 撑出的 1px 溢出，会显示一条"怎么也滚不动"的无效滚动条）。 */
 .sidebar-section-body.file-tree {
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 /* 「正在打开的文件」列表 */
@@ -2032,6 +2047,7 @@ button:disabled:hover {
 
 /* ---------- 文件树过滤（扁平匹配模式） ---------- */
 .tree-filter {
+  flex: none;
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -2052,8 +2068,14 @@ button:disabled:hover {
 }
 
 .tree-body {
+  flex: 1 1 auto;
   min-height: 0;
+  /* 横向永不出现滚动条：超长/深层文件名由 .tree-label 的省略号处理 */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
+
+
 
 /* 扁平结果行：文件名主色 + 目录淡色（与源代码管理同一套约定） */
 .tree-flat-row {
@@ -2084,6 +2106,9 @@ button:disabled:hover {
 }
 
 .tree-label {
+  /* flex 子项的 min-width 默认是 auto（= min-content），长文件名会把整行撑宽，
+     进而让容器出现横向滚动条；显式 0 才能让省略号生效 */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2100,6 +2125,16 @@ button:disabled:hover {
 
 .tree-row:hover {
   background: var(--bg-elevated);
+}
+
+/* 行可聚焦（键盘复制/剪切/粘贴的落点）：鼠标点击不画焦点框，键盘导航才画 */
+.tree-row:focus {
+  outline: none;
+}
+
+.tree-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .tree-icon {

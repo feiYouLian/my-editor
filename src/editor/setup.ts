@@ -61,8 +61,10 @@ export interface EditorCallbacks {
   /** 折叠状态变化（同上） */
   onFoldChange?: () => void;
   /**
-   * 切回某文档时发现其撤销历史已不可用（文档超 2MB 从未缓存，或缓存超 8 条被淘汰）。
-   * 撤销静默失效最容易被误认为「编辑器坏了」，每个文档提示一次。
+   * 切回某文档时发现它的撤销历史确实被释放了
+   * （> 2MB 的文档切走时存不下、或缓存超 8 条被淘汰）。
+   * 撤销静默失效最容易被误认为「编辑器坏了」，但只在真的丢了历史时提示一次——
+   * 首次打开一个文件不算丢失，不能每次都弹。
    */
   onUndoHistoryLost?: () => void;
 }
@@ -364,9 +366,11 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           view.setState(createState(content));
           languageKey = null;
           activeDocKey = key;
-          // 没有可复用的缓存状态：撤销栈已被释放（超 2MB 从未缓存 / 缓存超 8 条被淘汰）。
-          // 每个文档只提示一次，避免切来切去反复打扰。
-          if (key !== null && !cached && !undoLostWarned.has(key)) {
+          // 没有可复用的缓存状态。只在**确实丢了历史**时提示：
+          // 超大文档切走时拒绝缓存、或缓存超 8 条被淘汰（见 DocumentStateCache.lost）。
+          // 首次打开文件时缓存里当然没有，那不是"丢失"——此前这里按 `!cached` 判断，
+          // 导致每次打开文件都刷一条「撤销历史已释放」。
+          if (key !== null && stateCache.takeLost(key) && !undoLostWarned.has(key)) {
             undoLostWarned.add(key);
             callbacks.onUndoHistoryLost?.();
           }
