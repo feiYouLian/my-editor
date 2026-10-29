@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setLanguageOverrides } from "../editor/languages";
+import type { UserTheme } from "./userThemes";
 
 /**
  * 配置体系。
@@ -10,8 +11,11 @@ import { setLanguageOverrides } from "../editor/languages";
  */
 
 export type ThemeSetting = "dark" | "light" | "high-contrast" | "system";
-/** 编辑器语法主题（独立于应用 UI 主题，见 15.2） */
-export type EditorThemeSetting = "dark" | "light" | "high-contrast";
+/**
+ * 编辑器语法主题（独立于应用 UI 主题，见 15.2）。
+ * `custom:<名字>` 指向 `<配置目录>/themes/<名字>.json`（见 config/userThemes.ts）。
+ */
+export type EditorThemeSetting = "dark" | "light" | "high-contrast" | `custom:${string}`;
 export type ColumnModifier = "Alt" | "Control" | "Shift" | "Meta";
 
 // ---------------------------------------------------------------------------
@@ -351,6 +355,34 @@ function applyConfig(cfg: AppConfig): void {
 /** 当前完整配置（只读快照，勿直接改；改动走 updateSettings） */
 export function getConfig(): AppConfig {
   return current;
+}
+
+// ---------------------------------------------------------------------------
+// 自定义编辑器主题的载入态
+// 与 config 同域：同样是「载入一次、原地替换」，不另开模块级单例。
+// 只放数据，配色到 CodeMirror 扩展的组装在 editor/theme.ts。
+// ---------------------------------------------------------------------------
+
+let userThemes: UserTheme[] = [];
+
+/** 载入 / 刷新自定义主题表（main.ts bootstrap 与「重新加载配置」调用） */
+export function setUserThemes(list: UserTheme[]): void {
+  userThemes = list;
+}
+
+/** 当前已载入的自定义主题（只读） */
+export function getUserThemes(): readonly UserTheme[] {
+  return userThemes;
+}
+
+/** 按名字取自定义主题；未载入返回 null（调用方负责回退与提示） */
+export function findUserTheme(name: string): UserTheme | null {
+  return userThemes.find((t) => t.name === name) ?? null;
+}
+
+/** 不落盘地重新应用当前配置（重读主题文件后触发重绘用） */
+export function reapplyConfig(): void {
+  applyConfig(current);
 }
 
 /** 订阅配置变更（供设置 UI 等刷新） */

@@ -479,6 +479,136 @@ fn config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(config_dir(app)?.join("config.json"))
 }
 
+// ---------------------------------------------------------------------------
+// 自定义编辑器主题：<配置目录>/themes/*.json
+// ---------------------------------------------------------------------------
+
+/// 主题目录里的单个文件：名称取文件名（去扩展名），内容原样交给前端解析。
+/// 不在后端解析配色——键名与 CodeMirror 语法 tag 的映射属于编辑器语义，
+/// 后端只负责把文件读出来（与 formatters 表把工具解析留在后端是相反的分工，
+/// 因为配色不涉及执行、不构成 RCE 面）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserThemeFile {
+    pub name: String,
+    pub content: String,
+}
+
+/// 目录扫描上限：主题是两三 KB 的色值表，超过这个量说明目录被塞了别的东西
+const MAX_THEME_FILES: usize = 100;
+/// 单文件上限：正常主题 < 4 KB
+const MAX_THEME_BYTES: u64 = 512 * 1024;
+/// 首次打开主题目录时写入的示例文件名
+const SAMPLE_THEME_FILE: &str = "example-slate.json";
+/// 示例主题：用户照它改比看文档快
+/// 注意用 r##"..."## —— 内容里有 `"#rrggbb"`，`"#` 会提前终止 r#"..."#
+const SAMPLE_THEME: &str = r##"{
+  "name": "示例：石板蓝",
+  "dark": true,
+  "ui": {
+    "background": "#0f172a",
+    "foreground": "#cbd5e1",
+    "caret": "#e2e8f0",
+    "selection": "#1e3a5f",
+    "activeLine": "#152033",
+    "gutterBackground": "#0b1220",
+    "gutterForeground": "#64748b"
+  },
+  "syntax": {
+    "keyword": "#c792ea",
+    "string": "#c3e88d",
+    "number": "#f78c6c",
+    "comment": "#64748b",
+    "variableName": "#cbd5e1",
+    "function": "#82aaff",
+    "typeName": "#ffcb6b",
+    "propertyName": "#89ddff",
+    "operator": "#89ddff",
+    "bracket": "#f07178",
+    "tagName": "#f07178",
+    "attributeName": "#f78c6c",
+    "heading": "#82aaff",
+    "link": "#82aaff",
+    "invalid": "#ff5370"
+  }
+}
+"##;
+
+fn themes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(config_dir(app)?.join("themes"))
+}
+
+/// 列出 themes/*.json。目录不存在返回空表（= 没有自定义主题），不是错误。
+#[tauri::command]
+pub async fn list_user_themes(app: tauri::AppHandle) -> Result<Vec<UserThemeFile>, String> {
+    let dir = themes_dir(&app)?;
+    // 重活放阻塞线程：最多 100 次小文件读取，不占 async 主体
+    tauri::async_runtime::spawn_blocking(move || collect_theme_files(&dir))
+        .await
+        .map_err(|e| format!("主题读取任务失败: {e}"))
+}
+
+fn collect_theme_files(dir: &Path) -> Vec<UserThemeFile> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        if out.len() >= MAX_THEME_FILES {
+            break;
+        }
+        let path = entry.path();
+        let is_json = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
+        if !is_json {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // 文件名会进 UI 与 config.json 的取值，白名单过滤奇怪字符
+        if stem.is_empty()
+            || !stem
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            continue;
+        }
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size == 0 || size > MAX_THEME_BYTES {
+            eprintln!("[theme] 跳过 {}：大小 {size} 字节", path.display());
+            continue;
+        }
+        match fs::read_to_string(&path) {
+            Ok(content) => out.push(UserThemeFile {
+                name: stem.to_string(),
+                content,
+            }),
+            Err(e) => eprintln!("[theme] 读取失败 {}: {e}", path.display()),
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// 打开主题目录；目录不存在则创建并写入示例主题（让「自定义主题」有个可改的起点）。
+#[tauri::command]
+pub fn open_user_themes_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = themes_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建主题目录失败: {e}"))?;
+    let sample = dir.join(SAMPLE_THEME_FILE);
+    if !sample.exists() {
+        if let Err(e) = fs::write(&sample, SAMPLE_THEME) {
+            eprintln!("[theme] 写入示例主题失败: {e}");
+        }
+    }
+    crate::commands::fs::reveal_path(&dir, false)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// 迁移前备份（config.json → config.json.bak），原文件不存在则跳过
 fn backup(path: &Path) {
     if path.exists() {
@@ -628,5 +758,34 @@ mod tests {
         assert!(json.contains("\"minimap\":false"));
         let back: AppConfig = serde_json::from_str(&json).expect("反序列化");
         assert!(!back.layout.minimap);
+    }
+
+    /// 主题目录扫描：只收 .json、文件名白名单、空文件跳过、按名字排序
+    #[test]
+    fn collect_theme_files_filters_and_sorts() {
+        let dir = std::env::temp_dir().join(format!("my-editor-themes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("建临时目录");
+        fs::write(dir.join("b.json"), SAMPLE_THEME).expect("写 b");
+        fs::write(dir.join("a.json"), "{\"syntax\":{\"keyword\":\"#fff\"}}").expect("写 a");
+        fs::write(dir.join("empty.json"), "").expect("写空文件");
+        fs::write(dir.join("note.txt"), "x").expect("写非 json");
+        fs::write(dir.join("bad name.json"), "{}").expect("写带空格的文件名");
+
+        let files = collect_theme_files(&dir);
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        // empty.json 大小为 0 被跳过；note.txt 非 json；带空格名不在白名单
+        assert_eq!(names, vec!["a", "b"]);
+        assert!(files.iter().all(|f| !f.content.is_empty()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 目录不存在 = 没有自定义主题，不应报错
+    #[test]
+    fn collect_theme_files_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join("my-editor-themes-does-not-exist");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(collect_theme_files(&dir).is_empty());
     }
 }

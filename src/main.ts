@@ -51,11 +51,15 @@ import {
 import { cleanupDrafts, loadSession } from "./services/session";
 import {
   settings,
+  findUserTheme,
   getConfig,
   loadSettings,
+  setUserThemes,
   subscribeSettings,
   updateSettings,
 } from "./config/settings";
+import { customThemeName } from "./config/userThemes";
+import { loadUserThemes } from "./services/themes";
 import { openStatusMenu } from "./ui/statusMenu";
 import { initBusy, withBusy } from "./ui/busy";
 import { NoticePanel } from "./panels/noticePanel";
@@ -1523,6 +1527,22 @@ window.addEventListener(
 async function bootstrap(): Promise<void> {
   // 1) 载入配置：编辑器扩展与语言映射依赖它（订阅回调会热更新编辑器 + 应用主题/状态栏）
   await loadSettings();
+  // 1.1) 自定义主题文件：必须在首次渲染前载入，否则 config.json 里的 custom:xxx
+  //      会先按深色画一帧再跳变。坏文件不阻塞启动，只汇总提示一次。
+  const themeReport = await loadUserThemes();
+  setUserThemes(themeReport.themes);
+  if (themeReport.errors.length > 0) {
+    statusBar.showMessage(
+      `自定义主题有 ${themeReport.errors.length} 个问题：${themeReport.errors[0]}`,
+    );
+    themeReport.errors.forEach((e) => console.warn("[theme]", e));
+  }
+  const configuredTheme = customThemeName(getConfig().editorTheme);
+  if (configuredTheme && !findUserTheme(configuredTheme)) {
+    statusBar.showMessage(
+      `自定义主题「${configuredTheme}」的文件未找到，已按深色渲染；放回 themes 目录或重新选择即可`,
+    );
+  }
   // 2) 布局项：侧栏显隐按 config.layout 恢复
   layout.applyConfiguredSidebar();
   // 2.1) 侧栏布局（展开组合 / 分区高度 / 底部固定）按配置恢复

@@ -4292,6 +4292,28 @@ button.danger:hover {
   padding: 6px 0;
 }
 
+/* 设置项里的次级动作（打开目录 / 重新读取等） */
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+
+.settings-action-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.settings-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* 快捷键页 */
 .settings-kb-head {
   display: flex;

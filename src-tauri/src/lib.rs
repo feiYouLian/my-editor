@@ -79,6 +79,8 @@ pub fn run() {
             commands::config::save_config,
             commands::config::config_path,
             commands::config::reveal_config_dir,
+            commands::config::list_user_themes,
+            commands::config::open_user_themes_dir,
             commands::startup::frontend_ready,
             commands::format::run_cli_formatter,
             commands::diff::diff_texts,

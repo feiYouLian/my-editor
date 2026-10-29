@@ -20,7 +20,7 @@ const GROUPS: Group[] = [
     title: "编辑器",
     fields: [
       { key: "theme", meaning: "应用主题：dark / light / high-contrast / system（设置中心切换）", effect: "即时" },
-      { key: "editorTheme", meaning: "编辑器语法主题：dark / light / high-contrast（独立于应用主题）", effect: "即时" },
+      { key: "editorTheme", meaning: '编辑器语法主题：dark / light / high-contrast，或 "custom:<名字>" 指向配置目录 themes/<名字>.json（独立于应用主题）', effect: "即时" },
       { key: "tabSize", meaning: "缩进宽度（空格数）", effect: "即时" },
       { key: "insertSpaces", meaning: "Tab 键插入空格（false 时插入制表符）", effect: "即时" },
       { key: "formatOnSave", meaning: "保存时自动格式化（大文件自动跳过）", effect: "即时" },

@@ -8,7 +8,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { getConfig, loadSettings, settings, type AppConfig } from "../config/settings";
+import {
+  getConfig,
+  loadSettings,
+  setUserThemes,
+  settings,
+  type AppConfig,
+} from "../config/settings";
+import { loadUserThemes } from "../services/themes";
 import { tabStore, type Tab } from "../store/tabs";
 import { pushRecentFile } from "../panels/recentFiles";
 import { showConfigReloaded } from "../ui/settingsHelp";
@@ -451,8 +458,16 @@ export class FileService {
           await this.writeTo(tab, cfgPath);
         }
       }
+      // 主题文件先于配置载入：config.json 里的 custom:xxx 要在 applySettings 前可解析，
+      // 否则重载配置会先把编辑器刷回深色再跳回自定义主题
+      const themeReport = await loadUserThemes();
+      setUserThemes(themeReport.themes);
       const cfg = await loadSettings();
-      showMessage("配置已重新加载");
+      showMessage(
+        themeReport.errors.length > 0
+          ? `配置已重新加载；${themeReport.errors.length} 个主题文件有问题：${themeReport.errors[0]}`
+          : `配置已重新加载（自定义主题 ${themeReport.themes.length} 个）`,
+      );
       showConfigReloaded(cfgPath ?? "（未能获取配置路径）", configSummary(cfg));
     } catch (e) {
       showMessage(`重新加载配置失败: ${String(e).split("\n")[0]}`);

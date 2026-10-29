@@ -1,9 +1,16 @@
 import { oneDark } from "@codemirror/theme-one-dark";
 import { EditorView } from "@codemirror/view";
-import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { defaultHighlightStyle, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
+import { tags as t, type Tag } from "@lezer/highlight";
 
-import type { EditorThemeSetting } from "../config/settings";
+import { findUserTheme, type EditorThemeSetting } from "../config/settings";
+import {
+  customThemeName,
+  SYNTAX_KEYS,
+  type SyntaxKey,
+  type UserTheme,
+} from "../config/userThemes";
 
 /**
  * 编辑器主题工厂：按主题类别与字号组装编辑器扩展。
@@ -87,15 +94,84 @@ function baseLayout(fontSize: number): Extension {
   });
 }
 
+/** 配色键名 → @lezer/highlight 的 tag（与 config/userThemes.ts 的 SYNTAX_KEYS 一一对应） */
+const SYNTAX_TAGS: Record<SyntaxKey, Tag> = {
+  keyword: t.keyword,
+  string: t.string,
+  number: t.number,
+  comment: t.comment,
+  variableName: t.variableName,
+  function: t.function(t.variableName),
+  typeName: t.typeName,
+  propertyName: t.propertyName,
+  operator: t.operator,
+  bracket: t.bracket,
+  tagName: t.tagName,
+  attributeName: t.attributeName,
+  heading: t.heading,
+  link: t.link,
+  invalid: t.invalid,
+};
+
+/**
+ * 自定义主题（themes/<名字>.json）→ 编辑器扩展。
+ * ui 省略的项沿用该主题 dark 标记决定的兜底色，不继承上一个主题（切主题不该藕断丝连）。
+ */
+export function customThemeExtensions(theme: UserTheme, fontSize: number): Extension[] {
+  const ui = theme.ui;
+  const fallbackText = theme.dark ? "#e6e6e6" : "#1f2328";
+  const fallbackBack = theme.dark ? "#1e1e2e" : "#ffffff";
+  const fallbackGutter = theme.dark ? "#181818" : "#f6f8fa";
+  const text = ui.foreground ?? fallbackText;
+  const back = ui.background ?? fallbackBack;
+  const exts: Extension[] = [
+    EditorView.theme(
+      {
+        "&": { color: text, backgroundColor: back },
+        ".cm-content": { caretColor: ui.caret ?? text },
+        ".cm-gutters": {
+          backgroundColor: ui.gutterBackground ?? fallbackGutter,
+          color: ui.gutterForeground ?? (theme.dark ? "#8a8a8a" : "#8c959f"),
+          borderRight: "1px solid var(--border)",
+        },
+        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
+          backgroundColor: ui.selection ?? (theme.dark ? "#264f78" : "#cce5ff"),
+        },
+        ".cm-activeLine": { backgroundColor: ui.activeLine ?? "transparent" },
+        ".cm-activeLineGutter": { backgroundColor: ui.activeLine ?? "transparent" },
+      },
+      { dark: theme.dark },
+    ),
+    baseLayout(fontSize),
+  ];
+
+  const specs = SYNTAX_KEYS.filter((key) => theme.syntax[key]).map((key) => ({
+    tag: SYNTAX_TAGS[key],
+    color: theme.syntax[key] as string,
+  }));
+  exts.push(
+    specs.length > 0
+      ? syntaxHighlighting(HighlightStyle.define(specs))
+      : syntaxHighlighting(defaultHighlightStyle),
+  );
+  return exts;
+}
+
 /** 按语法主题类型生成编辑器扩展。
  *  顺序即 CM6 扩展优先级（靠前者高）：结构底在最前，确保背景/选区色覆盖语法主题。 */
 export function editorThemeFor(kind: EditorThemeSetting, fontSize: number): Extension[] {
-  switch (kind) {
-    case "light":
-      return [lightBase, baseLayout(fontSize), syntaxHighlighting(defaultHighlightStyle)];
-    case "high-contrast":
-      return [highContrastBase, baseLayout(fontSize), oneDark];
-    default:
-      return [baseLayout(fontSize), oneDark];
+  if (kind === "light") {
+    return [lightBase, baseLayout(fontSize), syntaxHighlighting(defaultHighlightStyle)];
   }
+  if (kind === "high-contrast") {
+    return [highContrastBase, baseLayout(fontSize), oneDark];
+  }
+  const customName = customThemeName(kind);
+  if (customName) {
+    const theme = findUserTheme(customName);
+    // 主题文件被删 / 改名：回退深色渲染，但**不复位配置值**——
+    // 文件放回来后无需再设置一次；缺失原因在启动与设置页各自提示。
+    if (theme) return customThemeExtensions(theme, fontSize);
+  }
+  return [baseLayout(fontSize), oneDark];
 }
