@@ -504,7 +504,8 @@ tabStore.subscribe((kind) => {
   tabsBarView.render();
   openEditors.refresh();
   welcomeView?.setVisible(tabStore.list().length === 0);
-  if (sidebarViews.view === "outline") sidebarOutline.scheduleRefresh();
+  // 用"是否展开"而不是"最后激活"：多分区同时展开时，大纲不会因为没被最后点过就不刷新
+  if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
   breadcrumbView.render();
   statusBar.refresh();
   // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
@@ -656,6 +657,11 @@ const sidebarOutline = new OutlineView($("sidebar-outline"), {
   isAvailable: () => {
     const tab = activeTab();
     return !!tab && tab.kind === "text" && !tab.virtual;
+  },
+  // 编辑器里还是上一个标签的文档时先别刷（见 OutlineDeps.isDocReady）
+  isDocReady: () => {
+    const tab = activeTab();
+    return !!tab && editorHandle.docId() === tab.id;
   },
 });
 /** 复制文本到剪贴板（打开的文件 / 源代码管理右键共用） */
@@ -848,7 +854,7 @@ editorHandle = createEditor($("editor"), {
     resultsPanel?.scheduleRefresh();
     // 未保存内容防抖写入草稿（配置关闭时不写）
     if (t) sessionHost.scheduleDraftSave(t);
-    if (sidebarViews.view === "outline") sidebarOutline.scheduleRefresh();
+    if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
   },
   onCursorChange: ({ line, col, totalLines, selectedChars }) => {
     statusCursor.textContent =
@@ -862,12 +868,17 @@ editorHandle = createEditor($("editor"), {
       // 只标记，不写盘：切标签 / 隐藏 / 定时器兜底时再落会话
       sessionHost.setCursor(tab.id, { line, col });
       // 大纲跟随光标（只在侧栏确实显示大纲时更新，否则纯属浪费）
-      if (sidebarViews.view === "outline") sidebarOutline.followCursor(line);
+      if (sidebarViews.isExpanded("outline")) sidebarOutline.followCursor(line);
     }
   },
   onHighlightDisabled: (reason) => {
     console.info(`[editor] 高亮已禁用: ${reason}`);
     statusLanguage.textContent = "纯文本（高亮已禁用）";
+  },
+  // 文档真正切到位（setState + 语言已就位）后再刷大纲：
+  // setState 不触发 onDocChange，只靠 200ms 防抖会在文档还没载入时按旧文档渲染
+  onDocLoaded: () => {
+    if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
   },
   onUndoHistoryLost: () => {
     // 每个文档只触发一次；说明原因，否则「Ctrl+Z 没反应」会被当成 bug

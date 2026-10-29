@@ -67,6 +67,12 @@ export interface EditorCallbacks {
    * 首次打开一个文件不算丢失，不能每次都弹。
    */
   onUndoHistoryLost?: () => void;
+  /**
+   * 文档真正切换完成（setState / 语言已就位）。
+   * `setState` 不触发 updateListener，所以大纲这类"从当前文档派生"的视图必须靠它刷新，
+   * 否则切标签后会拿旧文档渲染（行号全错），或停留在上一个标签的状态。
+   */
+  onDocLoaded?: () => void;
 }
 
 export interface EditorHandle {
@@ -409,6 +415,8 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       }
       // 快速连点标签时，晚到的载入不要覆盖当前标签的状态栏光标
       if (activeDocKey === key) notifyCursor(view.state);
+      // 文档已真正就位：通知派生视图（大纲等）刷新
+      if (activeDocKey === key) callbacks.onDocLoaded?.();
     } finally {
       loadingDepth--;
     }

@@ -9,6 +9,7 @@
 
 import { syntaxTree } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
+import { parseMarkdownHeading } from "../core/outlineText";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 interface OutlineItem {
@@ -22,8 +23,14 @@ export interface OutlineDeps {
   getView: () => EditorView;
   /** 当前生效语言（markdown 走标题正则，其余走语法树） */
   getLanguage: () => string | null;
-  /** 当前标签是否可用（大文件虚拟视图 / 图片没有大纲） */
+  /** 当前标签是否支持大纲（大文件虚拟视图 / 图片没有大纲） */
   isAvailable: () => boolean;
+  /**
+   * 编辑器里装的是不是当前标签的文档。
+   * 切标签瞬间 `setState` 还没发生：此时既不能按旧文档渲染，也不能报"不支持"，
+   * 只能先保持现状，等 `onDocLoaded` 再刷。
+   */
+  isDocReady?: () => boolean;
 }
 
 const MAX_ITEMS = 500;
@@ -80,9 +87,12 @@ export class OutlineView {
   refresh(): void {
     if (!this.deps.isAvailable()) {
       this.countEl.textContent = "";
-      this.renderEmpty("当前标签不支持大纲（大文件只读视图 / 图片 / 未打开文件）");
+      this.renderEmpty("当前标签不支持大纲（未打开文件 / 图片 / 大文件只读视图）");
       return;
     }
+    // 文档还没切到当前标签（切标签瞬间）：保持现状，等 onDocLoaded 再刷。
+    // 不能在这里报"不支持"——那会在每次切标签时闪一条误报。
+    if (this.deps.isDocReady && !this.deps.isDocReady()) return;
     const view = this.deps.getView();
     if (view.state.doc.length === 0) {
       this.countEl.textContent = "";
@@ -189,13 +199,14 @@ export class OutlineView {
     const doc = view.state.doc;
     for (let i = 1; i <= doc.lines && items.length < MAX_ITEMS; i++) {
       const line = doc.line(i);
-      const m = /^(#{1,6})\s+(.+)$/.exec(line.text);
-      if (!m) continue;
+      // 行级解析抽到 core/outlineText.ts（纯函数，有单测）
+      const heading = parseMarkdownHeading(line.text);
+      if (!heading) continue;
       items.push({
-        label: m[2].trim().slice(0, 120),
+        label: heading.label,
         line: i,
         pos: line.from,
-        depth: m[1].length - 1,
+        depth: heading.depth,
       });
     }
     return items;

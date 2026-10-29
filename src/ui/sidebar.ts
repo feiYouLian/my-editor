@@ -249,6 +249,16 @@ export class SidebarViews {
     return this.lastActive;
   }
 
+  /**
+   * 某分区当前是否展开。
+   * 多个分区可以同时展开，"要不要跟着标签变化刷新"必须用它判断：
+   * 只看 `view`（最后点击的那个）会让"大纲已展开但不是最后点的"永远不刷新——
+   * 表现为标题一直停在「当前标签不支持大纲」或上一个文档的条目。
+   */
+  isExpanded(view: SidebarView): boolean {
+    return this.expanded.has(view);
+  }
+
   /** 命令 / 快捷键：展开指定分区并记录为当前分区（不收起其他分区） */
   switch(view: SidebarView): void {
     this.lastActive = view;
