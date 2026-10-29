@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用问题 / 怎么用
+    url: https://github.com/feiYouLian/my-editor/blob/master/docs/USER-GUIDE.md
+    about: 五分钟上手、界面导览、常见工作流、设置项含义都在用户手册里
+  - name: 常见问题（乱码 / 外部修改 / 草稿恢复 / 大文件 / Git 认证）
+    url: https://github.com/feiYouLian/my-editor/blob/master/docs/FAQ.md
+    about: 提交前先查 FAQ，多数「是不是有 bug」在这里有答案

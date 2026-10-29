@@ -1,0 +1,85 @@
+name: 缺陷报告
+description: 有东西坏了 / 行为与文档不一致
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先看 [`docs/FAQ.md`](https://github.com/feiYouLian/my-editor/blob/master/docs/FAQ.md)，
+        以及 [`README.md` 的「已知取舍」](https://github.com/feiYouLian/my-editor/blob/master/README.md#已知取舍)——
+        没有 LSP / 插件 / 调试器 / 多语言界面是有意为之，不算缺陷。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 设置 → 关于 里可见，或配置目录下 `startup.json` 的 `version` 字段
+      placeholder: "0.4.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 系统
+      placeholder: "Windows 11 23H2 x64"
+    validations:
+      required: true
+
+  - type: input
+    id: install
+    attributes:
+      label: 安装方式
+      placeholder: "NSIS .exe / MSI / 自己构建（npm run tauri build）"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 越具体越好。涉及文件时说明类型与大致大小（例如「24 MB 的 .log」「GBK 编码的 .properties」）
+      placeholder: |
+        1. 打开 xxx
+        2. 按 Ctrl+...
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 有弹窗的话，用弹窗里的「复制详细信息」贴全文；有状态栏提示请照抄原文
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducible
+    attributes:
+      label: 能稳定复现吗
+      options:
+        - 每次都能
+        - 偶尔（大约几次一次）
+        - 只遇到过一次
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: |
+        有帮助的内容：
+        - 「视图 → 最近消息…」里相关的消息
+        - 是否可撤销（Ctrl+Z）恢复
+        - 是否涉及外部修改文件 / Git 操作 / 大文件
+    validations:
+      required: false

@@ -1,0 +1,58 @@
+name: 功能建议
+description: 希望增加或改进某个能力
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前请先看 [`README.md` 的「已知取舍」](https://github.com/feiYouLian/my-editor/blob/master/README.md#已知取舍)。
+
+        本项目有两条明确红线，触碰的建议大概率不会被采纳：
+
+        1. **不为了功能牺牲「包体小、启动快」**——新增能力优先复用已有依赖或懒加载；
+           LSP、插件市场、调试器、远程开发这类"必然变重"的能力默认不做。
+        2. **现有快捷键的功能不改**——新能力只能用空闲键位，且必须是可重绑项。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的是什么问题
+      description: 描述场景，不要只写"希望加一个 xxx 功能"
+      placeholder: "改一个 200 MB 的日志时，我想 ..., 现在只能 ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的做法
+      description: 入口在哪、按键是什么、失败时给什么提示——越具体越好
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 现在怎么凑合
+      description: 知道替代办法能帮助判断优先级（例如"用工作区搜索的关键词筛选")
+    validations:
+      required: false
+
+  - type: dropdown
+    id: cost
+    attributes:
+      label: 你能接受多大的代价
+      description: 用来判断是否越过轻量红线
+      options:
+        - 不增加包体 / 内存（纯交互或文档改进）
+        - 增加少量（< 1 MB 安装包，可懒加载）
+        - 明显变重也可以（要说明为什么值得）
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: 参与
+      options:
+        - label: 我愿意提 PR（见 CONTRIBUTING.md）
