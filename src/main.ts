@@ -38,6 +38,7 @@ import { WindowChrome } from "./app/windowChrome";
 import { DropHost } from "./app/dropHost";
 import { StatusActions } from "./app/statusActions";
 import { FormatHost } from "./app/formatHost";
+import { SymbolHost } from "./app/symbolHost";
 import { buildEditorMenu } from "./app/menuContent";
 import { buildCommandTable } from "./app/commandTable";
 import { GitHost } from "./app/gitHost";
@@ -934,6 +935,15 @@ const formatHost = new FormatHost({
   refreshStatus: () => statusBar.refresh(),
 });
 
+// 符号定位（F12 转到定义）：文本级，复用工作区搜索的遍历（不是 LSP）
+const symbolHost = new SymbolHost({
+  getView: () => editorHandle.view,
+  getWorkspaceRoot: () => workspaceRoot,
+  getIgnoreDirs: () => getConfig().ignoreDirs,
+  openAt: (path, line) => openFileAt(path, line),
+  showMessage: statusBar.showMessage,
+});
+
 // ---- 按文件记忆编码（F1）----
 // 只在自动检测置信度低时采用上次的选择；写回做 800ms 防抖，避免连续开文件时抖配置
 const ENCODING_MEMORY_DEBOUNCE_MS = 800;
@@ -1340,6 +1350,7 @@ registerCommands(
     tabSwitcher,
     formatHost,
     statusActions,
+    symbolHost,
     statusBar,
     getActiveTab: activeTab,
     getView: () => editorHandle.view,

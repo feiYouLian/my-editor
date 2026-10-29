@@ -36,6 +36,7 @@ import type { DiffService } from "./diffService";
 import type { RunHost } from "./runHost";
 import type { FormatHost } from "./formatHost";
 import type { StatusActions } from "./statusActions";
+import type { SymbolHost } from "./symbolHost";
 
 export interface CommandTableCtx {
   fileService: FileService;
@@ -55,6 +56,7 @@ export interface CommandTableCtx {
   tabSwitcher: { switchTab(delta: number): void };
   formatHost: FormatHost;
   statusActions: StatusActions;
+  symbolHost: SymbolHost;
   statusBar: { showMessage(text: string): void; toggleWhitespace(): void };
   getActiveTab: () => Tab | null;
   getView: () => EditorView;
@@ -95,6 +97,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     tabSwitcher,
     formatHost,
     statusActions,
+    symbolHost,
     getActiveTab,
     getView,
     openSettings,
@@ -236,6 +239,8 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(getView()) },
     { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(getView(), 1) },
     { id: "search.prevBookmark", title: "上一个书签（Shift+F2）", section: "查找", defaultKey: "Shift-F2", fixed: true, menu: "go", menuLabel: "上一个书签", menuOrder: 20, hidden: true, run: () => gotoBookmark(getView(), -1) },
+    // 转到定义：文本级定位（复用工作区搜索的遍历，不是 LSP）。F12 此前空闲，可重绑。
+    { id: "go.definition", title: "转到定义（工作区文本定位）", section: "查找", defaultKey: "F12", menu: "go", menuLabel: "转到定义（文本级）", menuOrder: 5, run: () => void symbolHost.jumpToDefinition() },
     // ---- 查找 / 替换（CM6 面板；仅菜单与快捷键，不进命令面板）----
     { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", menu: "edit", menuLabel: "查找…", menuOrder: 60, menuSeparatorBefore: true, hidden: true, run: () => {
         // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，故全局兜底放行

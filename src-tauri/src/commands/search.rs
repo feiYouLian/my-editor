@@ -833,6 +833,190 @@ pub async fn cleanup_replace_history(
     .map_err(|e| format!("任务失败: {e}"))?
 }
 
+// ---------------------------------------------------------------------------
+// 符号定位（F12「转到定义」）：文本级，不是 LSP
+//
+// 复用工作区搜索的遍历器与体积 / 二进制限制，只做「定义行」的启发式识别。
+// 明确取舍：**没有类型解析**，因此重载、宏生成、动态语言的同名不同义都会不准；
+// 换来的是零新依赖、无索引、无常驻内存，且对「单人维护的中小项目」足够用。
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Debug)]
+pub struct SymbolHit {
+    pub path: String,
+    pub relative: String,
+    pub line: u32,
+    pub col: u32,
+    /// 定义种类（fn / class / method …）；空串表示只是引用
+    pub kind: String,
+    /// 该行预览（去掉首尾空白，超长截断）
+    pub text: String,
+}
+
+/// 各语言里出现在标识符前面的「定义关键字」
+const SYMBOL_KEYWORDS: &[&str] = &[
+    "fn", "def", "function", "func", "class", "struct", "interface", "enum", "trait", "protocol",
+    "module", "namespace", "impl", "type", "record", "union", "object", "macro",
+];
+
+/// 修饰符：用于把 `public void foo(` 这类没有关键字的方法识别成 method
+const SYMBOL_MODIFIERS: &[&str] = &[
+    "public",
+    "private",
+    "protected",
+    "internal",
+    "static",
+    "final",
+    "abstract",
+    "async",
+    "export",
+    "pub",
+    "extern",
+    "inline",
+    "override",
+    "synchronized",
+    "default",
+    "void",
+];
+
+/// 从匹配点判断是不是定义并给出种类。
+/// `prefix` 是行内匹配点之前的文本，`rest` 是匹配点之后的文本。
+fn definition_kind(prefix: &str, rest: &str) -> Option<&'static str> {
+    let last = prefix
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .next_back()?;
+    if let Some(kind) = SYMBOL_KEYWORDS
+        .iter()
+        .find(|k| k.eq_ignore_ascii_case(last))
+    {
+        return Some(*kind);
+    }
+    // 形如 `public void foo(`：无关键字但有修饰符 + 后面紧跟左括号
+    let rest = rest.trim_start();
+    if !rest.starts_with('(') || prefix.contains('=') {
+        return None;
+    }
+    if !last.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+        return None;
+    }
+    let has_modifier = prefix
+        .split_whitespace()
+        .any(|t| SYMBOL_MODIFIERS.iter().any(|m| m.eq_ignore_ascii_case(t)));
+    if has_modifier {
+        Some("method")
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+pub async fn find_symbols(
+    root: String,
+    word: String,
+    ignore_dirs: Vec<String>,
+    max_hits: usize,
+) -> Result<Vec<SymbolHit>, String> {
+    let word = word.trim().to_string();
+    let valid = !word.is_empty()
+        && word.chars().count() <= 80
+        && word
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '#' | '@' | '-' | '?' | '!'));
+    if !valid {
+        return Err("只能对标识符做符号定位（字母 / 数字 / _ $ # @ - ? !）".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        find_symbols_blocking(&root, &word, &ignore_dirs, max_hits.clamp(1, 200))
+    })
+    .await
+    .map_err(|e| format!("符号定位任务失败: {e}"))?
+}
+
+fn find_symbols_blocking(
+    root: &str,
+    word: &str,
+    ignore_dirs: &[String],
+    max_hits: usize,
+) -> Result<Vec<SymbolHit>, String> {
+    let root_path = PathBuf::from(root);
+    if !root_path.is_dir() {
+        return Err("工作区目录不存在".to_string());
+    }
+    let matcher = regex::Regex::new(&format!(r"\b{}\b", regex::escape(word)))
+        .map_err(|e| format!("正则构建失败: {e}"))?;
+    let needle = word.as_bytes();
+
+    let mut defs: Vec<SymbolHit> = Vec::new();
+    // 一个定义都没有时退回引用列表，让 F12 至少能把人送到现场
+    let mut refs: Vec<SymbolHit> = Vec::new();
+    let ref_cap = max_hits.saturating_mul(2).max(20);
+
+    'files: for result in walker(&root_path, ignore_dirs) {
+        let Ok(entry) = result else { continue };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
+        if meta.len() > MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+            continue;
+        }
+        if memchr::memmem::find(&bytes, needle).is_none() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        for (idx, line) in text.lines().enumerate() {
+            if !line.contains(word) {
+                continue;
+            }
+            let Some(m) = matcher.find(line) else { continue };
+            let hit = SymbolHit {
+                path: path.to_string_lossy().to_string(),
+                relative: relative_of(&root_path, path),
+                line: (idx + 1) as u32,
+                col: (line[..m.start()].chars().count() + 1) as u32,
+                kind: definition_kind(&line[..m.start()], &line[m.end()..])
+                    .unwrap_or("")
+                    .to_string(),
+                text: line.trim().chars().take(PREVIEW_CHARS).collect(),
+            };
+            if hit.kind.is_empty() {
+                if refs.len() < ref_cap {
+                    refs.push(hit);
+                }
+            } else {
+                defs.push(hit);
+                if defs.len() >= max_hits {
+                    break 'files;
+                }
+            }
+        }
+    }
+
+    let by_position = |a: &SymbolHit, b: &SymbolHit| {
+        a.relative
+            .cmp(&b.relative)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.col.cmp(&b.col))
+    };
+    if !defs.is_empty() {
+        defs.sort_by(by_position);
+        return Ok(defs);
+    }
+    refs.sort_by(by_position);
+    refs.truncate(max_hits);
+    Ok(refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1256,5 +1440,76 @@ mod tests {
         // 快照写回即可还原
         std::fs::write(&file, &snapshot).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "foo\n");
+    }
+
+    /// 定义识别：关键字 / 修饰符 + 左括号 / 普通引用
+    #[test]
+    fn definition_kind_recognizes_common_styles() {
+        assert_eq!(definition_kind("", "fn "), None); // 前缀为空（该行就以名字开头）
+        assert_eq!(definition_kind("pub async fn ", "() {}"), Some("fn"));
+        assert_eq!(definition_kind("    def ", "(self):"), Some("def"));
+        assert_eq!(definition_kind("class ", ":"), Some("class"));
+        assert_eq!(definition_kind("export function ", "()"), Some("function"));
+        assert_eq!(definition_kind("public void ", "() {"), Some("method"));
+        assert_eq!(definition_kind("static int ", "() {"), Some("method"));
+        // 赋值与方法调用不是定义
+        assert_eq!(definition_kind("let x = ", ";"), None);
+        assert_eq!(definition_kind("    ", "("), None);
+        assert_eq!(definition_kind("const a = ", ";"), None);
+    }
+
+    /// 定义优先；没有定义时退回引用（F12 至少能到现场）
+    #[test]
+    fn find_symbols_prefers_definitions() {
+        let dir = temp_dir("symbols_defs");
+        std::fs::write(dir.join("a.py"), "def handler(req):\n    return 1\n").unwrap();
+        std::fs::write(dir.join("b.py"), "handler(req)\nprint(handler)\n").unwrap();
+
+        let hits = find_symbols_blocking(
+            dir.to_str().unwrap(),
+            "handler",
+            &[],
+            50,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1, "有定义时只返回定义");
+        assert_eq!(hits[0].kind, "def");
+        assert_eq!(hits[0].line, 1);
+        assert_eq!(hits[0].col, 5);
+        assert!(hits[0].relative.ends_with("a.py"));
+    }
+
+    #[test]
+    fn find_symbols_falls_back_to_references() {
+        let dir = temp_dir("symbols_refs");
+        std::fs::write(dir.join("b.py"), "x = 1\nprint(handler)\n").unwrap();
+
+        let hits = find_symbols_blocking(dir.to_str().unwrap(), "handler", &[], 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "");
+        assert_eq!(hits[0].line, 2);
+    }
+
+    /// 忽略目录生效，且不把二进制文件当文本扫
+    #[test]
+    fn find_symbols_skips_ignored_dirs_and_binary() {
+        let dir = temp_dir("symbols_skip");
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("node_modules/m.js"), "function handler() {}\n").unwrap();
+        std::fs::write(dir.join("blob.bin"), b"\x00\x01handler\x00").unwrap();
+        std::fs::write(dir.join("c.js"), "function handler() {}\n").unwrap();
+
+        let ignores = vec!["node_modules".to_string()];
+        let hits = find_symbols_blocking(dir.to_str().unwrap(), "handler", &ignores, 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].relative.ends_with("c.js"));
+        assert_eq!(hits[0].kind, "function");
+    }
+
+    /// 工作区不存在时给出可读错误（而不是空结果，让人以为"没找到定义"）
+    #[test]
+    fn find_symbols_rejects_missing_root() {
+        let err = find_symbols_blocking("Z:/definitely-not-here", "x", &[], 10).unwrap_err();
+        assert!(err.contains("不存在"));
     }
 }

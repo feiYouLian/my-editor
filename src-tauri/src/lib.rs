@@ -50,6 +50,7 @@ pub fn run() {
             commands::fs::reveal_in_file_manager,
             commands::search::list_workspace_files,
             commands::search::search_workspace,
+            commands::search::find_symbols,
             commands::search::replace_in_files,
             commands::search::undo_replace,
             commands::search::cleanup_replace_history,
