@@ -1,10 +1,41 @@
 # my-editor · 轻量级定制文本编辑器
 
-设计文档：[`轻量级定制文本编辑器_技术设计文档.md`](./轻量级定制文本编辑器_技术设计文档.md)（v2.9；性能实测基线见 §11.19）；新增域见 [`新增功能_技术设计文档.md`](./新增功能_技术设计文档.md) 与 [`终端与CodeRun增强_技术设计文档.md`](./终端与CodeRun增强_技术设计文档.md)；与 ST3 / VS Code / Notepad++ 的差距盘点、补齐方案、交互打磨、人性化审计与成本取舍见 [`编辑器差距补齐_详细设计文档.md`](./编辑器差距补齐_详细设计文档.md)（v1.8，V1 已实施，实施记录见 §16）；V1 的手工验收清单见 [`验收清单_V1.md`](./验收清单_V1.md)。
+[![release](https://img.shields.io/github/v/release/feiYouLian/my-editor?label=release)](https://github.com/feiYouLian/my-editor/releases)
+[![license](https://img.shields.io/github/license/feiYouLian/my-editor)](./LICENSE)
+![platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6)
+![installer](https://img.shields.io/badge/installer-4.33%20MiB-2ea44f)
+![ui](https://img.shields.io/badge/UI-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red)
+
+**4.33 MiB 安装包 · 48–53 ms 出窗口 · 全中文界面 · 装完即用，不用装插件**
 
 基于 **Tauri 2 + Vite + TypeScript + CodeMirror 6** 的桌面文本编辑器：前端负责编辑与交互，Rust 侧负责文件 IO、编码、大文件索引、Diff、格式化调度、进程运行与文件监听。
 
-面向使用者的操作说明见 [`docs/USER-GUIDE.md`](./docs/USER-GUIDE.md)，常见问题见 [`docs/FAQ.md`](./docs/FAQ.md)。
+定位是 **「Notepad++ 级别的上手成本，远超 Notepad++ 的能力密度」**——面向「看日志 / 改配置 / 跑脚本 / 写 Markdown」这类日常活。它**不是** VS Code 的替代品：没有 LSP（跳定义 / 诊断 / 语义补全）、没有插件体系，且不打算加（见 [已知取舍](#已知取舍)）。
+
+## 下载安装
+
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| Windows x64 | `my-editor_<版本>_x64-setup.exe` | NSIS 安装包，当前用户安装（**推荐**） |
+| Windows x64 | `my-editor_<版本>_x64_en-US.msi` | MSI，适合企业批量部署 |
+
+- **下载**：[GitHub 最新 Release](https://github.com/feiYouLian/my-editor/releases/latest)
+- **镜像 / 源码**：[Gitee](https://gitee.com/feiyoulian/my-editor) · [GitHub](https://github.com/feiYouLian/my-editor)
+- 当前只发布 **Windows** 安装包；安装包未做代码签名，首次运行 SmartScreen 可能提示「未知发布者」。
+- 版本号与变更见 [`CHANGELOG.md`](./CHANGELOG.md)。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/USER-GUIDE.md`](./docs/USER-GUIDE.md) | 操作手册：五分钟上手 / 界面导览 / 常见工作流 / 设置 / 数据位置 / 排障顺序 |
+| [`docs/FAQ.md`](./docs/FAQ.md) | 高频问题（编码乱码、外部修改、草稿恢复、大文件、Git 认证等） |
+| [`docs/MIGRATION.md`](./docs/MIGRATION.md) | 从 VS Code / Sublime Text / Notepad++ 过来**需要改的几处习惯**（只列差异） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 各版本变更 |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | 本地构建、测试基线、提交与 PR 规范 |
+| [`README.en.md`](./README.en.md) | English overview（界面本身仅简体中文） |
+
+设计文档：[`轻量级定制文本编辑器_技术设计文档.md`](./轻量级定制文本编辑器_技术设计文档.md)（v2.9；性能实测基线见 §11.19）；新增域见 [`新增功能_技术设计文档.md`](./新增功能_技术设计文档.md) 与 [`终端与CodeRun增强_技术设计文档.md`](./终端与CodeRun增强_技术设计文档.md)；与 ST3 / VS Code / Notepad++ 的差距盘点、补齐方案、交互打磨、人性化审计与成本取舍见 [`编辑器差距补齐_详细设计文档.md`](./编辑器差距补齐_详细设计文档.md)（v1.8，V1 已实施，实施记录见 §16）；V1 的手工验收清单见 [`验收清单_V1.md`](./验收清单_V1.md)。
 
 ## 功能列表
 
@@ -204,7 +235,7 @@ git push origin HEAD --tags                                # 同步 Gitee 镜像
 npm test                 # 前端单元测试（vitest，30 项）
 npm run build            # 前端类型检查 + 生产构建
 cd src-tauri
-cargo test --lib         # Rust 单元测试（当前 129 项）
+cargo test --lib         # Rust 单元测试（当前 132 项）
 ```
 
 前端测试只覆盖「改坏了不明显」的纯逻辑：命令表数据（id 唯一 / 键位记法合法且互不冲突 / 菜单归属 / fixed 项）、键位记法解析与归一化、消息环形缓冲。E2E（Playwright + tauri-driver）尚未接入，自动化覆盖不到的部分见 [`验收清单_V1.md`](./验收清单_V1.md)（手工验收 + 本轮冒烟清单 §10）。
@@ -402,14 +433,31 @@ scripts/                      # 开发辅助脚本（图标生成、版本号统
 
 ## 已知取舍
 
-- **全局搜索与批量替换已实现**（侧栏搜索视图，含替换历史与一键撤销）；`TODO` 列表尚未实现，可用搜索关键词替代
-- **AI 辅助（B11）与 OCR（B12）** 尚未实现
-- 批量编码转换仍只做非破坏式的「批量另存为编码」；就地改写请用工作区搜索的批量替换（带历史，可撤销）
-- 格式转换本期只做 JSON ↔ YAML、Properties ↔ YAML 与 Java → JSON；JSON ↔ XML / CSV 延期
-- 网页抓取只保存原始 HTML，不下载 / 重写图片、CSS、JS 等子资源；重定向后的最终地址 v1 不再复查（私网默认拦截 + CSP 主防线）
-- 内置终端是任意命令执行入口、非沙箱；终端内命令不受 Code Run 的 30s / 1MB 限制。单会话，不随会话恢复
-- `cmd.exe` 暂不支持「在终端运行」（请使用 PowerShell）；终端主题 ANSI 16 色沿用 xterm 默认
-- E2E 关键路径、macOS / Linux 内存数据待补
+这一节说明**能力边界**：没做的功能以及为什么不做，避免装完才发现。
+
+**没有的能力（不是 bug，是取舍）**
+
+- **没有 LSP**：不能跳定义、没有类型检查与语义补全，改函数名要用工作区搜索的批量替换（带历史，可撤销）
+- **没有插件体系**：语法高亮覆盖 17 种语言 / 格式（部分按需懒加载），但不支持装新语言包与扩展
+- **没有 AI 辅助，没有 OCR**：不引入模型依赖与额外体积
+- **没有调试器**：`F5` 是「直接运行当前文件」，不是断点调试
+- **没有 TODO 列表视图**：用侧栏搜索（`Ctrl+Shift+F`）按关键词筛标题即可
+- **界面只有简体中文**，无多语言切换。README 有英文版，只为方便非中文读者了解项目
+- **只有 Windows 安装包**：macOS / Linux 没有实测数据，也未签名 / 公证
+- **内置终端单会话**：不随会话恢复
+
+**能力受限的地方**
+
+- 批量编码转换只做非破坏式的「批量另存为编码」；就地改写请用工作区搜索的批量替换
+- 格式转换只做 JSON ↔ YAML、Properties ↔ YAML、Java → JSON；JSON ↔ XML / CSV 延期
+- 网页抓取只保存原始 HTML，不下载 / 重写图片、CSS、JS 等子资源；重定向后的最终地址不再复查（私网默认拦截 + CSP 主防线）
+- 内置终端是任意命令执行入口、非沙箱；终端内命令不受 Code Run 的 30s / 1MB 限制
+- `cmd.exe` 不支持「在终端运行」（请用 PowerShell）；终端 ANSI 16 色沿用 xterm 默认
+- 单侧 4 MB 以上不比较差异、大文件过滤命中上限 5 万条、单行超过 4000 字符会裁剪——都为了不 OOM，触发时会说明原因与替代办法
+
+**工程上待补**
+
+- E2E（Playwright + tauri-driver）关键路径未接入；替代品是 [`验收清单_V1.md`](./验收清单_V1.md) 的人工冒烟清单
 
 ## 许可证
 
