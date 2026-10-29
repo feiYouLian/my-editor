@@ -15,14 +15,14 @@ import {
   settings,
   type AppConfig,
 } from "../config/settings";
-import { loadUserThemes } from "../services/themes";
+import { loadUserThemes, loadUserLanguages } from "../services/userAssets";
 import { tabStore, type Tab } from "../store/tabs";
 import { pushRecentFile } from "../panels/recentFiles";
 import { showConfigReloaded } from "../ui/settingsHelp";
 import { confirmAction } from "../ui/dialogs";
 import { basenameOf } from "../core/paths";
 import { localStamps } from "../core/stamps";
-import { effectiveLanguage } from "../editor/languages";
+import { effectiveLanguage, setUserLanguages } from "../editor/languages";
 import type { LargeFileHost } from "./largeFileHost";
 import type { FileContent, SaveResult } from "../types/app";
 
@@ -458,15 +458,18 @@ export class FileService {
           await this.writeTo(tab, cfgPath);
         }
       }
-      // 主题文件先于配置载入：config.json 里的 custom:xxx 要在 applySettings 前可解析，
-      // 否则重载配置会先把编辑器刷回深色再跳回自定义主题
+      // 主题与语言文件先于配置载入：config.json 里的 custom:xxx 与 languageExtensions
+      // 要在 applySettings / 重开标签时就能解析，否则会先渲染一帧默认样式再跳变
       const themeReport = await loadUserThemes();
       setUserThemes(themeReport.themes);
+      const langReport = await loadUserLanguages();
+      const langErrors = setUserLanguages(langReport.languages);
+      const issues = [...themeReport.errors, ...langReport.errors, ...langErrors];
       const cfg = await loadSettings();
       showMessage(
-        themeReport.errors.length > 0
-          ? `配置已重新加载；${themeReport.errors.length} 个主题文件有问题：${themeReport.errors[0]}`
-          : `配置已重新加载（自定义主题 ${themeReport.themes.length} 个）`,
+        issues.length > 0
+          ? `配置已重新加载；${issues.length} 个资源文件有问题：${issues[0]}`
+          : `配置已重新加载（自定义主题 ${themeReport.themes.length} 个、自定义语言 ${langReport.languages.length} 个）`,
       );
       showConfigReloaded(cfgPath ?? "（未能获取配置路径）", configSummary(cfg));
     } catch (e) {

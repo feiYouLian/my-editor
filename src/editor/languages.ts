@@ -5,6 +5,8 @@ import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
+import { createKeywordLanguage } from "./keywordLanguage";
+import type { UserLanguageSpec } from "../config/userLanguages";
 
 /**
  * 语言注册表：
@@ -48,6 +50,64 @@ const lazy: Record<string, () => Promise<LanguageSupport>> = {
   // cURL：手写轻量流模式（editor/curlLanguage.ts）
   curl: () => import("./curlLanguage").then((m) => m.curlLanguage()),
 };
+
+// ---------------------------------------------------------------------------
+// 用户自定义语言（<配置目录>/languages/*.json，关键字级高亮）
+// 与下面的内置表分开存放：内置表是打包期的常量，用户表是运行期载入态。
+// ---------------------------------------------------------------------------
+
+interface UserLanguageEntry {
+  support: LanguageSupport;
+  extensions: string[];
+  aliases: string[];
+  displayName: string;
+}
+
+const userLanguages = new Map<string, UserLanguageEntry>();
+/** 用户语言贡献的 扩展名 → 语言键；优先级高于内置映射，低于 config 的 languageExtensions */
+const userExtensions: Record<string, string> = {};
+
+/**
+ * 注册用户语言（由 main.ts 在载入配置后调用）。
+ * 返回需要提示的问题：与内置语言重名、扩展名被别的自定义语言占用。
+ * 这两种情况都**不覆盖**既有语言——静默顶掉内置高亮比不做更糟。
+ */
+export function setUserLanguages(specs: UserLanguageSpec[]): string[] {
+  userLanguages.clear();
+  for (const key of Object.keys(userExtensions)) delete userExtensions[key];
+  // 旧的支持对象已失效，缓存一并清空（内置语言下次用到时重新构造，开销可忽略）
+  cache.clear();
+
+  const errors: string[] = [];
+  for (const spec of specs) {
+    if (spec.name in builtins || spec.name in lazy) {
+      errors.push(`语言「${spec.name}」与内置语言同名，已忽略`);
+      continue;
+    }
+    if (userLanguages.has(spec.name)) {
+      errors.push(`语言「${spec.name}」重复定义，已忽略后一个`);
+      continue;
+    }
+    const clash = spec.extensions.filter((ext) => userExtensions[ext] !== undefined);
+    if (clash.length > 0) {
+      errors.push(`语言「${spec.name}」的扩展名 ${clash.join("、")} 已被其它自定义语言占用，已忽略`);
+      continue;
+    }
+    userLanguages.set(spec.name, {
+      support: createKeywordLanguage(spec),
+      extensions: spec.extensions,
+      aliases: spec.aliases,
+      displayName: spec.name,
+    });
+    for (const ext of spec.extensions) userExtensions[ext] = spec.name;
+  }
+  return errors;
+}
+
+/** 已注册的用户自定义语言数（状态提示用） */
+export function userLanguageCount(): number {
+  return userLanguages.size;
+}
 
 /**
  * Markdown 围栏代码块（```lang）的嵌套高亮语言表。
@@ -129,7 +189,7 @@ const codeLanguageTable: {
 
 /** 供 markdown({ codeLanguages }) 使用：围栏代码块按语言名/别名/扩展名匹配 */
 export function markdownCodeLanguages(): LanguageDescription[] {
-  return codeLanguageTable.map((c) =>
+  const builtin = codeLanguageTable.map((c) =>
     LanguageDescription.of({
       name: c.name,
       alias: c.alias,
@@ -137,6 +197,16 @@ export function markdownCodeLanguages(): LanguageDescription[] {
       load: c.load,
     }),
   );
+  // 用户语言已经构造好 LanguageSupport，不需要异步加载
+  const user = [...userLanguages.entries()].map(([key, entry]) =>
+    LanguageDescription.of({
+      name: key,
+      alias: entry.aliases,
+      extensions: entry.extensions,
+      load: async () => entry.support,
+    }),
+  );
+  return [...builtin, ...user];
 }
 
 /** 扩展名 → 语言键（对应 config.json 的 languageExtensions，可被配置覆盖） */
@@ -240,7 +310,24 @@ export function languageKeyFromPath(path: string): string | null {
   // 注意：`.env` 的 dot === 0 是有意的（当扩展名处理），不能改成 dot <= 0
   if (dot < 0) return null;
   const ext = base.slice(dot);
-  return overrides[ext] ?? extensionToLanguage[ext] ?? null;
+  return overrides[ext] ?? userExtensions[ext] ?? extensionToLanguage[ext] ?? null;
+}
+
+/** 语言键 → 展示名（含用户自定义语言） */
+export function languageName(key: string): string {
+  return languageDisplayNames[key] ?? userLanguages.get(key)?.displayName ?? key;
+}
+
+/** 状态栏语言菜单用：全部可手动选择的语言（内置 + 自定义，不含纯文本） */
+export function allLanguageNames(): { key: string; label: string }[] {
+  const builtin = Object.keys(languageDisplayNames)
+    .filter((key) => key !== "plaintext")
+    .map((key) => ({ key, label: languageDisplayNames[key] }));
+  const user = [...userLanguages.entries()].map(([key, entry]) => ({
+    key,
+    label: `${entry.displayName}（自定义）`,
+  }));
+  return [...builtin, ...user];
 }
 
 /**
@@ -261,18 +348,19 @@ export function languageLabel(tab: {
   path: string | null;
 }): string {
   const key = effectiveLanguage(tab);
-  const name = key ? (languageDisplayNames[key] ?? key) : "纯文本";
+  const name = key ? languageName(key) : "纯文本";
   return tab.languageOverride !== undefined ? `${name}（手动）` : name;
 }
 
 const cache = new Map<string, LanguageSupport | null>();
 
-/** 加载语言支持：内置同步、懒加载异步；未知扩展返回 null（纯文本） */
+/** 加载语言支持：内置同步、懒加载异步、用户自定义语言同步；未知扩展返回 null（纯文本） */
 export async function loadLanguage(key: string): Promise<LanguageSupport | null> {
   if (cache.has(key)) return cache.get(key) ?? null;
   let support: LanguageSupport | null = null;
   try {
-    if (key in builtins) support = builtins[key]();
+    if (userLanguages.has(key)) support = userLanguages.get(key)?.support ?? null;
+    else if (key in builtins) support = builtins[key]();
     else if (key in lazy) support = await lazy[key]();
   } catch (err) {
     console.warn(`[languages] 加载语言失败: ${key}`, err);

@@ -11,9 +11,10 @@ import { tabStore, type Tab } from "../store/tabs";
 import { openStatusMenu } from "../ui/statusMenu";
 import { confirmAction } from "../ui/dialogs";
 import {
-  languageDisplayNames,
+  allLanguageNames,
   languageKeyFromPath,
   languageLabel,
+  languageName,
 } from "../editor/languages";
 import type { FileContent } from "../types/app";
 
@@ -127,12 +128,10 @@ export class StatusActions {
       options: [
         {
           value: undefined,
-          label: `自动（${auto ? (languageDisplayNames[auto] ?? auto) : "纯文本"}）`,
+          label: `自动（${auto ? languageName(auto) : "纯文本"}）`,
         },
         { value: null, label: "纯文本" },
-        ...Object.keys(languageDisplayNames)
-          .filter((key) => key !== "plaintext")
-          .map((key) => ({ value: key as string | null, label: languageDisplayNames[key] })),
+        ...allLanguageNames().map(({ key, label }) => ({ value: key as string | null, label })),
       ],
       current: tab.languageOverride,
       tabId: tab.id,

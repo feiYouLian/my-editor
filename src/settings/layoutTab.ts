@@ -4,7 +4,10 @@
 
 import type { ColumnModifier, StatusBarFieldEntry } from "../config/settings";
 import { getConfig } from "../config/settings";
+import { setUserLanguages, userLanguageCount } from "../editor/languages";
+import { loadUserLanguages, openLanguagesDir } from "../services/userAssets";
 import {
+  buttonRow,
   checkRow,
   numberRow,
   radioGroup,
@@ -167,12 +170,61 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
 
   renderStatusFields(main, cfg.layout.statusBarFields);
 
+  const langSection = section(
+    "自定义语言",
+    "在 languages/ 目录放 JSON 即可新增「关键字级」高亮语言（注释 / 字符串 / 数字 / 关键字）；不做语法树，因此没有补全与诊断。",
+  );
+  langSection.body.append(
+    buttonRow("语言文件", [
+      {
+        text: "打开语言目录",
+        title: "在文件管理器中打开 languages 目录（首次会生成一个示例语言）",
+        onClick: () => {
+          void openLanguagesDir()
+            .then((dir) => ctx.callbacks.onMessage(`已打开语言目录：${dir}`))
+            .catch((e: unknown) => {
+              const reason = e instanceof Error ? e.message : String(e);
+              ctx.callbacks.onMessage(`打开语言目录失败：${reason.split("\n")[0]}`);
+            });
+        },
+      },
+      {
+        text: "重新读取语言",
+        title: "改完语言文件后点这里；已打开的标签需在状态栏重选一次语言",
+        onClick: () => void reloadLanguages(ctx),
+      },
+    ]),
+  );
+  const langNote = document.createElement("div");
+  langNote.className = "settings-note";
+  langNote.textContent = `已注册 ${userLanguageCount()} 个自定义语言。新增后新打开的文件自动生效，已打开的标签请在状态栏「语言」里重选。`;
+  langSection.body.append(langNote);
+  main.append(langSection.el);
+
   const reservedSection = section("预留", "以下能力已设计、暂未实现，标记为预留。");
   const note = document.createElement("div");
   note.className = "settings-note";
-  note.textContent = "面板停靠（查找 / 输出 / 预览停靠到右侧或底部）、自定义主题导入：排期 v2。";
+  note.textContent = "面板停靠（查找 / 输出 / 预览停靠到右侧或底部）：排期 v2。";
   reservedSection.body.append(note);
   main.append(reservedSection.el);
+}
+
+/** 语言文件重读：注册新语言 → 重绘设置页 → 反馈结果 */
+async function reloadLanguages(ctx: SettingsTabContext): Promise<void> {
+  const report = await loadUserLanguages();
+  const errors = [...report.errors, ...setUserLanguages(report.languages)];
+  ctx.rerender();
+  if (errors.length > 0) {
+    const more = errors.length > 1 ? `（另有 ${errors.length - 1} 个问题）` : "";
+    ctx.callbacks.onMessage(`语言文件有问题：${errors[0]}${more}`);
+    errors.forEach((e) => console.warn("[language]", e));
+    return;
+  }
+  ctx.callbacks.onMessage(
+    report.languages.length > 0
+      ? `已读取 ${report.languages.length} 个自定义语言（已打开的标签需在状态栏重选一次）`
+      : "语言目录里没有 .json 文件，点「打开语言目录」可生成示例",
+  );
 }
 
 /** 状态栏字段：显隐 + 排序（数组顺序即展示顺序） */

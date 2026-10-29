@@ -81,6 +81,8 @@ pub fn run() {
             commands::config::reveal_config_dir,
             commands::config::list_user_themes,
             commands::config::open_user_themes_dir,
+            commands::config::list_user_languages,
+            commands::config::open_user_languages_dir,
             commands::startup::frontend_ready,
             commands::format::run_cli_formatter,
             commands::diff::diff_texts,

@@ -129,6 +129,34 @@ export function textRow(
   return row;
 }
 
+/**
+ * 一行次级动作按钮（打开目录 / 重新读取之类）。
+ * 做成 .settings-row 是为了让「设置项搜索」能像其它行一样匹配到它。
+ */
+export function buttonRow(
+  label: string,
+  buttons: { text: string; title?: string; onClick: () => void }[],
+): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const labelEl = document.createElement("span");
+  labelEl.className = "settings-row-label";
+  labelEl.textContent = label;
+  const actions = document.createElement("div");
+  actions.className = "settings-actions";
+  for (const btn of buttons) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "settings-action-btn";
+    el.textContent = btn.text;
+    if (btn.title) el.title = btn.title;
+    el.addEventListener("click", btn.onClick);
+    actions.append(el);
+  }
+  row.append(labelEl, actions);
+  return row;
+}
+
 export function selectRow<T extends string>(
   label: string,
   options: { value: T; label: string }[],

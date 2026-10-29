@@ -11,8 +11,8 @@ import {
   type ThemeSetting,
 } from "../config/settings";
 import { customThemeName, themeValue } from "../config/userThemes";
-import { loadUserThemes, openThemesDir } from "../services/themes";
-import { radioGroup, section, selectRow } from "../ui/formControls";
+import { loadUserThemes, openThemesDir } from "../services/userAssets";
+import { buttonRow, radioGroup, section, selectRow } from "../ui/formControls";
 import {
   EDITOR_THEME_OPTIONS,
   saveSettings,
@@ -88,31 +88,23 @@ export function renderTheme(main: HTMLElement, ctx: SettingsTabContext): void {
     }),
   );
 
-  const actions = document.createElement("div");
-  actions.className = "settings-actions";
-  const openBtn = document.createElement("button");
-  openBtn.type = "button";
-  openBtn.className = "settings-action-btn";
-  openBtn.textContent = "打开主题目录";
-  openBtn.title = "在文件管理器中打开 themes 目录（首次会生成一个示例主题）";
-  openBtn.addEventListener("click", () => {
-    void openThemesDir()
-      .then((dir) => ctx.callbacks.onMessage(`已打开主题目录：${dir}`))
-      .catch((e: unknown) => {
-        const reason = e instanceof Error ? e.message : String(e);
-        ctx.callbacks.onMessage(`打开主题目录失败：${reason.split("\n")[0]}`);
-      });
-  });
-  const reloadBtn = document.createElement("button");
-  reloadBtn.type = "button";
-  reloadBtn.className = "settings-action-btn";
-  reloadBtn.textContent = "重新读取主题";
-  reloadBtn.title = "改完主题文件后点这里，无需重启";
-  reloadBtn.addEventListener("click", () => {
-    void reloadThemes(ctx);
-  });
-  actions.append(openBtn, reloadBtn);
-  editorSection.body.append(actions);
+  editorSection.body.append(
+    buttonRow("自定义主题", [
+      {
+        text: "打开主题目录",
+        title: "在文件管理器中打开 themes 目录（首次会生成一个示例主题）",
+        onClick: () => {
+          void openThemesDir()
+            .then((dir) => ctx.callbacks.onMessage(`已打开主题目录：${dir}`))
+            .catch((e: unknown) => {
+              const reason = e instanceof Error ? e.message : String(e);
+              ctx.callbacks.onMessage(`打开主题目录失败：${reason.split("\n")[0]}`);
+            });
+        },
+      },
+      { text: "重新读取主题", title: "改完主题文件后点这里，无需重启", onClick: () => void reloadThemes(ctx) },
+    ]),
+  );
 
   const note = document.createElement("div");
   note.className = "settings-note";

@@ -480,24 +480,24 @@ fn config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 自定义编辑器主题：<配置目录>/themes/*.json
+// 用户可扩展资源：<配置目录>/themes/*.json（配色）与 languages/*.json（语言定义）
 // ---------------------------------------------------------------------------
 
-/// 主题目录里的单个文件：名称取文件名（去扩展名），内容原样交给前端解析。
-/// 不在后端解析配色——键名与 CodeMirror 语法 tag 的映射属于编辑器语义，
-/// 后端只负责把文件读出来（与 formatters 表把工具解析留在后端是相反的分工，
-/// 因为配色不涉及执行、不构成 RCE 面）。
+/// 资源目录里的单个文件：名称取文件名（去扩展名），内容原样交给前端解析。
+/// 不在后端解析内容——配色键名映射到 CodeMirror tag、语言关键字映射到高亮 token，
+/// 都属于编辑器语义；后端只负责把文件读出来。
+/// （与 formatters 表把**工具解析**留在后端是相反的分工：那里涉及执行，构成 RCE 面。）
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UserThemeFile {
+pub struct UserJsonFile {
     pub name: String,
     pub content: String,
 }
 
-/// 目录扫描上限：主题是两三 KB 的色值表，超过这个量说明目录被塞了别的东西
-const MAX_THEME_FILES: usize = 100;
-/// 单文件上限：正常主题 < 4 KB
-const MAX_THEME_BYTES: u64 = 512 * 1024;
+/// 目录扫描上限：这些都是几 KB 的小文件，超过这个量说明目录被塞了别的东西
+const MAX_USER_FILES: usize = 100;
+/// 单文件上限：正常主题 / 语言定义 < 4 KB
+const MAX_USER_FILE_BYTES: u64 = 512 * 1024;
 /// 首次打开主题目录时写入的示例文件名
 const SAMPLE_THEME_FILE: &str = "example-slate.json";
 /// 示例主题：用户照它改比看文档快
@@ -534,27 +534,55 @@ const SAMPLE_THEME: &str = r##"{
 }
 "##;
 
+/// 首次打开语言目录时写入的示例：TOML 是内置高亮里确实没有、但配置场景常用的格式
+const SAMPLE_LANGUAGE_FILE: &str = "example-toml.json";
+const SAMPLE_LANGUAGE: &str = r##"{
+  "extensions": [".toml"],
+  "aliases": ["toml"],
+  "lineComment": "#",
+  "keywords": ["true", "false"],
+  "types": ["string", "integer", "float", "boolean", "datetime", "array", "table"],
+  "quotes": "\"'",
+  "numbers": true,
+  "brackets": "[]{}()",
+  "caseInsensitive": false
+}
+"##;
+
 fn themes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(config_dir(app)?.join("themes"))
 }
 
+fn languages_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(config_dir(app)?.join("languages"))
+}
+
 /// 列出 themes/*.json。目录不存在返回空表（= 没有自定义主题），不是错误。
 #[tauri::command]
-pub async fn list_user_themes(app: tauri::AppHandle) -> Result<Vec<UserThemeFile>, String> {
+pub async fn list_user_themes(app: tauri::AppHandle) -> Result<Vec<UserJsonFile>, String> {
     let dir = themes_dir(&app)?;
     // 重活放阻塞线程：最多 100 次小文件读取，不占 async 主体
-    tauri::async_runtime::spawn_blocking(move || collect_theme_files(&dir))
+    tauri::async_runtime::spawn_blocking(move || collect_json_files(&dir))
         .await
         .map_err(|e| format!("主题读取任务失败: {e}"))
 }
 
-fn collect_theme_files(dir: &Path) -> Vec<UserThemeFile> {
+/// 列出 languages/*.json（同等约束）
+#[tauri::command]
+pub async fn list_user_languages(app: tauri::AppHandle) -> Result<Vec<UserJsonFile>, String> {
+    let dir = languages_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || collect_json_files(&dir))
+        .await
+        .map_err(|e| format!("语言读取任务失败: {e}"))
+}
+
+fn collect_json_files(dir: &Path) -> Vec<UserJsonFile> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for entry in entries.flatten() {
-        if out.len() >= MAX_THEME_FILES {
+        if out.len() >= MAX_USER_FILES {
             break;
         }
         let path = entry.path();
@@ -578,35 +606,46 @@ fn collect_theme_files(dir: &Path) -> Vec<UserThemeFile> {
             continue;
         }
         let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if size == 0 || size > MAX_THEME_BYTES {
-            eprintln!("[theme] 跳过 {}：大小 {size} 字节", path.display());
+        if size == 0 || size > MAX_USER_FILE_BYTES {
+            eprintln!("[user-asset] 跳过 {}：大小 {size} 字节", path.display());
             continue;
         }
         match fs::read_to_string(&path) {
-            Ok(content) => out.push(UserThemeFile {
+            Ok(content) => out.push(UserJsonFile {
                 name: stem.to_string(),
                 content,
             }),
-            Err(e) => eprintln!("[theme] 读取失败 {}: {e}", path.display()),
+            Err(e) => eprintln!("[user-asset] 读取失败 {}: {e}", path.display()),
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
-/// 打开主题目录；目录不存在则创建并写入示例主题（让「自定义主题」有个可改的起点）。
-#[tauri::command]
-pub fn open_user_themes_dir(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = themes_dir(&app)?;
-    fs::create_dir_all(&dir).map_err(|e| format!("创建主题目录失败: {e}"))?;
-    let sample = dir.join(SAMPLE_THEME_FILE);
-    if !sample.exists() {
-        if let Err(e) = fs::write(&sample, SAMPLE_THEME) {
-            eprintln!("[theme] 写入示例主题失败: {e}");
+/// 打开某个用户资源目录；不存在则创建，并写入示例文件（让扩展点有个可改的起点）。
+fn open_user_dir(dir: PathBuf, sample_name: &str, sample: &str) -> Result<String, String> {
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let sample_path = dir.join(sample_name);
+    if !sample_path.exists() {
+        // 几百字节的示例，不值得再开阻塞线程
+        if let Err(e) = fs::write(&sample_path, sample) {
+            eprintln!("[user-asset] 写入示例失败 {}: {e}", sample_path.display());
         }
     }
     crate::commands::fs::reveal_path(&dir, false)?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+/// 打开主题目录（首次写入示例主题）
+#[tauri::command]
+pub fn open_user_themes_dir(app: tauri::AppHandle) -> Result<String, String> {
+    open_user_dir(themes_dir(&app)?, SAMPLE_THEME_FILE, SAMPLE_THEME)
+}
+
+/// 打开语言目录（首次写入示例语言）
+#[tauri::command]
+pub fn open_user_languages_dir(app: tauri::AppHandle) -> Result<String, String> {
+    open_user_dir(languages_dir(&app)?, SAMPLE_LANGUAGE_FILE, SAMPLE_LANGUAGE)
 }
 
 /// 迁移前备份（config.json → config.json.bak），原文件不存在则跳过
@@ -760,9 +799,9 @@ mod tests {
         assert!(!back.layout.minimap);
     }
 
-    /// 主题目录扫描：只收 .json、文件名白名单、空文件跳过、按名字排序
+    /// 资源目录扫描：只收 .json、文件名白名单、空文件跳过、按名字排序
     #[test]
-    fn collect_theme_files_filters_and_sorts() {
+    fn collect_json_files_filters_and_sorts() {
         let dir = std::env::temp_dir().join(format!("my-editor-themes-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("建临时目录");
@@ -772,7 +811,7 @@ mod tests {
         fs::write(dir.join("note.txt"), "x").expect("写非 json");
         fs::write(dir.join("bad name.json"), "{}").expect("写带空格的文件名");
 
-        let files = collect_theme_files(&dir);
+        let files = collect_json_files(&dir);
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
         // empty.json 大小为 0 被跳过；note.txt 非 json；带空格名不在白名单
         assert_eq!(names, vec!["a", "b"]);
@@ -781,11 +820,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// 目录不存在 = 没有自定义主题，不应报错
+    /// 目录不存在 = 没有自定义资源，不应报错
     #[test]
-    fn collect_theme_files_missing_dir_is_empty() {
-        let dir = std::env::temp_dir().join("my-editor-themes-does-not-exist");
+    fn collect_json_files_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join("my-editor-assets-does-not-exist");
         let _ = fs::remove_dir_all(&dir);
-        assert!(collect_theme_files(&dir).is_empty());
+        assert!(collect_json_files(&dir).is_empty());
+    }
+
+    /// 示例资源必须是合法 JSON（防 r##"..."## 提前终止那类问题再次发生）
+    #[test]
+    fn sample_assets_are_valid_json() {
+        let theme: serde_json::Value = serde_json::from_str(SAMPLE_THEME).expect("示例主题");
+        assert!(theme.get("syntax").is_some(), "示例主题缺 syntax");
+        let lang: serde_json::Value = serde_json::from_str(SAMPLE_LANGUAGE).expect("示例语言");
+        assert!(lang.get("extensions").is_some(), "示例语言缺 extensions");
     }
 }

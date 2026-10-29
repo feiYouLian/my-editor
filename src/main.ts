@@ -59,7 +59,7 @@ import {
   updateSettings,
 } from "./config/settings";
 import { customThemeName } from "./config/userThemes";
-import { loadUserThemes } from "./services/themes";
+import { loadUserLanguages, loadUserThemes } from "./services/userAssets";
 import { openStatusMenu } from "./ui/statusMenu";
 import { initBusy, withBusy } from "./ui/busy";
 import { NoticePanel } from "./panels/noticePanel";
@@ -82,7 +82,7 @@ import {
 import type { SettingsPanel } from "./panels/settingsPanel";
 import { basenameOf } from "./core/paths";
 import { ensureFinalNewline, trimTrailing } from "./core/textOps";
-import { effectiveLanguage, languageLabel } from "./editor/languages";
+import { effectiveLanguage, languageLabel, setUserLanguages } from "./editor/languages";
 
 // ---------------------------------------------------------------------------
 // 多标签页 + 文件树/工作区 + 命令面板 + Prettier 格式化
@@ -1542,6 +1542,14 @@ async function bootstrap(): Promise<void> {
     statusBar.showMessage(
       `自定义主题「${configuredTheme}」的文件未找到，已按深色渲染；放回 themes 目录或重新选择即可`,
     );
+  }
+  // 1.2) 自定义语言：必须在会话恢复（打开标签 → 按扩展名选语言）之前注册
+  const langReport = await loadUserLanguages();
+  const langErrors = setUserLanguages(langReport.languages);
+  const langIssues = [...langReport.errors, ...langErrors];
+  if (langIssues.length > 0) {
+    statusBar.showMessage(`自定义语言有 ${langIssues.length} 个问题：${langIssues[0]}`);
+    langIssues.forEach((e) => console.warn("[language]", e));
   }
   // 2) 布局项：侧栏显隐按 config.layout 恢复
   layout.applyConfiguredSidebar();
