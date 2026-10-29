@@ -3,7 +3,7 @@
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)，安装包见 [GitHub Releases](https://github.com/feiYouLian/my-editor/releases)。
 本文件按 tag 区间从提交历史归档，条目面向使用者描述；内部实现细节见 `.doc/` 下的评审记录。
 
-## [未发布]
+## [0.5.1] - 2026-10-29
 
 ### 修复
 

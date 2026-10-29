@@ -1,6 +1,6 @@
 [package]
 name = "my-editor"
-version = "0.5.0"
+version = "0.5.1"
 description = "轻量级定制文本编辑器"
 edition = "2021"
 rust-version = "1.77"
