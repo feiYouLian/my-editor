@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { setLanguageOverrides } from "../editor/languages";
+import { setLanguageOverrides, setLegacyLanguages } from "../editor/languages";
 import type { UserTheme } from "./userThemes";
 
 /**
@@ -153,6 +153,8 @@ export interface AppConfig {
   largeFileThreshold: number;
   longLineSkipChars: number;
   languageExtensions: Record<string, string>;
+  /** 附加语言（@codemirror/legacy-modes 的可选模式名，空 = 全不启用；见 editor/legacyModes.ts） */
+  legacyLanguages: string[];
   editorEnhancements: EditorEnhancements;
   keybindings: KeybindingEntry[];
   layout: LayoutSettings;
@@ -295,6 +297,8 @@ export function defaultConfig(): AppConfig {
     },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},
+    // 附加语言默认全关：勾选后才注册，打开对应文件才加载分片
+    legacyLanguages: [],
     formatters: {
       python: { tool: "black", args: ["-q", "-"] },
       go: { tool: "gofmt", args: [] },
@@ -349,6 +353,9 @@ function applyConfig(cfg: AppConfig): void {
   current = cfg;
   Object.assign(settings, deriveEditor(cfg));
   setLanguageOverrides(cfg.languageExtensions);
+  // 附加语言的名字来自配置，可能是手写错的：这里只记录，不打断启动
+  const legacyErrors = setLegacyLanguages(cfg.legacyLanguages ?? []);
+  if (legacyErrors.length > 0) legacyErrors.forEach((e) => console.warn("[config]", e));
   listeners.forEach((fn) => fn(cfg));
 }
 

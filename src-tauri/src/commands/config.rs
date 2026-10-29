@@ -351,6 +351,8 @@ pub struct AppConfig {
     pub large_file_threshold: u64,
     pub long_line_skip_chars: u32,
     pub language_extensions: BTreeMap<String, String>,
+    /// 附加语言（@codemirror/legacy-modes 的可选模式名，空 = 全不启用）
+    pub legacy_languages: Vec<String>,
     pub editor_enhancements: EditorEnhancements,
     pub keybindings: Vec<KeybindingEntry>,
     pub layout: LayoutSettings,
@@ -381,6 +383,7 @@ impl Default for AppConfig {
             large_file_threshold: 20 * 1024 * 1024,
             long_line_skip_chars: 2000,
             language_extensions: default_language_extensions(),
+            legacy_languages: Vec::new(),
             editor_enhancements: EditorEnhancements::default(),
             keybindings: Vec::new(),
             layout: LayoutSettings::default(),
@@ -826,6 +829,24 @@ mod tests {
         let dir = std::env::temp_dir().join("my-editor-assets-does-not-exist");
         let _ = fs::remove_dir_all(&dir);
         assert!(collect_json_files(&dir).is_empty());
+    }
+
+    /// 附加语言列表：JSON 往返不丢（新字段必须有往返测试）
+    #[test]
+    fn legacy_languages_roundtrip() {
+        let mut cfg = AppConfig::default();
+        cfg.legacy_languages = vec!["shell".into(), "toml".into()];
+        let json = serde_json::to_string(&cfg).expect("序列化");
+        assert!(json.contains("\"legacyLanguages\""));
+        let back: AppConfig = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back.legacy_languages, vec!["shell".to_string(), "toml".to_string()]);
+    }
+
+    /// 旧配置没有 legacyLanguages 字段：应默认为空（= 全不启用），而不是报错
+    #[test]
+    fn legacy_config_without_legacy_languages_defaults_empty() {
+        let cfg: AppConfig = serde_json::from_str(r#"{"version":2}"#).expect("旧配置应可解析");
+        assert!(cfg.legacy_languages.is_empty());
     }
 
     /// 示例资源必须是合法 JSON（防 r##"..."## 提前终止那类问题再次发生）

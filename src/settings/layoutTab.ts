@@ -4,7 +4,8 @@
 
 import type { ColumnModifier, StatusBarFieldEntry } from "../config/settings";
 import { getConfig } from "../config/settings";
-import { setUserLanguages, userLanguageCount } from "../editor/languages";
+import { legacyLanguageCount, setUserLanguages, userLanguageCount } from "../editor/languages";
+import { LEGACY_MODES, legacyModeNames } from "../editor/legacyModes";
 import { loadUserLanguages, openLanguagesDir } from "../services/userAssets";
 import {
   buttonRow,
@@ -169,6 +170,36 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   main.append(editorSection.el);
 
   renderStatusFields(main, cfg.layout.statusBarFields);
+
+  const legacySection = section(
+    "附加语言（按需加载）",
+    "CodeMirror 官方流模式里没有默认启用的语言。勾选后才注册，打开对应文件时才加载该分片——没勾选就不加载。",
+  );
+  for (const name of legacyModeNames()) {
+    const entry = LEGACY_MODES[name];
+    const hint = [...entry.extensions, ...(entry.basenames ?? [])].join(" ");
+    legacySection.body.append(
+      checkRow(
+        `${entry.label}${hint ? `（${hint}）` : ""}`,
+        (cfg.legacyLanguages ?? []).includes(name),
+        (value) => {
+          // 每次从最新配置读：连续点两个勾选框时，闭包里的 cfg 已经过期
+          const current = getConfig().legacyLanguages;
+          const next = value
+            ? current.includes(name)
+              ? current
+              : [...current, name]
+            : current.filter((n) => n !== name);
+          saveSettings({ legacyLanguages: next });
+        },
+      ),
+    );
+  }
+  const legacyNote = document.createElement("div");
+  legacyNote.className = "settings-note";
+  legacyNote.textContent = `已启用 ${legacyLanguageCount()} 个。已打开的标签需在状态栏「语言」里重选一次；这些模式同样不是语法树，没有补全与诊断。`;
+  legacySection.body.append(legacyNote);
+  main.append(legacySection.el);
 
   const langSection = section(
     "自定义语言",

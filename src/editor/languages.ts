@@ -6,6 +6,7 @@ import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { createKeywordLanguage } from "./keywordLanguage";
+import { LEGACY_MODES, createLegacyLanguage } from "./legacyModes";
 import type { UserLanguageSpec } from "../config/userLanguages";
 
 /**
@@ -107,6 +108,60 @@ export function setUserLanguages(specs: UserLanguageSpec[]): string[] {
 /** 已注册的用户自定义语言数（状态提示用） */
 export function userLanguageCount(): number {
   return userLanguages.size;
+}
+
+// ---------------------------------------------------------------------------
+// 附加语言（@codemirror/legacy-modes 的可选模式，按需启用）
+// 映射优先级：config.languageExtensions > 自定义语言 > 附加语言 > 内置映射。
+// 这样"勾选一个开关"永远不会意外顶掉更明确的设置。
+// ---------------------------------------------------------------------------
+
+const legacyEnabled = new Set<string>();
+const legacyExtensions: Record<string, string> = {};
+const legacyBasenames: Record<string, string> = {};
+
+/**
+ * 注册附加语言（由 config/settings.ts 的 applyConfig 调用，配置热更新时也会重跑）。
+ * 返回需要提示的问题：未知模式名、扩展名全被占用。
+ */
+export function setLegacyLanguages(names: string[]): string[] {
+  legacyEnabled.clear();
+  for (const key of Object.keys(legacyExtensions)) delete legacyExtensions[key];
+  for (const key of Object.keys(legacyBasenames)) delete legacyBasenames[key];
+  cache.clear();
+
+  const errors: string[] = [];
+  for (const name of names) {
+    const entry = LEGACY_MODES[name];
+    if (!entry) {
+      errors.push(`未知的附加语言「${name}」，已忽略`);
+      continue;
+    }
+    const total = entry.extensions.length + (entry.basenames?.length ?? 0);
+    let usable = 0;
+    for (const ext of entry.extensions) {
+      if (overrides[ext] || userExtensions[ext] || extensionToLanguage[ext]) continue;
+      if (legacyExtensions[ext]) continue;
+      legacyExtensions[ext] = name;
+      usable += 1;
+    }
+    for (const base of entry.basenames ?? []) {
+      if (overrides[`/${base}`] || legacyBasenames[base]) continue;
+      legacyBasenames[base] = name;
+      usable += 1;
+    }
+    if (usable === 0 && total > 0) {
+      errors.push(`附加语言「${entry.label}」的扩展名 / 文件名都被占用了，已跳过`);
+      continue;
+    }
+    legacyEnabled.add(name);
+  }
+  return errors;
+}
+
+/** 已启用的附加语言数 */
+export function legacyLanguageCount(): number {
+  return legacyEnabled.size;
 }
 
 /**
@@ -304,18 +359,29 @@ const basenameToLanguage: Record<string, string> = {
 export function languageKeyFromPath(path: string): string | null {
   // 先按文件名整体匹配：`D:/a.b/Makefile` 这类路径用扩展名算法会算出带分隔符的"扩展名"
   const base = path.replace(/^.*[\\/]/, "").toLowerCase();
-  const byName = basenameToLanguage[base];
+  const byName = legacyBasenames[base] ?? basenameToLanguage[base];
   if (byName) return overrides[`/${base}`] ?? byName;
   const dot = base.lastIndexOf(".");
   // 注意：`.env` 的 dot === 0 是有意的（当扩展名处理），不能改成 dot <= 0
   if (dot < 0) return null;
   const ext = base.slice(dot);
-  return overrides[ext] ?? userExtensions[ext] ?? extensionToLanguage[ext] ?? null;
+  return (
+    overrides[ext] ??
+    userExtensions[ext] ??
+    legacyExtensions[ext] ??
+    extensionToLanguage[ext] ??
+    null
+  );
 }
 
-/** 语言键 → 展示名（含用户自定义语言） */
+/** 语言键 → 展示名（内置 / 自定义 / 附加语言） */
 export function languageName(key: string): string {
-  return languageDisplayNames[key] ?? userLanguages.get(key)?.displayName ?? key;
+  return (
+    languageDisplayNames[key] ??
+    userLanguages.get(key)?.displayName ??
+    LEGACY_MODES[key]?.label ??
+    key
+  );
 }
 
 /** 状态栏语言菜单用：全部可手动选择的语言（内置 + 自定义，不含纯文本） */
@@ -327,7 +393,11 @@ export function allLanguageNames(): { key: string; label: string }[] {
     key,
     label: `${entry.displayName}（自定义）`,
   }));
-  return [...builtin, ...user];
+  const legacy = [...legacyEnabled].map((key) => ({
+    key,
+    label: `${LEGACY_MODES[key]?.label ?? key}（附加）`,
+  }));
+  return [...builtin, ...user, ...legacy];
 }
 
 /**
@@ -360,6 +430,7 @@ export async function loadLanguage(key: string): Promise<LanguageSupport | null>
   let support: LanguageSupport | null = null;
   try {
     if (userLanguages.has(key)) support = userLanguages.get(key)?.support ?? null;
+    else if (legacyEnabled.has(key)) support = await createLegacyLanguage(key);
     else if (key in builtins) support = builtins[key]();
     else if (key in lazy) support = await lazy[key]();
   } catch (err) {
