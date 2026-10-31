@@ -214,7 +214,9 @@ class TabStore {
     }
     const tab: Tab = {
       id: `tab-${++seq}`,
-      path: content.path,
+      // 未命名文档的 FileContent.path 是空串：归一成 null，
+      // 否则写草稿时会存一个 path="" 的「已消失文件」，恢复时被当成过期草稿另存副本
+      path: content.path || null,
       name: content.name,
       kind: "text",
       content: content.content,
@@ -494,8 +496,8 @@ class TabStore {
       const shown = names.slice(0, 5).join("、");
       const rest = names.length > 5 ? ` 等 ${names.length} 个` : "";
       const message =
-        `以下 ${dirty.length} 个标签有未保存的内容，关闭后草稿会保留一段时间，` +
-        `可在下次启动时从「草稿恢复」找回：\n${shown}${rest}\n\n确定关闭？`;
+        `以下 ${dirty.length} 个标签有未保存的内容，关闭后会自动写入草稿，` +
+        `下次启动时自动恢复：\n${shown}${rest}\n\n确定关闭？`;
       // 未注入确认回调时直接关闭（启动早期不会触发批量关闭）
       const ok = this.confirmHandler ? await this.confirmHandler(message) : true;
       if (!ok) return;

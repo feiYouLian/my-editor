@@ -65,6 +65,8 @@ export interface CommandTableCtx {
   closeTab: (id: string) => Promise<void>;
   saveAllFiles: () => Promise<void>;
   reloadCurrentFile: () => Promise<void>;
+  /** 重新加载界面（前端整体重载；执行前会 flush 会话与草稿） */
+  reloadWindow: () => Promise<void>;
   reopenClosedTab: () => Promise<void>;
   blockIfReadonly: () => boolean;
   insertAtCursor: (text: string) => void;
@@ -105,6 +107,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     closeTab,
     saveAllFiles,
     reloadCurrentFile,
+    reloadWindow,
     reopenClosedTab,
     blockIfReadonly,
     insertAtCursor,
@@ -134,7 +137,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "file.save", title: "保存", section: "文件", defaultKey: "Mod-S", menu: "file", menuOrder: 50, menuSeparatorBefore: true, run: () => void fileService.saveFile() },
     { id: "file.saveAs", title: "另存为…", section: "文件", defaultKey: "Mod-Shift-S", menu: "file", menuOrder: 60, run: () => void fileService.saveFileAs() },
     { id: "file.saveAll", title: "全部保存", section: "文件", defaultKey: "Mod-Alt-S", menu: "file", menuLabel: "全部保存", menuOrder: 55, run: () => void saveAllFiles() },
-    { id: "file.reload", title: "重新载入当前文件（丢弃未保存修改）", section: "文件", menu: "file", menuLabel: "重新载入当前文件", menuOrder: 65, run: () => void reloadCurrentFile() },
+    { id: "file.reload", title: "重新载入当前文件（丢弃未保存修改）", section: "文件", defaultKey: "Mod-R", menu: "file", menuLabel: "重新载入当前文件", menuOrder: 65, run: () => void reloadCurrentFile() },
     { id: "file.reopenClosed", title: "重新打开关闭的标签", section: "文件", defaultKey: "Mod-Shift-T", menu: "file", menuLabel: "重新打开关闭的标签", menuOrder: 75, run: () => void reopenClosedTab() },
     { id: "file.closeTab", title: "关闭当前标签", section: "文件", defaultKey: "Mod-W", menu: "file", menuLabel: "关闭标签", menuOrder: 70, menuSeparatorBefore: true, run: () => {
         const tab = getActiveTab();
@@ -276,6 +279,8 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
           .then((on) => win.setFullscreen(!on))
           .catch((e) => showMessage(`全屏切换失败：${String(e).split("\n")[0]}`));
       } },
+    // 重新加载界面：改完前端资源 / 需要干净重放会话时用；执行前 flush 会话与草稿
+    { id: "view.reloadWindow", title: "重新加载界面（Reload Window）", section: "视图", defaultKey: "Mod-Shift-R", menu: "view", menuLabel: "重新加载界面", menuOrder: 24, run: () => void reloadWindow() },
     { id: "view.docStats", title: "文档统计（行 / 词 / 字符）", section: "视图", menu: "view", menuLabel: "文档统计…", menuOrder: 22, run: () => {
         const tab = getActiveTab();
         if (!tab || tab.kind !== "text") {

@@ -44,14 +44,21 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
   );
   main.append(saveSection.el);
 
-  const sessionSection = section("会话与草稿", "启动恢复与未保存内容的本地兜底。");
+  const sessionSection = section(
+    "会话与草稿",
+    "启动时恢复上次打开的文件、标签顺序与选中的标签；未保存内容始终自动写成草稿，下次启动自动恢复。",
+  );
   sessionSection.body.append(
     checkRow("启动时恢复上次打开的文件", cfg.session.restoreOnStartup, (value) => {
       saveSettings({ session: { ...getConfig().session, restoreOnStartup: value } });
     }),
-    checkRow("自动把未保存内容写成草稿", cfg.session.draftAutosave, (value) => {
-      saveSettings({ session: { ...getConfig().session, draftAutosave: value } });
-    }),
+    checkRow(
+      "关闭前提示未保存（关掉后直接写草稿并关闭）",
+      cfg.session.confirmOnClose,
+      (value) => {
+        saveSettings({ session: { ...getConfig().session, confirmOnClose: value } });
+      },
+    ),
     numberRow("草稿写入防抖（ms）", cfg.session.draftDebounceMs, 200, 10000, (value) => {
       saveSettings({ session: { ...getConfig().session, draftDebounceMs: value } });
     }),

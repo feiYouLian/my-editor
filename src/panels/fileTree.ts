@@ -359,6 +359,9 @@ export class FileTree {
       await task;
     } finally {
       if (this.pendingLoads.get(dir) === task) this.pendingLoads.delete(dir);
+      // 这一层渲染完了：如果待定位的文件就在这层，立刻补上选中
+      // （逐层加载会一路推进到叶子目录，不需要定时轮询）
+      this.tryReveal();
     }
   }
 
@@ -395,7 +398,8 @@ export class FileTree {
 
     const row = document.createElement("div");
     row.className = "tree-row";
-    row.style.paddingLeft = `${depth * 14 + 6}px`;
+    // 每级 12px、起点 8px：与 .tree-flat-row 的左内边距对齐（CSS 里那套基准值）
+    row.style.paddingLeft = `${depth * 12 + 8}px`;
     // 可聚焦（-1）：Ctrl+C / Ctrl+X / Ctrl+V 只在文件树持有焦点时生效，
     // 不会把编辑器里的复制粘贴抢走
     row.tabIndex = -1;
@@ -482,19 +486,38 @@ export class FileTree {
     });
   }
 
+  /** 待定位的文件：树可能正在重建 / 逐层加载，行出现后再选中 */
+  private pendingReveal: string | null = null;
+
   /** 高亮并滚动到指定文件行（与标签页联动） */
   selectRow(path: string): void {
+    this.pendingReveal = path;
+    this.tryReveal();
+  }
+
+  /**
+   * 尝试选中待定位行：还没渲染出来就先留着，
+   * 等下一次子目录加载完成（见 loadChildren 的 finally）再试。
+   */
+  private tryReveal(): void {
+    const path = this.pendingReveal;
+    if (!path) return;
+    const row = this.rowOf(path);
+    if (!row) return;
+    this.pendingReveal = null;
     this.container
       .querySelectorAll(".tree-row.selected")
       .forEach((el) => el.classList.remove("selected"));
+    row.classList.add("selected");
+    row.scrollIntoView({ block: "nearest" });
+  }
+
+  /** 按路径取行元素（不存在返回 null） */
+  private rowOf(path: string): HTMLElement | null {
     const node = this.container.querySelector<HTMLElement>(
       `.tree-node[data-path="${CSS.escape(path)}"]`,
     );
-    const row = node?.querySelector<HTMLElement>(":scope > .tree-row");
-    if (row) {
-      row.classList.add("selected");
-      row.scrollIntoView({ block: "nearest" });
-    }
+    return node?.querySelector<HTMLElement>(":scope > .tree-row") ?? null;
   }
 
   /**
@@ -502,22 +525,38 @@ export class FileTree {
    * 而浏览器窗口的 Ctrl+C 是否被我们接手，取决于焦点是否在树里。
    */
   private markSelected(row: HTMLElement, entry: DirEntry): void {
+    // 用户手动点了某一行：取消「待定位」目标，避免后续子目录加载完成时把选中抢回去
+    this.pendingReveal = null;
     this.container.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
     row.classList.add("selected");
     this.selectedEntry = entry;
     row.focus({ preventScroll: true });
   }
 
+  /** 该路径是否在当前工作区内（决定能否在树里定位；工作区外的文件没有对应节点） */
+  canReveal(path: string): boolean {
+    return !!this.root && path.startsWith(this.root);
+  }
+
   /**
    * 展开到指定文件的所有祖先目录并高亮（标签页切换联动）。
-   * 子目录懒加载，渲染后用轮询等待行出现（最多 ~1s）。
+   *
+   * 子目录是懒加载的，`render()` 之后行要等逐层 list_dir 完成才存在；
+   * 原来只等「父目录」那一层（且 render 刚发起时这一层还没注册），
+   * 结果树被重建 / 分区收起时必然落空——表现为「点标签不定位」。
+   * 现在把目标记在 pendingReveal，每层加载完成后重试（见 tryReveal）。
    */
   revealPath(path: string): void {
-    if (!this.root || !path.startsWith(this.root)) return;
+    const root = this.root;
+    if (!root || !path.startsWith(root)) {
+      this.pendingReveal = null;
+      return;
+    }
+    this.pendingReveal = path;
     const sep = path.includes("\\") ? "\\" : "/";
-    const parts = path.slice(this.root.length + 1).split(/[\\/]/);
+    const parts = path.slice(root.length + 1).split(/[\\/]/);
     let changed = false;
-    let cur = this.root;
+    let cur = root;
     for (let i = 0; i < parts.length - 1; i++) {
       cur = `${cur}${sep}${parts[i]}`;
       if (!this.expanded.has(cur)) {
@@ -526,15 +565,7 @@ export class FileTree {
       }
     }
     if (changed) this.render();
-    // 等父目录这一层加载完再选中：原来的 20×50ms 轮询会在慢盘上直接放弃，
-    // 也会在快速连续切换标签时留下多个计时器
-    const parent = this.parentOf(path);
-    const pending = this.pendingLoads.get(parent);
-    if (pending) {
-      void pending.then(() => this.selectRow(path));
-      return;
-    }
-    this.selectRow(path);
+    this.tryReveal();
   }
 
   private persist(): void {

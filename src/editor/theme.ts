@@ -54,12 +54,13 @@ const highContrastBase = EditorView.theme(
 );
 
 /** 布局底：字号 / 字体 / gutter / 空白字符 / 书签 gutter（与语法主题叠加） */
-function baseLayout(fontSize: number): Extension {
+function baseLayout(fontSize: number, fontFamily = ""): Extension {
   return EditorView.theme({
     // 不覆盖背景色：dark 用 one-dark 原生 #282c34；light/high-contrast 由各自结构底提供
     "&": { height: "100%", fontSize: `${fontSize}px` },
     ".cm-scroller": {
-      fontFamily: "var(--font-mono)",
+      // 空串 = 默认等宽栈（--font-mono）；配置里可直接覆盖，便于按机器调清晰度
+      fontFamily: fontFamily || "var(--font-mono)",
       lineHeight: "1.6",
       overflow: "auto",
     },
@@ -117,7 +118,11 @@ const SYNTAX_TAGS: Record<SyntaxKey, Tag> = {
  * 自定义主题（themes/<名字>.json）→ 编辑器扩展。
  * ui 省略的项沿用该主题 dark 标记决定的兜底色，不继承上一个主题（切主题不该藕断丝连）。
  */
-export function customThemeExtensions(theme: UserTheme, fontSize: number): Extension[] {
+export function customThemeExtensions(
+  theme: UserTheme,
+  fontSize: number,
+  fontFamily = "",
+): Extension[] {
   const ui = theme.ui;
   const fallbackText = theme.dark ? "#e6e6e6" : "#1f2328";
   const fallbackBack = theme.dark ? "#1e1e2e" : "#ffffff";
@@ -142,7 +147,7 @@ export function customThemeExtensions(theme: UserTheme, fontSize: number): Exten
       },
       { dark: theme.dark },
     ),
-    baseLayout(fontSize),
+    baseLayout(fontSize, fontFamily),
   ];
 
   const specs = SYNTAX_KEYS.filter((key) => theme.syntax[key]).map((key) => ({
@@ -159,19 +164,27 @@ export function customThemeExtensions(theme: UserTheme, fontSize: number): Exten
 
 /** 按语法主题类型生成编辑器扩展。
  *  顺序即 CM6 扩展优先级（靠前者高）：结构底在最前，确保背景/选区色覆盖语法主题。 */
-export function editorThemeFor(kind: EditorThemeSetting, fontSize: number): Extension[] {
+export function editorThemeFor(
+  kind: EditorThemeSetting,
+  fontSize: number,
+  fontFamily = "",
+): Extension[] {
   if (kind === "light") {
-    return [lightBase, baseLayout(fontSize), syntaxHighlighting(defaultHighlightStyle)];
+    return [
+      lightBase,
+      baseLayout(fontSize, fontFamily),
+      syntaxHighlighting(defaultHighlightStyle),
+    ];
   }
   if (kind === "high-contrast") {
-    return [highContrastBase, baseLayout(fontSize), oneDark];
+    return [highContrastBase, baseLayout(fontSize, fontFamily), oneDark];
   }
   const customName = customThemeName(kind);
   if (customName) {
     const theme = findUserTheme(customName);
     // 主题文件被删 / 改名：回退深色渲染，但**不复位配置值**——
     // 文件放回来后无需再设置一次；缺失原因在启动与设置页各自提示。
-    if (theme) return customThemeExtensions(theme, fontSize);
+    if (theme) return customThemeExtensions(theme, fontSize, fontFamily);
   }
-  return [baseLayout(fontSize), oneDark];
+  return [baseLayout(fontSize, fontFamily), oneDark];
 }

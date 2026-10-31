@@ -30,10 +30,10 @@ const LOCKED_VIEWS: readonly SidebarView[] = ["open", "files"];
  * 结果是收起的分区多出一段空白、总高溢出还多出滚动条。现在实际高度从 DOM 量，
  * 常量只用于"侧栏当前不可见、量不到"的兜底。
  */
-const HEAD_H_FALLBACK = 26;
+const HEAD_H_FALLBACK = 24;
 
-/** 分隔线高度（与 main.css 的 .sidebar-sash 一致） */
-const SASH_H = 4;
+/** 分隔线高度（与 main.css 的 .sidebar-sash 一致，改动必须两边同步） */
+const SASH_H = 2;
 
 /** 可拖分区最小高度：标题行 + 至少一行内容 */
 const MIN_SECTION_PX = 60;

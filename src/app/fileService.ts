@@ -391,9 +391,14 @@ export class FileService {
 
   /** 新建未命名文档（可指定初始名称，用于草稿恢复） */
   newUntitled(name = this.nextUntitledName()): Tab {
+    // 恢复草稿时传入的是上次的标签名，可能已被现有标签占用。
+    // 两个同名未命名标签在标签栏里无法区分，会被当成"两个变一个"，这里改用空闲序号。
+    const finalName = tabStore.list().some((t) => !t.path && t.name === name)
+      ? this.nextUntitledName()
+      : name;
     const content: FileContent = {
       path: "",
-      name,
+      name: finalName,
       size: 0,
       content: "",
       encoding: "UTF-8",

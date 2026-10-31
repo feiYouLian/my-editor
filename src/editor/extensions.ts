@@ -120,9 +120,13 @@ function indentationExtensions(indent: IndentStyle): Extension[] {
   ];
 }
 
-/** 编辑器主题扩展（语法主题 + 字号，随配置热更新） */
+/** 编辑器主题扩展（语法主题 + 字号 + 字体，随配置热更新） */
 function themeExtensions(): Extension[] {
-  return editorThemeFor(settings.editorTheme, settings.editorFontSize);
+  return editorThemeFor(
+    settings.editorTheme,
+    settings.editorFontSize,
+    settings.editorFontFamily,
+  );
 }
 
 /** 行号 / 活动行高亮 / 列标尺（随配置热更新，走 chrome Compartment） */

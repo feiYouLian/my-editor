@@ -42,6 +42,10 @@ pub struct SessionFile {
     pub bookmarks: Vec<u32>,
     /// 折叠区：每项 [起始行, 结束行]（1 基）；旧会话文件缺该字段时为空
     pub folds: Vec<[u32; 2]>,
+    /// 关闭时的滚动位置（像素，0 = 顶部）；旧会话文件缺该字段时为 None（回退到「让光标可见」）
+    pub scroll_top: Option<f64>,
+    /// 关闭时该标签是否处于选中状态；旧会话文件缺该字段时为 false（回退到 activeFile）
+    pub active: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -49,6 +53,8 @@ pub struct SessionFile {
 pub struct SessionState {
     pub open_files: Vec<SessionFile>,
     pub active_file: Option<String>,
+    /// 关闭时选中的是未命名标签：记录其名称，草稿恢复后据此激活
+    pub active_untitled_name: Option<String>,
     /// 分栏比例（编辑区占比，0.15 - 0.85）
     pub split_ratio: Option<f64>,
 }
@@ -166,13 +172,17 @@ fn draft_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn write_draft(app: tauri::AppHandle, draft: DraftInput) -> Result<DraftInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (mtime, size, hash) = match draft.path.as_deref() {
+        // 空串 = 未命名标签（前端历史写法）。必须归一成 None：
+        // 否则 fingerprint("") 得到 (0,0)，读取时会被判成「原文件已不存在」→ 过期，
+        // 恢复流程于是把它当副本另存。
+        let file_path = draft.path.filter(|p| !p.is_empty());
+        let (mtime, size, hash) = match file_path.as_deref() {
             Some(p) => fingerprint(Path::new(p)),
             None => (0, 0, String::new()),
         };
         let file = DraftFile {
             key: draft.key.clone(),
-            path: draft.path,
+            path: file_path,
             name: draft.name,
             encoding: draft.encoding,
             newline: draft.newline,
@@ -328,7 +338,8 @@ fn fingerprint(path: &Path) -> (u64, u64, String) {
 
 /// 原文件是否与写草稿时不一致（无关联文件时视为不过期）
 fn is_stale(file: &DraftFile) -> bool {
-    let Some(p) = file.path.as_deref() else {
+    // 空串是旧版本未命名草稿的写法，同样按「无关联文件」处理
+    let Some(p) = file.path.as_deref().filter(|p| !p.is_empty()) else {
         return false;
     };
     let (mtime, size, hash) = fingerprint(Path::new(p));
@@ -360,9 +371,9 @@ fn hash_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// 新增的 bookmarks / folds 字段：JSON 往返不丢，且旧会话（无这两个字段）仍可解析
+    /// 新增的 bookmarks / folds / active 字段：JSON 往返不丢，且旧会话（无这些字段）仍可解析
     #[test]
-    fn session_file_bookmarks_and_folds_roundtrip() {
+    fn session_file_extra_fields_roundtrip() {
         let state = SessionState {
             open_files: vec![SessionFile {
                 path: "a.txt".to_string(),
@@ -370,19 +381,26 @@ mod tests {
                 col: 7,
                 bookmarks: vec![2, 9],
                 folds: vec![[4, 12], [20, 21]],
+                scroll_top: Some(480.5),
+                active: true,
             }],
             active_file: Some("a.txt".to_string()),
+            active_untitled_name: None,
             split_ratio: Some(0.5),
         };
         let json = serde_json::to_string(&state).expect("序列化");
         let back: SessionState = serde_json::from_str(&json).expect("反序列化");
         assert_eq!(back.open_files[0].bookmarks, vec![2, 9]);
         assert_eq!(back.open_files[0].folds, vec![[4, 12], [20, 21]]);
+        assert_eq!(back.open_files[0].scroll_top, Some(480.5));
+        assert!(back.open_files[0].active);
 
         let legacy = r#"{"openFiles":[{"path":"b.txt","line":1,"col":1}],"activeFile":"b.txt"}"#;
         let old: SessionState = serde_json::from_str(legacy).expect("旧会话应可解析");
         assert_eq!(old.open_files[0].bookmarks.len(), 0);
         assert_eq!(old.open_files[0].folds.len(), 0);
+        assert_eq!(old.open_files[0].scroll_top, None);
+        assert!(!old.open_files[0].active);
     }
 
     fn temp_file(tag: &str, content: &[u8]) -> PathBuf {
@@ -410,6 +428,15 @@ mod tests {
             ..Default::default()
         };
         assert!(!is_stale(&file));
+
+        // 旧版本把未命名标签的 path 写成空串：同样不能判过期，
+        // 否则恢复时会被当成「原文件已不存在」而另存为副本
+        let legacy = DraftFile {
+            key: "untitled:tab-1".into(),
+            path: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(!is_stale(&legacy));
     }
 
     #[test]

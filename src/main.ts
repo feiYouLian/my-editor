@@ -50,6 +50,7 @@ import {
   type WorkspaceState,
 } from "./services/workspace";
 import { cleanupDrafts, loadSession } from "./services/session";
+import { onOpenExternalFiles, takePendingFiles } from "./services/launch";
 import {
   settings,
   findUserTheme,
@@ -95,8 +96,11 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-// 批量关闭确认由 UI 层注入（store 不反向依赖 ui）
-tabStore.setConfirmHandler(confirmAction);
+// 批量关闭确认由 UI 层注入（store 不反向依赖 ui）；
+// 「关闭前提示未保存」为关（默认）时直接放行：未保存内容已由批量关闭路径先行落草稿
+tabStore.setConfirmHandler(async (message) =>
+  getConfig().session.confirmOnClose ? confirmAction(message) : true,
+);
 
 const breadcrumbEl = $<HTMLDivElement>("breadcrumb");
 const editorArea = document.querySelector<HTMLElement>(".editor-area")!;
@@ -338,7 +342,8 @@ async function closeTab(id: string): Promise<void> {
   if (closingTabs.has(id)) return;
   const tab = tabStore.findById(id);
   if (!tab) return;
-  if (tab.dirty) {
+  // 提示是可选行为（默认关）：关掉时跳过三选，直接落草稿后关闭
+  if (tab.dirty && getConfig().session.confirmOnClose) {
     closingTabs.add(id);
     try {
       // 三选确认：保存 / 不保存 / 取消
@@ -456,7 +461,7 @@ async function reloadCurrentFile(): Promise<void> {
 /**
  * 批量关闭（关闭左侧/右侧/其他/全部）：先把脏标签的未保存内容落草稿，
  * 再执行批量关闭。用户取消确认时草稿内容与当前内容一致，无害；
- * 确认关闭后内容不丢失，可按正常草稿恢复流程找回。
+ * 确认关闭后内容不丢失，下次启动会自动恢复。
  */
 async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
   const dirty = tabStore.list().filter((t) => t.dirty);
@@ -771,6 +776,11 @@ const gitHost = new GitHost({
 });
 // 窗口重新聚焦时刷新一次 Git 状态（外部变更后回来能看到最新）
 window.addEventListener("focus", () => gitHost.scheduleRefresh());
+/**
+ * 侧栏布局是否已恢复。restore 之前切标签（会话恢复）不要自动展开分区：
+ * 那时 switch() 会把布局写回 config，覆盖用户上次的收起状态。
+ */
+let sidebarRestored = false;
 const sidebarViews = new SidebarViews(
   $("sidebar-sections"),
   {
@@ -787,6 +797,12 @@ const sidebarViews = new SidebarViews(
       if (view === "git") gitHost.refresh();
       if (view === "search") sidebarSearch.focusInput();
       if (view === "outline") sidebarOutline.scheduleRefresh();
+      if (view === "files") {
+        // 展开「文件」分区时补一次定位：侧栏隐藏/分区收起期间切换过的标签，
+        // 选中状态没法在隐藏的 DOM 上体现，展开这一下要能立刻看到当前文件
+        const tab = activeTab();
+        if (tab?.path) fileTree.revealPath(tab.path);
+      }
     },
     // 展开组合 / 分区高度 / 底部固定：写回 config.json（启动时按此恢复）
     onLayout: (patch) => {
@@ -852,7 +868,7 @@ editorHandle = createEditor($("editor"), {
     if (t) preview.scheduleRender(t);
     // 结果面板存的是绝对偏移：编辑后防抖重枚举，否则双击跳错位置
     resultsPanel?.scheduleRefresh();
-    // 未保存内容防抖写入草稿（配置关闭时不写）
+    // 未保存内容防抖写入草稿（始终开启，不提供关闭入口）
     if (t) sessionHost.scheduleDraftSave(t);
     if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
   },
@@ -1162,9 +1178,12 @@ const windowChrome = new WindowChrome({
     if (isModalOpen()) return false;
     const dirty = tabStore.list().filter((t) => t.dirty && t.kind === "text" && !t.virtual);
     if (dirty.length === 0) return true;
-    const choice = await confirmExitDirty(dirty.map((t) => t.name), {
-      draftAutosave: getConfig().session.draftAutosave,
-    });
+    // 关闭提示默认关：直接落草稿退出，下次启动自动恢复（Sublime 式退出）
+    if (!getConfig().session.confirmOnClose) {
+      for (const tab of dirty) await sessionHost.persistDraft(tab.id);
+      return true;
+    }
+    const choice = await confirmExitDirty(dirty.map((t) => t.name));
     if (choice === "cancel") return false;
     if (choice === "save") {
       await saveAllFiles();
@@ -1226,8 +1245,14 @@ void dropHost.mount();
 // 布局（侧栏显隐 / 侧栏宽度 / 双栏分割线）
 const layout = new LayoutPane({
   isSplitMode: () => preview.currentMode() === "split",
-  persistSidebarVisible: (visible) =>
-    statusBar.persistConfig({ layout: { ...getConfig().layout, sidebarVisible: visible } }),
+  persistSidebarVisible: (visible) => {
+    statusBar.persistConfig({ layout: { ...getConfig().layout, sidebarVisible: visible } });
+    // 侧栏隐藏期间切换过标签：重新显示时补一次定位（否则选中停在隐藏时的目标上）
+    if (visible && sidebarViews.isExpanded("files")) {
+      const tab = activeTab();
+      if (tab?.path) fileTree.revealPath(tab.path);
+    }
+  },
 });
 
 // 会话与草稿宿主（session.json / 草稿自动保存与恢复 / 外部修改监听）
@@ -1242,6 +1267,7 @@ const sessionHost = new SessionHost(
     onNewUntitled: (name) => fileService.newUntitled(name),
     onLoadPendingTab: (tab) => largeHost.loadPendingTab(tab),
     onDiffDisk: () => void diffService.diffUnsaved({ allowClean: true }),
+    getDocId: () => editorHandle.docId(),
     getBookmarks: (tabId) => editorHandle.bookmarksOf(tabId),
     getFolds: (tabId) => editorHandle.foldsOf(tabId),
     onCloseTab: (tabId) => void closeTab(tabId),
@@ -1261,7 +1287,24 @@ const tabSwitcher = new TabSwitcher({
   getEditor: () => editorHandle,
   largeHost,
   preview,
-  fileTree,
+  // 切标签时在文件树里定位：侧栏可见但「文件」分区收起时，先展开再定位，
+  // 否则选中是写进了隐藏的 DOM，用户看不到（表现为「点标签不定位」）。
+  // 侧栏整体隐藏时不动（不打断全屏写作），定位等用户展开分区后由 FileTree 自动补上。
+  fileTree: {
+    revealPath: (path) => {
+      // 工作区外的文件在树里没有节点：不为了它展开分区
+      if (!fileTree.canReveal(path)) return;
+      if (
+        sidebarRestored &&
+        getConfig().layout.sidebarVisible &&
+        !sidebarViews.isExpanded("files")
+      ) {
+        sidebarViews.switch("files");
+      }
+      // 侧栏隐藏时这里只记下目标，显示侧栏 / 展开分区时会补一次
+      fileTree.revealPath(path);
+    },
+  },
   sessionHost,
   getResultsPanel: () => resultsPanel,
 });
@@ -1419,6 +1462,11 @@ registerCommands(
     closeTab,
     saveAllFiles,
     reloadCurrentFile,
+    // 重新加载界面：先把会话与草稿落盘，否则防抖窗口内的输入会在重载后丢失
+    reloadWindow: async () => {
+      await sessionHost.flush();
+      window.location.reload();
+    },
     reopenClosedTab,
     blockIfReadonly,
     insertAtCursor,
@@ -1509,7 +1557,8 @@ function isModalOpen(): boolean {
  * 命令未消费时必须主动阻止默认行为，否则会弹出与编辑器无关的系统对话框。
  * 注意：只 preventDefault、不 stopPropagation——模态内部（如键位录制）仍需收到按键。
  */
-const BROWSER_DEFAULT_KEYS = new Set(["KeyS", "KeyP", "KeyO", "KeyN", "KeyF", "KeyG"]);
+// KeyR 也列入：WebView2 的 Ctrl+R 会直接刷新页面，绕过会话/草稿落盘 → 丢失最近输入。
+const BROWSER_DEFAULT_KEYS = new Set(["KeyS", "KeyP", "KeyO", "KeyN", "KeyF", "KeyG", "KeyR"]);
 
 function blockBrowserDefault(e: KeyboardEvent): void {
   if ((e.ctrlKey || e.metaKey) && !e.altKey && BROWSER_DEFAULT_KEYS.has(e.code)) {
@@ -1626,6 +1675,8 @@ async function bootstrap(): Promise<void> {
   layout.applyConfiguredSidebar();
   // 2.1) 侧栏布局（展开组合 / 分区高度 / 底部固定）按配置恢复
   sidebarViews.restore(getConfig().layout);
+  // restore 之后才允许「切标签自动展开文件分区」，避免启动早期覆盖用户的收起状态
+  sidebarRestored = true;
   // 3) 分栏默认比例：localStorage 无记录时按配置（不写回，留给用户拖动/设置时落盘）
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集
@@ -1649,21 +1700,30 @@ async function bootstrap(): Promise<void> {
   // 过期替换历史清理（保留最近 10 批 / 7 天；历史存于应用配置目录）
   void invoke("cleanup_replace_history", { keep: 10, days: 7 }).catch(() => {});
 
-  // 恢复会话：打开文件列表 + 光标位置 + 分栏比例（可在配置中关闭）
+  // 恢复会话：打开文件列表（按原顺序）+ 光标位置 + 分栏比例 + 上次选中的标签
+  let sessionActiveId: string | null = null;
+  /** 上次选中的是未命名标签：它不进 openFiles，只能靠名字在草稿恢复里找回 */
+  let sessionActiveUntitled: string | null = null;
   if (getConfig().session.restoreOnStartup) {
     try {
       const sess = await loadSession();
       if (sess.splitRatio != null) statusBar.setSplitRatio(sess.splitRatio);
+      sessionActiveUntitled = sess.activeUntitledName ?? null;
       sessionHost.primeRestoredCursors(sess.openFiles);
-      if (sess.activeFile) await fileService.openFilePath(sess.activeFile, { silent: true });
+      // 按会话记录的顺序建标签：选中项静默载入内容，其余先建占位标签（顺序因此与关闭前一致）
       for (const f of sess.openFiles) {
-        if (f.path === sess.activeFile) continue;
-        tabStore.openPending(f.path, basenameOf(f.path));
+        const isActive = f.active === true || f.path === sess.activeFile;
+        if (isActive) await fileService.openFilePath(f.path, { silent: true });
+        else tabStore.openPending(f.path, basenameOf(f.path));
       }
-      const target = sess.activeFile
-        ? tabStore.findByPath(sess.activeFile)
-        : tabStore.list()[0];
-      if (target) tabStore.activate(target.id);
+      // 选中项：优先 active 标志，其次 activeFile，最后退回第一个标签
+      const activePath =
+        sess.activeFile ?? sess.openFiles.find((f) => f.active)?.path ?? null;
+      const target = (activePath ? tabStore.findByPath(activePath) : null) ?? tabStore.list()[0];
+      if (target) {
+        tabStore.activate(target.id);
+        sessionActiveId = target.id;
+      }
       // 书签 / 折叠：激活标签立即恢复；占位标签先排队，首次载入时应用
       for (const f of sess.openFiles) {
         const tab = tabStore.findByPath(f.path);
@@ -1680,13 +1740,50 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  // 草稿恢复提示（在会话恢复之后：原文件未变可恢复，已变则提示另存为）
-  await sessionHost.offerDraftRecovery();
+  // 草稿自动恢复（在会话恢复之后：原文件未变就地恢复，已变则另存为副本）
+  const draftRestore = await sessionHost.autoRestoreDrafts(sessionActiveUntitled);
+  // 草稿恢复会激活新标签：最后回到关闭时选中的那个（Sublime 的「恢复上次选中项」）。
+  // 选中的若是未命名标签，用草稿恢复出来的标签；否则用会话里的文件标签。
+  const restoredTargetId = draftRestore.activeTabId ?? sessionActiveId;
+  if (restoredTargetId) {
+    const restoredTarget = tabStore.findById(restoredTargetId);
+    if (restoredTarget) {
+      const switched = tabStore.active()?.id !== restoredTarget.id;
+      tabStore.activate(restoredTarget.id);
+      if (switched || draftRestore.restored > 0) {
+        // 草稿恢复重载过编辑器（选区归零）、切换标签也要等载入完成：
+        // 重新载入后再把会话光标放回去，否则会停在文件顶部
+        await tabSwitcher.load();
+        sessionHost.replayRestoredCursor(restoredTarget);
+      }
+    }
+  }
 
   // 登记外部修改监听（会话恢复出的标签一并纳入）
   sessionHost.refreshWatched();
   // Git 状态首次载入（工作区已恢复）
   gitHost.scheduleRefresh();
+
+  // 文件关联 /「打开方式 ▸ my-editor」/ 第二实例转发来的文件：
+  // 冷启动与运行中共用同一个待打开队列（Rust cli.rs），取完即清空
+  const openPendingExternalFiles = async (): Promise<void> => {
+    let paths: string[];
+    try {
+      paths = await takePendingFiles();
+    } catch (e) {
+      console.warn("[launch] 读取待打开文件失败", e);
+      return;
+    }
+    for (const path of paths) await fileService.openFilePath(path);
+  };
+  // 先注册再取队列：避免「取完之后、注册之前」到达的第二个实例事件被漏掉
+  try {
+    await onOpenExternalFiles(() => void openPendingExternalFiles());
+  } catch (e) {
+    // 订阅失败不影响启动，冷启动文件仍会被下面这次 take 取出
+    console.warn("[launch] 订阅外部打开事件失败", e);
+  }
+  await openPendingExternalFiles();
 }
 
 // ---- 全局异常兜底（H12）----

@@ -23,7 +23,13 @@ export interface TabSwitcherDeps {
   largeHost: LargeFileHost;
   preview: { refresh(): void };
   fileTree: { revealPath(path: string): void };
-  sessionHost: { applyRestoredCursor(tab: Tab | null): void };
+  sessionHost: {
+    applyRestoredCursor(tab: Tab | null): void;
+    /** 切走前记录旧文档滚动位置（编辑器只有一个滚动容器） */
+    captureScroll(tabId: string | null): void;
+    /** 载入后恢复该标签上次的滚动位置 */
+    restoreScroll(tab: Tab | null): void;
+  };
   /** 结果面板按需创建，可能为 null */
   getResultsPanel: () => { refresh(): void } | null;
 }
@@ -45,6 +51,9 @@ export class TabSwitcher {
 
   async load(): Promise<void> {
     const token = ++this.loadToken;
+    // 切走之前把旧文档的滚动位置记到它自己的标签上：
+    // 编辑器只有一个滚动容器，loadDocument 之后旧标签的位置就读不到了
+    this.deps.sessionHost.captureScroll(this.currentLoadedTabId);
     const tab = this.deps.getActiveTab();
     this.currentLoadedTabId = tab?.id ?? null;
     // 切换窗口开始：抑制编辑器回调，防止上一个文档的内容/光标写入新标签
@@ -93,6 +102,8 @@ export class TabSwitcher {
         );
         if (token !== this.loadToken) return;
         this.deps.sessionHost.applyRestoredCursor(tab);
+        // 普通切换（非首次会话恢复）也要回到该标签上次看到的位置
+        this.deps.sessionHost.restoreScroll(tab);
         // 文件树联动：展开祖先目录并高亮当前文件
         if (tab.path) this.deps.fileTree.revealPath(tab.path);
         // 预览联动：按标签类型应用 编辑/预览/双栏 或图片查看器

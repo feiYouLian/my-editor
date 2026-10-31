@@ -9,12 +9,20 @@
   --success: #3fb950;
   --accent-hover: #6ba0ff;
   --danger: #ff6b6b;
+  /* 行悬停底色：必须与「选中」(--bg-elevated) 区分开，
+     否则鼠标划过时看不出哪一行才是当前选中项 */
+  --bg-hover: rgba(255, 255, 255, 0.06);
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+  /* 顺序对齐 VSCode 的默认值：Windows 命中 Consolas（屏幕阅读 hinting 好），
+     macOS 命中 Menlo。Cascadia Code 放在后面——它在小字号深色底上偏细，发虚。
+     中文显式回退：等宽字体不含 CJK 字形，不指定时会落到宋体，笔画更虚。 */
+  --font-mono: Consolas, Menlo, Monaco, "Cascadia Code", "JetBrains Mono",
+    "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Courier New", monospace;
   /* 侧栏分区标题行高度：**同时**决定收起态分区高度（.sidebar-section 的 min-height），
      两处必须同源，否则收起的分区会多出一段空白，还会把总高撑出滚动条。
-     改这一个值即可，JS 侧不再写死常量（sidebar.ts 直接量 DOM）。 */
-  --section-head-h: 26px;
+     改这一个值即可，JS 侧不再写死常量（sidebar.ts 直接量 DOM）。
+     24px：与文件树行（22px）同一个量级，5 个分区的标题区总高比 26px 少 10px。 */
+  --section-head-h: 24px;
   /* 彩虹括号色板：6 色相 60° 均分 + 暖冷交替排序，相邻层级色相差 ≥90°
      （红→青→琥珀→蓝→绿→紫；配 one-dark 编辑器底色，亮度一致） */
   --rb-0: #ff7b72; /* 红 */
@@ -48,6 +56,7 @@
   --accent-hover: #0550ae;
   --success: #1a7f37;
   --danger: #cf222e;
+  --bg-hover: rgba(15, 23, 42, 0.06);
   /* 彩虹括号色板（浅色纸底：加深保对比度，同样暖冷交替排序） */
   --rb-0: #cf222e; /* 红 */
   --rb-1: #0e7490; /* 青 */
@@ -83,6 +92,7 @@
   --accent-hover: #ffe666;
   --success: #00ff88;
   --danger: #ff6b6b;
+  --bg-hover: rgba(255, 255, 255, 0.16);
   /* 彩虹括号色板（高饱和，黑底上保证辨识；同暖冷交替排序） */
   --rb-0: #ff5f56; /* 红 */
   --rb-1: #2ee6e6; /* 青 */
@@ -1152,10 +1162,13 @@ button:disabled:hover {
 }
 
 /* ---------- 文件树（3.10） ---------- */
+/* 统一基准：正文 12px / 行高 22px / 图标 14px / 每级缩进 12px。
+   任何一项内部再写别的值都会破坏对齐，新增规则请复用这些数值。 */
 .file-tree {
   flex: 1;
-  padding: 6px 0;
+  padding: 4px 0;
   font-size: 12px;
+  color: var(--text-primary);
   user-select: none;
 }
 
@@ -1194,12 +1207,13 @@ button:disabled:hover {
 }
 
 /* 分区之间的分隔线：可上下拖拽调整相邻分区高度（VS Code 的 sash），双击复位。
-   1px 的线由 ::after 画在中间；可拖时 ::before 把命中区向上下各扩 4px，
-   视觉间距不变但抓手从 4px 变成 12px（4px 对鼠标太苛刻，几乎抓不到） */
+   视觉高度只留 2px（此前 4px，5 个分区叠出 16px 的纯间距，收起时看着全是空档）；
+   1px 的线由 ::after 画在中间；可拖时 ::before 把命中区向上下各扩 6px，
+   视觉间距不变但抓手从 2px 变成 14px（对鼠标足够） */
 .sidebar-sash {
   position: relative;
   flex: none;
-  height: 4px;
+  height: 2px;
 }
 
 .sidebar-sash::after {
@@ -1222,9 +1236,9 @@ button:disabled:hover {
 .sidebar-sash.draggable::before {
   content: "";
   position: absolute;
-  top: -4px;
+  top: -6px;
   right: 0;
-  bottom: -4px;
+  bottom: -6px;
   left: 0;
 }
 
@@ -1271,7 +1285,8 @@ button:disabled:hover {
 }
 
 .sidebar-section-head:hover {
-  background: var(--bg-elevated);
+  /* 悬停用淡色浮层，与「展开中」的实底（.active）区分开 */
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
@@ -1286,20 +1301,21 @@ button:disabled:hover {
   color: var(--accent);
 }
 
-/* 标题与内容之间一条分隔线（仅展开时） */
-.sidebar-section.expanded .sidebar-section-head {
-  border-bottom: 1px solid var(--border);
-}
-
+/* 标题与内容之间不再额外画线：展开分区下方紧跟一根 sash（含 1px 线），
+   原来两条线相隔不到一个行高，看起来像是「多出来的一条边」 */
 .sidebar-section-head svg {
   flex: none;
   width: 13px;
   height: 13px;
 }
 
+/* 固定宽度 + 居中：⌄ / › 两个字符宽度不同，不固定会让标题行在展开/收起时左右抖动 */
 .sidebar-section-head .chevron {
   margin-left: auto;
-  font-size: 10px;
+  width: 12px;
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
   opacity: 0.75;
 }
 
@@ -1332,26 +1348,40 @@ button:disabled:hover {
   padding: 2px 0;
 }
 
+/* 行高 / 图标 / 左内边距与文件树同一套基准：两个分区同时展开时不会一行高一行矮 */
 .open-editor {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
+  height: 22px;
   padding: 0 8px;
   color: var(--text-primary);
   font-size: 12px;
   cursor: pointer;
 }
 
-.open-editor:hover,
+.open-editor:hover {
+  background: var(--bg-hover);
+}
+
+/* 激活项与文件树的 selected 同一视觉：实底 + 左侧竖条 */
 .open-editor.active {
   background: var(--bg-elevated);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .open-editor-icon svg {
   display: block;
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+.open-editor:hover .open-editor-icon svg,
+.open-editor.active .open-editor-icon svg {
+  color: var(--text-primary);
+  opacity: 1;
 }
 
 .open-editor-name {
@@ -1476,10 +1506,13 @@ button:disabled:hover {
   color: var(--text-primary);
 }
 
+/* 与侧栏分区标题的 chevron 同一套尺寸：收起/展开时字符不换宽度，行内容不左右跳 */
 .git-chevron {
   flex: none;
-  width: 10px;
-  font-size: 10px;
+  width: 12px;
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
   opacity: 0.75;
 }
 
@@ -1852,9 +1885,7 @@ button:disabled:hover {
 }
 
 /* ---------- 文件树 Git 状态（文件与上级目录） ---------- */
-.tree-row[data-git-status] .tree-label {
-  font-weight: 500;
-}
+/* 状态只用颜色表达，不加字重：混排时半粗的行会让整列文字看起来「忽粗忽细」。 */
 
 .tree-row[data-git-status="M"] .tree-label {
   color: #d7ba7d;
@@ -1897,7 +1928,8 @@ button:disabled:hover {
 
 .sv-empty {
   padding: 10px 8px;
-  font-size: 11px;
+  /* 与列表正文同字号：空态提示比内容小一号会显得像「脚注」 */
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
 }
@@ -2036,9 +2068,10 @@ button:disabled:hover {
 }
 
 .tree-empty {
-  padding: 16px 12px;
+  padding: 12px;
   color: var(--text-secondary);
-  line-height: 1.8;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .tree-empty button {
@@ -2048,18 +2081,20 @@ button:disabled:hover {
 /* ---------- 文件树过滤（扁平匹配模式） ---------- */
 .tree-filter {
   flex: none;
-  padding: 4px 6px;
+  /* 4px 上下：展开文件分区后，标题行与过滤框之间不再多出一截空白 */
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 
 .tree-filter-input {
   width: 100%;
-  padding: 3px 6px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--bg-input, transparent);
+  border-radius: 4px;
+  /* 原来 fallback 到 transparent：输入框与列表底色糊在一起，看不出是输入框 */
+  background: var(--bg-app);
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: 12px;
   outline: none;
 }
 
@@ -2082,6 +2117,8 @@ button:disabled:hover {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 与树内行同一基准左内边距（树行由 JS 按层级写 padding-left，起点同为 8px） */
+  padding-left: 8px;
 }
 
 .tree-flat-name {
@@ -2101,8 +2138,9 @@ button:disabled:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-secondary);
-  opacity: 0.7;
-  font-size: 10.5px;
+  opacity: 0.8;
+  /* 用整数 px：半像素字号在 Windows 上会被缩放得发虚 */
+  font-size: 11px;
 }
 
 .tree-label {
@@ -2116,15 +2154,17 @@ button:disabled:hover {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   height: 22px;
   padding-right: 8px;
   cursor: pointer;
   white-space: nowrap;
 }
 
+/* 悬停与选中必须是两种视觉：
+   悬停是淡色浮层，选中是实底 + 左侧竖条（此前两者同为 --bg-elevated，看不出选中的是哪行） */
 .tree-row:hover {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
 }
 
 /* 行可聚焦（键盘复制/剪切/粘贴的落点）：鼠标点击不画焦点框，键盘导航才画 */
@@ -2134,42 +2174,32 @@ button:disabled:hover {
 
 .tree-row:focus-visible {
   outline: 1px solid var(--accent);
-  outline-offset: -1px;
+  outline-offset: -2px;
 }
 
 .tree-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
+  width: 16px;
   height: 16px;
   flex-shrink: 0;
 }
 
-/* 线条图标：统一 14px，颜色按类别走主题色板 */
+/* 线条图标：统一 14px、单色。
+   原先按文件类别上彩色（蓝/琥珀/紫/红），一屏几十行时颜色互相打架，
+   层级反而看不出来；现在只靠缩进 + 图标形状区分，悬停/选中跟随文字提亮。 */
 .tree-svg {
   width: 14px;
   height: 14px;
+  color: var(--text-secondary);
+  opacity: 0.9;
 }
 
-.tree-svg.cat-folder-open {
-  color: var(--accent);
-}
-
-.tree-svg.cat-code {
-  color: var(--rb-3);
-}
-
-.tree-svg.cat-config {
-  color: var(--rb-2);
-}
-
-.tree-svg.cat-image {
-  color: var(--rb-5);
-}
-
-.tree-svg.cat-archive {
-  color: var(--rb-0);
+.tree-row:hover .tree-svg,
+.tree-row.selected .tree-svg {
+  color: var(--text-primary);
+  opacity: 1;
 }
 
 /* 当前打开文件在树中的高亮（与标签页联动） */
@@ -2179,8 +2209,9 @@ button:disabled:hover {
 }
 
 .tree-error {
-  padding: 4px 12px;
+  padding: 8px 12px;
   color: var(--danger);
+  font-size: 12px;
 }
 
 /* 双击打开模式：首次点击的选中反馈（文件树 / 搜索结果 / 大纲 / Git / 打开的文件） */
@@ -4733,55 +4764,6 @@ input[type="radio"] {
 .welcome-link:hover {
   opacity: 1;
   text-decoration-color: currentColor;
-}
-
-/* ---------- 草稿恢复列表 ---------- */
-.draft-recovery {
-  width: min(580px, 92vw);
-}
-
-.draft-list {
-  max-height: 42vh;
-  overflow: auto;
-  margin: 8px 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.draft-row {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 10px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-
-.draft-row:last-child {
-  border-bottom: none;
-}
-
-.draft-row:hover {
-  background: var(--bg-elevated);
-}
-
-.draft-row-name {
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.draft-row-meta {
-  color: var(--text-secondary);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.draft-row-meta.stale {
-  color: var(--danger);
 }
 
 /* ---------- 标签拖拽排序 ---------- */

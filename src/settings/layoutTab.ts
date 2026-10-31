@@ -136,6 +136,14 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
     numberRow("字号（px）", cfg.layout.editorFontSize, 10, 24, (value) => {
       saveSettings({ layout: { ...layout(), editorFontSize: value } });
     }),
+    textRow(
+      "编辑器字体（空 = 默认等宽栈）",
+      cfg.layout.editorFontFamily,
+      "如 Consolas / Cascadia Code / JetBrains Mono",
+      (value) => {
+        saveSettings({ layout: { ...layout(), editorFontFamily: value } });
+      },
+    ),
     numberRow("Tab 宽度", cfg.tabSize, 1, 8, (value) => {
       saveSettings({ tabSize: value });
     }),

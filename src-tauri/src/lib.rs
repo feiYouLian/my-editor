@@ -1,21 +1,36 @@
 mod commands;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// 应用入口：注册插件与命令
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 计时必须在 Builder 之前：窗口出现到前端就绪都算这一次采样
     commands::startup::mark_start();
+
+    // 冷启动参数：文件关联 / 把文件拖到 exe 上时，路径在 argv 里（第 0 项是 exe 自身）
+    let args: Vec<String> = std::env::args().collect();
+    commands::cli::push_pending(commands::cli::files_from_args(
+        args.get(1..).unwrap_or(&[]),
+    ));
+
     tauri::Builder::default()
         // 单实例必须第一个注册（官方要求）。第二个实例把已有窗口拉到前台后自行退出，
         // 避免两个进程并发写 session.json / drafts 互相覆盖。
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
+            // 应用已运行时「打开方式」送来的文件：入队并通知前端取走。
+            // 前端取不到（事件早于就绪）时，启动阶段也会从同一队列兜底。
+            let files = commands::cli::files_from_args(argv.get(1..).unwrap_or(&[]));
+            if files.is_empty() {
+                return;
+            }
+            commands::cli::push_pending(files);
+            let _ = app.emit("open-files", ());
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::large::LargeState::default())
@@ -24,6 +39,7 @@ pub fn run() {
         .manage(commands::terminal::TerminalState::default())
         .manage(commands::paths::PathGuard::new())
         .invoke_handler(tauri::generate_handler![
+            commands::cli::take_pending_files,
             commands::file::open_text_file,
             commands::file::probe_file,
             commands::file::reopen_with_encoding,

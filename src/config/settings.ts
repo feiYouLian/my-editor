@@ -75,13 +75,19 @@ export interface LayoutSettings {
   minimap: boolean;
   /** 编辑器字号（px） */
   editorFontSize: number;
+  /**
+   * 编辑器字体族（CSS font-family 写法）；空串 = 默认等宽栈（`--font-mono`）。
+   * 不同机器上等宽字体的渲染清晰度差异很大，留出直接覆盖的入口。
+   */
+  editorFontFamily: string;
   /** 状态栏字段（数组顺序即展示顺序） */
   statusBarFields: StatusBarFieldEntry[];
 }
 
 export interface SessionSettings {
   restoreOnStartup: boolean;
-  draftAutosave: boolean;
+  /** 关闭标签 / 退出前是否弹「未保存」确认（默认开；关掉则直接写草稿并关闭） */
+  confirmOnClose: boolean;
   draftDebounceMs: number;
   draftRetentionDays: number;
 }
@@ -177,6 +183,7 @@ export interface EditorSettings {
   theme: ThemeSetting;
   editorTheme: EditorThemeSetting;
   editorFontSize: number;
+  editorFontFamily: string;
   tabSize: number;
   insertSpaces: boolean;
   formatOnSave: boolean;
@@ -270,12 +277,14 @@ export function defaultConfig(): AppConfig {
       showLineNumbers: true,
       showActiveLine: true,
       minimap: true,
-      editorFontSize: 13,
+      // 14 与 VSCode（Windows/Linux 默认）一致：13 在高 DPI 缩放下会被放大成非整数像素
+      editorFontSize: 14,
+      editorFontFamily: "",
       statusBarFields: defaultStatusBarFields(),
     },
     session: {
       restoreOnStartup: true,
-      draftAutosave: true,
+      confirmOnClose: true,
       draftDebounceMs: 1000,
       draftRetentionDays: 7,
     },
@@ -321,6 +330,7 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     theme: cfg.theme,
     editorTheme: cfg.editorTheme,
     editorFontSize: cfg.layout.editorFontSize,
+    editorFontFamily: cfg.layout.editorFontFamily,
     tabSize: cfg.tabSize,
     insertSpaces: cfg.insertSpaces,
     formatOnSave: cfg.formatOnSave,

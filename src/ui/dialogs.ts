@@ -313,7 +313,6 @@ export function confirmCloseDirty(name: string): Promise<"save" | "discard" | "c
  */
 export function confirmExitDirty(
   names: string[],
-  opts: { draftAutosave?: boolean } = {},
 ): Promise<"save" | "discard" | "cancel"> {
   return new Promise((resolve) => {
     const backdrop = document.createElement("div");
@@ -334,10 +333,8 @@ export function confirmExitDirty(
     const scope =
       names.length > 5 ? `${shown} 等 ${names.length} 个文件` : `${shown}`;
     // 「不保存退出」的后果必须写明：否则用户只看到三个按钮，不知道哪个会丢内容
-    const consequence = opts.draftAutosave
-      ? "选择「不保存退出」会丢弃这些修改（已自动写入草稿，下次启动可恢复）。"
-      : "选择「不保存退出」将永久丢失这些修改（草稿自动保存已关闭）。";
-    list.textContent = `${scope}尚未保存。${consequence}`;
+    list.textContent = `${scope}尚未保存。选择「不保存退出」会丢弃这些修改` +
+      `（已自动写入草稿，下次启动会自动恢复）。`;
     dialog.append(list);
 
     const actions = document.createElement("div");

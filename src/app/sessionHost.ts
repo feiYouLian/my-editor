@@ -1,5 +1,5 @@
 /**
- * 会话与草稿宿主：session.json 持久化（打开文件 + 光标 + 分栏比例）、
+ * 会话与草稿宿主：session.json 持久化（打开文件 + 光标 + 滚动位置 + 分栏比例）、
  * 草稿自动保存与恢复、外部修改监听与重载。
  *
  * 服务层（services/session 的读写、services/fsWatch 的订阅）直接依赖；
@@ -25,13 +25,13 @@ import { onFileChanged, watchFiles } from "../services/fsWatch";
 import { addNotice } from "./noticeStore";
 import { confirmAction } from "../ui/dialogs";
 import { openStatusMenu } from "../ui/statusMenu";
-import { pickDraftsToRecover, type DraftRow } from "../panels/draftRecovery";
-import { formatSize, pad2 } from "../core/format";
 import type { FileContent } from "../types/app";
 
 export interface SessionHostDeps {
   getActiveTab: () => Tab | null;
   getView: () => EditorView;
+  /** 编辑器当前承载的文档 id（判断实时滚动位置属于哪个标签） */
+  getDocId?: () => string | null;
   showMessage: (text: string) => void;
   refreshStatus: () => void;
   /** 内容变化后重载当前标签（loadActiveTab） */
@@ -54,11 +54,27 @@ export interface SessionHostDeps {
   onExternalOnActive?: (tab: Tab) => void;
 }
 
+/** 会话里记录的标签位置：光标行列 + 滚动偏移 */
+interface SavedPosition {
+  line: number;
+  col: number;
+  /** 滚动位置（像素）；undefined = 旧会话没记录，恢复时退回「让光标可见」 */
+  scrollTop?: number;
+}
+
 export class SessionHost {
   /** 各标签最近光标位置（会话恢复用） */
   private cursorPos = new Map<string, { line: number; col: number }>();
+  /**
+   * 各标签的滚动位置（像素）：切走时记录、载入后恢复。
+   * 不监听 scroll 事件——切换标签时 `loadDocument` 会把滚动清零，
+   * 监听器会把 0 当成用户位置写回去。
+   */
+  private scrollMemory = new Map<string, number>();
   /** 会话恢复待应用的光标位置：文件路径 → 位置（标签首次载入后消费） */
-  private restoredCursors = new Map<string, { line: number; col: number }>();
+  private restoredCursors = new Map<string, SavedPosition>();
+  /** 会话光标的备份：草稿恢复重载编辑器（选区归零）后用它重放一次 */
+  private sessionCursors = new Map<string, SavedPosition>();
   /** 当前存在草稿的标签 id → 草稿 key */
   private draftKeys = new Map<string, string>();
   /** 每标签的草稿写入防抖定时器 */
@@ -172,21 +188,38 @@ export class SessionHost {
   }
 
   private buildSessionState(): SessionState {
+    const active = this.deps.getActiveTab();
+    const activeId = active?.id;
+    const docId = this.deps.getDocId?.() ?? null;
     const openFiles: SessionFile[] = [];
     for (const tab of tabStore.list()) {
       if (tab.kind !== "text" || !tab.path) continue;
       const pos = this.cursorPos.get(tab.id);
+      // 尚未载入过的标签只有会话原始记录：不兜底的话，任何一次中间写盘
+      // （启动恢复后 400ms 的结构帧、15s 定时器）都会把它的位置覆盖成默认值
+      const restore = this.restoredCursors.get(tab.path);
+      // 激活标签的滚动位置实时读：纯滚动（光标没动）不会更新 scrollMemory，
+      // 只有写盘这一刻才拿得到真实值。编辑器承载的必须是该标签，否则读数属于别人。
+      const liveScroll =
+        tab.id === activeId && docId === tab.id && !tab.virtual && !tab.pending
+          ? this.deps.getView().scrollDOM.scrollTop
+          : undefined;
       openFiles.push({
         path: tab.path,
-        line: pos?.line ?? 1,
-        col: pos?.col ?? 1,
+        line: pos?.line ?? restore?.line ?? 1,
+        col: pos?.col ?? restore?.col ?? 1,
+        scrollTop: liveScroll ?? this.scrollMemory.get(tab.id) ?? restore?.scrollTop,
         bookmarks: this.deps.getBookmarks(tab.id),
         folds: this.deps.getFolds(tab.id),
+        // 记录「选中的是哪一个」：重启后按它复原激活标签（Sublime 的会话行为）
+        active: tab.id === activeId,
       });
     }
     return {
       openFiles,
-      activeFile: this.deps.getActiveTab()?.path ?? null,
+      activeFile: active?.path ?? null,
+      // 未命名标签不进 openFiles（没有路径）：单独记名字，草稿恢复后据此选中
+      activeUntitledName: active && !active.path ? active.name : null,
       splitRatio: this.currentSplitRatio(),
     };
   }
@@ -236,22 +269,77 @@ export class SessionHost {
     this.sessionDirty = true;
   }
 
-  /** 会话恢复的光标位置（bootstrap 载入） */
-  primeRestoredCursors(files: { path: string; line: number; col: number }[]): void {
-    for (const f of files) this.restoredCursors.set(f.path, { line: f.line, col: f.col });
+  /**
+   * 切走标签前记录旧文档的滚动位置（调用方保证编辑器当前承载的正是 tabId）。
+   * 编辑器只有一个滚动容器，切换后旧标签的位置就读不到了。
+   */
+  captureScroll(tabId: string | null): void {
+    if (!tabId) return;
+    this.scrollMemory.set(tabId, this.deps.getView().scrollDOM.scrollTop);
   }
 
-  /** 标签载入后应用会话恢复的光标位置 */
+  /** 标签载入后恢复它上次的滚动位置（没有记录就保持载入后的默认值） */
+  restoreScroll(tab: Tab | null): void {
+    if (!tab) return;
+    const top = this.scrollMemory.get(tab.id);
+    if (top === undefined) return;
+    const view = this.deps.getView();
+    // 等布局测量完成后再写，否则内容高度还没算出来，值会被夹紧
+    view.requestMeasure({
+      read: () => null,
+      write: () => {
+        view.scrollDOM.scrollTop = top;
+      },
+    });
+  }
+
+  /** 会话恢复的光标位置（bootstrap 载入）：同时留一份备份供重放 */
+  primeRestoredCursors(
+    files: { path: string; line: number; col: number; scrollTop?: number }[],
+  ): void {
+    for (const f of files) {
+      const pos: SavedPosition = { line: f.line, col: f.col, scrollTop: f.scrollTop };
+      this.restoredCursors.set(f.path, pos);
+      this.sessionCursors.set(f.path, pos);
+    }
+  }
+
+  /** 标签载入后应用会话恢复的光标位置（每个路径只消费一次） */
   applyRestoredCursor(tab: Tab | null): void {
     if (!tab?.path) return;
     const pos = this.restoredCursors.get(tab.path);
     if (!pos) return;
     this.restoredCursors.delete(tab.path);
+    if (typeof pos.scrollTop === "number") this.scrollMemory.set(tab.id, pos.scrollTop);
+    this.applyCursor(tab, pos);
+  }
+
+  /**
+   * 重放会话光标：草稿恢复会重载编辑器、选区归零，
+   * 启动流程最后用备份把关闭时的位置放回去。
+   */
+  replayRestoredCursor(tab: Tab | null): void {
+    if (!tab?.path) return;
+    const pos = this.sessionCursors.get(tab.path);
+    if (!pos) return;
+    if (typeof pos.scrollTop === "number") this.scrollMemory.set(tab.id, pos.scrollTop);
+    this.applyCursor(tab, pos);
+  }
+
+  private applyCursor(tab: Tab, pos: SavedPosition): void {
     this.cursorPos.set(tab.id, { line: pos.line, col: pos.col });
     const view = this.deps.getView();
     const line = view.state.doc.line(Math.min(Math.max(1, pos.line), view.state.doc.lines));
     const anchor = Math.min(line.from + Math.max(0, pos.col - 1), line.to);
-    view.dispatch({ selection: { anchor }, scrollIntoView: true });
+    if (pos.scrollTop === undefined) {
+      // 旧会话没记录滚动位置：至少保证光标可见
+      view.dispatch({ selection: { anchor }, scrollIntoView: true });
+      return;
+    }
+    // 有精确滚动偏移就以它为准：光标可能不在视口内，那正是关闭时看到的视图。
+    // 只靠 scrollIntoView 是「让光标刚好可见」，滚到文件底部时会有几行偏差。
+    view.dispatch({ selection: { anchor } });
+    this.restoreScroll(tab);
   }
 
   // ---- 草稿 ----
@@ -266,9 +354,9 @@ export class SessionHost {
     return tab.path || `untitled:${tab.id}`;
   }
 
-  /** 输入后防抖写草稿（配置关闭时不写） */
+  /** 输入后防抖写草稿：未保存内容永远是本地兜底，不提供关闭入口 */
   scheduleDraftSave(tab: Tab): void {
-    if (!getConfig().session.draftAutosave || !this.draftable(tab)) return;
+    if (!this.draftable(tab)) return;
     const pending = this.draftTimers.get(tab.id);
     if (pending) clearTimeout(pending);
     this.draftTimers.set(
@@ -292,7 +380,8 @@ export class SessionHost {
     try {
       await writeDraft({
         key,
-        path: tab.path,
+        // 未命名标签必须写 null（不能是空串），否则会被当成「原文件已不存在」判过期
+        path: tab.path || null,
         name: tab.name,
         content: tabStore.snapshotOf(tab),
         encoding: tab.encoding,
@@ -339,11 +428,20 @@ export class SessionHost {
     this.draftTimers.delete(tabId);
     this.draftKeys.delete(tabId);
     this.cursorPos.delete(tabId);
+    // 标签已关闭：滚动位置不再有用（id 不复用，留着只会让 Map 无界增长）
+    this.scrollMemory.delete(tabId);
   }
 
-  /** 退出前 flush：会话立即写盘 + 所有待写草稿落盘 */
+  /** 退出 / 重载界面之前 flush：会话立即写盘 + 所有待写草稿落盘 */
   async flush(): Promise<void> {
-    if (this.sessionDirty || this.sessionTimer) this.saveNow();
+    // 这里必须 await：重载界面（location.reload）会中断未完成的 IPC，
+    // 用 saveNow 的 fire-and-forget 写入可能还没落盘页面就换了
+    if (this.sessionTimer) {
+      clearTimeout(this.sessionTimer);
+      this.sessionTimer = null;
+    }
+    this.sessionDirty = false;
+    await saveSession(this.buildSessionState()).catch(() => {});
     const timers = [...this.draftTimers.entries()];
     for (const [id, timer] of timers) {
       clearTimeout(timer);
@@ -356,12 +454,6 @@ export class SessionHost {
   refreshDraftBadge(): void {
     const tab = this.deps.getActiveTab();
     this.draftBadgeEl.classList.toggle("hidden", !tab || !this.draftKeys.has(tab.id));
-  }
-
-  /** 草稿时间展示（YYYY-MM-DD HH:mm） */
-  private draftTime(secs: number): string {
-    const d = new Date(secs * 1000);
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
 
   /** 找到/新建草稿对应的标签：有路径则打开（占位标签先载入），未命名则新建 */
@@ -379,82 +471,64 @@ export class SessionHost {
     return tab;
   }
 
-  /** 启动时处理草稿：统一列表勾选 → 批量恢复（原文件已变 → 另存为副本） */
-  async offerDraftRecovery(): Promise<void> {
+  /**
+   * 启动时自动恢复全部草稿：不再询问（去掉了「稍后处理 / 全部丢弃」的选择）。
+   * 原文件已变化的草稿另存为副本；恢复过程只留一条状态栏结果消息。
+   */
+  async autoRestoreDrafts(activeName?: string | null): Promise<{
+    restored: number;
+    /** 会话里选中的未命名标签在恢复后对应的 tab id（没有则为 null） */
+    activeTabId: string | null;
+  }> {
     let drafts: DraftInfo[];
     try {
       drafts = await listDrafts();
     } catch {
-      return;
+      return { restored: 0, activeTabId: null };
     }
-    if (drafts.length === 0) return;
+    if (drafts.length === 0) return { restored: 0, activeTabId: null };
 
-    // 先读内容：列表要展示体积，恢复时不再重复读
-    const contents = new Map<string, string>();
-    const rows: DraftRow[] = [];
+    let restored = 0;
+    let failed = 0;
+    let activeTabId: string | null = null;
     for (const draft of drafts) {
       const payload = await readDraft(draft.key).catch(() => null);
       if (!payload?.content) {
-        // 读取失败 / 空草稿：直接清掉，避免下次启动重复出现
+        // 读取失败 / 空草稿：直接清掉，避免每次启动重复处理
         await deleteDraft(draft.key).catch(() => {});
         continue;
       }
-      contents.set(draft.key, payload.content);
-      rows.push({
-        key: draft.key,
-        name: draft.name,
-        savedAt: this.draftTime(draft.savedAt),
-        sizeText: formatSize(new Blob([payload.content]).size),
-        stale: draft.stale,
-      });
-    }
-    if (rows.length === 0) return;
-
-    const picked = await pickDraftsToRecover(rows);
-    if (picked === null) return; // 稍后处理：草稿保留，下次启动再提示
-    if (picked.length === 0) {
-      for (const draft of drafts) await deleteDraft(draft.key).catch(() => {});
-      // 数量取 rows：与对话框标题用户看到的条目数一致（读取失败的草稿已在上面清掉）
-      this.deps.showMessage(`已丢弃 ${rows.length} 个草稿`);
-      return;
-    }
-
-    const selected = new Set(picked);
-    let restored = 0;
-    for (const draft of drafts) {
-      if (!selected.has(draft.key)) continue;
-      const content = contents.get(draft.key) ?? "";
-      if (!content) continue;
+      let tab: Tab | null;
       if (draft.stale) {
         // 原文件已变：新建未命名文档承载草稿内容；命名加后缀避免与原文件混淆
-        const tab = this.deps.onNewUntitled(`${draft.name}（副本）`);
-        tabStore.applyDraft(tab.id, content);
-        // 内容已接管：原草稿即将删除，立即以新 key 重落一份兜底
-        void this.persistDraft(tab.id);
-        restored++;
+        tab = this.deps.onNewUntitled(`${draft.name}（副本）`);
       } else {
-        const tab = await this.ensureTabForDraft(draft);
-        if (!tab) continue;
-        tabStore.applyDraft(tab.id, content);
-        restored++;
-        // 内容已接管：以新 key 立即重落草稿，避免中途丢失
-        void this.persistDraft(tab.id);
+        tab = await this.ensureTabForDraft(draft);
       }
-      // 已消费的草稿删除，避免下次启动重复提示
+      if (!tab) {
+        failed++;
+        continue;
+      }
+      tabStore.applyDraft(tab.id, payload.content);
+      if (activeName && draft.name === activeName) activeTabId = tab.id;
+      restored++;
+      // 先删旧草稿、再以当前标签的 key 重新落盘：
+      // 重启后标签 id 从 tab-1 重新开始，新草稿 key 可能与旧 key 相同，
+      // 先写后删会把刚写好的草稿一起删掉。
       await deleteDraft(draft.key).catch(() => {});
+      void this.persistDraft(tab.id);
     }
-    // 反馈只说结果数量：未恢复的草稿未删除，下次启动仍会提示
-    const failed = selected.size - restored;
     if (restored > 0) {
       if (this.deps.getActiveTab()) await this.deps.onReloadActiveTab();
       this.deps.showMessage(
         failed > 0
-          ? `已恢复 ${restored} 个草稿，${failed} 个未能恢复，Ctrl+S 保存`
-          : `已恢复 ${restored} 个草稿，Ctrl+S 保存`,
+          ? `已自动恢复 ${restored} 个草稿，${failed} 个未能恢复，Ctrl+S 保存`
+          : `已自动恢复 ${restored} 个草稿，Ctrl+S 保存`,
       );
     } else if (failed > 0) {
       this.deps.showMessage(`${failed} 个草稿未能恢复`);
     }
+    return { restored, activeTabId };
   }
 
   // ---- 外部修改监听 ----

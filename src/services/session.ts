@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 /**
  * 会话与草稿服务：
- * - session.json：打开的文件（含光标位置）、激活文件、分栏比例
+ * - session.json：打开的文件（含光标位置与滚动偏移）、激活文件、分栏比例
  * - drafts/：未保存内容的防抖草稿（配置目录），按 key 索引
  */
 
@@ -16,11 +16,17 @@ export interface SessionFile {
   bookmarks?: number[];
   /** 折叠区：[起始行, 结束行]（1 基）；旧会话文件缺省为空 */
   folds?: number[][];
+  /** 关闭时的滚动位置（像素，0 = 顶部）；旧会话缺省为 undefined（回退到「让光标可见」） */
+  scrollTop?: number;
+  /** 关闭时该标签是否处于选中状态（重启后复原激活项） */
+  active?: boolean;
 }
 
 export interface SessionState {
   openFiles: SessionFile[];
   activeFile: string | null;
+  /** 关闭时选中的是未命名标签：记录其名称，草稿恢复后据此激活 */
+  activeUntitledName?: string | null;
   splitRatio: number | null;
 }
 

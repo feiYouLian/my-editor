@@ -137,6 +137,8 @@ pub struct LayoutSettings {
     pub minimap: bool,
     /// 编辑器字号（px）
     pub editor_font_size: u32,
+    /// 编辑器字体族（CSS font-family 写法）；空 = 默认等宽栈
+    pub editor_font_family: String,
     /// 状态栏字段（数组顺序即展示顺序）
     pub status_bar_fields: Vec<StatusBarFieldEntry>,
     /// 侧栏当前视图：files / search / outline
@@ -156,7 +158,9 @@ impl Default for LayoutSettings {
             show_line_numbers: true,
             show_active_line: true,
             minimap: true,
-            editor_font_size: 13,
+            // 与前端 defaultConfig 保持一致（VSCode Windows 默认 14）
+            editor_font_size: 14,
+            editor_font_family: String::new(),
             status_bar_fields: default_status_bar_fields(),
             sidebar_view: "files".into(),
             sidebar_expanded: vec!["files".into()],
@@ -169,7 +173,8 @@ impl Default for LayoutSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct SessionSettings {
     pub restore_on_startup: bool,
-    pub draft_autosave: bool,
+    /// 关闭标签 / 退出前是否弹「未保存」确认（默认开；关掉则直接写草稿并关闭）
+    pub confirm_on_close: bool,
     pub draft_debounce_ms: u64,
     pub draft_retention_days: u32,
 }
@@ -178,7 +183,7 @@ impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             restore_on_startup: true,
-            draft_autosave: true,
+            confirm_on_close: true,
             draft_debounce_ms: 1000,
             draft_retention_days: 7,
         }
