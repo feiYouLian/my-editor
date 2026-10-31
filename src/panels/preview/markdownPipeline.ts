@@ -1,7 +1,12 @@
 /**
  * Markdown 预览管线：markdown-it + DOMPurify + highlight.js 懒加载，
  * 首次预览时构建一次，安装进宿主（installMarkdown）。
+ *
+ * 额外能力（M4/G15）：标题锚点 + 目录、KaTeX 数学公式、Mermaid 图表占位。
+ * 数学与图表都按需加载：Mermaid 只在文档里真有图表时才 import。
  */
+
+import { applyHeadingAnchors, type MdToken, type TocEntry } from "./markdownToc";
 
 /**
  * highlight.js/lib/common 未内置、但 Markdown 文档里高频出现的语言。
@@ -38,10 +43,13 @@ const HLJS_AUTO_MAX_CHARS = 20_000;
 
 /** 管线的宿主契约（PreviewHost 实现；避免本模块反向依赖具体类） */
 export interface MarkdownPipelineHost {
-  installMarkdown(
-    md: { render(text: string): string },
-    dompurify: { sanitize(html: string): string },
-  ): void;
+  installMarkdown(md: MarkdownRenderer, dompurify: { sanitize(html: string): string }): void;
+}
+
+/** 渲染器：除纯 HTML 外再暴露目录（TOC 需要在同一次解析里收集） */
+export interface MarkdownRenderer {
+  render(text: string): string;
+  renderWithToc(text: string): { html: string; toc: TocEntry[] };
 }
 
 /** 构建并安装管线。加载失败由调用方（ensureMarkdown）统一捕获并允许重试。 */
@@ -105,6 +113,41 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
       return "";
     },
   });
+  // ---- 数学公式（KaTeX）：懒加载插件与样式 ----
+  const [mathMod] = await Promise.all([
+    import("@vscode/markdown-it-katex"),
+    // 字体与样式必须一起进来，否则公式会以排版错误的纯文本出现
+    import("katex/dist/katex.min.css"),
+  ]);
+  const katexPlugin = (mathMod as unknown as {
+    default: (md: unknown, opts?: unknown) => unknown;
+  }).default;
+  md.use(katexPlugin, {
+    // 公式写错不该让整篇预览报错：KaTeX 会渲染出红色错误文本
+    throwOnError: false,
+    // 允许 ```math 围栏写法
+    enableFencedBlocks: true,
+  });
+
+  // ---- Mermaid：只输出占位块，预览/导出时再替换为 SVG（见 preview/mermaid.ts） ----
+  const defaultFence = md.renderer.rules.fence;
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const lang = (token.info || "").trim().split(/\s+/)[0].toLowerCase();
+    if (lang === "mermaid") {
+      const src = md.utils.escapeHtml(token.content);
+      const line = token.map ? token.map[0] + 1 : 1;
+      // data-line 与其它块保持一致：双栏滚动联动依赖它
+      return (
+        `<div class="md-mermaid" data-line="${line}" data-mermaid="${src}">` +
+        `<div class="md-mermaid-pending">Mermaid 图表（渲染中…）</div></div>`
+      );
+    }
+    return defaultFence
+      ? defaultFence(tokens, idx, options, env, self)
+      : self.renderToken(tokens, idx, options);
+  };
+
   // 表格外包一层滚动容器：宽表横向滚动 + 圆角边框（预览与导出共用）
   const defaultTableOpen = md.renderer.rules.table_open;
   const defaultTableClose = md.renderer.rules.table_close;
@@ -128,5 +171,17 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
       }
     }
   });
-  host.installMarkdown(md as unknown as { render(text: string): string }, DOMPurify);
+  // 标题锚点 + 目录：一次遍历同时产出 id 与目录数组（存在 env 上）
+  md.core.ruler.push("heading-anchors", (state) => {
+    const env = state.env as { toc?: TocEntry[] };
+    env.toc = applyHeadingAnchors(state.tokens as unknown as MdToken[]);
+  });
+
+  const render = (text: string): string => md.render(text);
+  const renderWithToc = (text: string): { html: string; toc: TocEntry[] } => {
+    const env: { toc?: TocEntry[] } = {};
+    const html = md.render(text, env);
+    return { html, toc: env.toc ?? [] };
+  };
+  host.installMarkdown({ render, renderWithToc }, DOMPurify);
 }

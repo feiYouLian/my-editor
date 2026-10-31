@@ -19,6 +19,8 @@ import {
 import { foldAll, unfoldAll } from "@codemirror/language";
 import type { CommandDef } from "../core/commands";
 import { localStamps, newUuid } from "../core/stamps";
+import { exportDiagnostics, openLogsDir } from "../services/diagnostics";
+import { checkForUpdates } from "../services/updater";
 import { CASE_LABELS, type CaseMode } from "../editor/transforms";
 import { applyLineOp, type LineOp } from "../editor/lineOps";
 import { textStats } from "../core/textOps";
@@ -28,6 +30,7 @@ import { openColumnEditor } from "../editor/columnEditor";
 import { gotoBookmark, toggleBookmark } from "../editor/bookmarks";
 import { copyFromEditor, pasteIntoEditor } from "../editor/clipboard";
 import { pathKindOf } from "../panels/preview";
+import { showHelpDialog } from "../panels/helpDialog";
 import { getConfig, updateSettings } from "../config/settings";
 import { showSettingsHelp } from "../ui/settingsHelp";
 import type { Tab } from "../store/tabs";
@@ -37,6 +40,7 @@ import type { RunHost } from "./runHost";
 import type { FormatHost } from "./formatHost";
 import type { StatusActions } from "./statusActions";
 import type { SymbolHost } from "./symbolHost";
+import { firstLine } from "../core/errors";
 
 export interface CommandTableCtx {
   fileService: FileService;
@@ -72,11 +76,22 @@ export interface CommandTableCtx {
   insertAtCursor: (text: string) => void;
   toggleResultsPanel: () => void;
   focusWorkspaceSearch: () => void;
-  showSidebarView: (view: "open" | "git" | "files" | "search" | "outline") => void;
+  showSidebarView: (
+    view: "open" | "git" | "files" | "search" | "outline" | "bookmarks",
+  ) => void;
+  /** 结构化只读视图（CSV 表格 / JSON 树）；不传则按扩展名猜 */
+  showStructuredView: (mode?: "csv" | "json") => void;
   /** Git：分支切换面板 / 拉取 / 推送（状态栏入口之外的可命令化入口） */
   gitPickBranch: () => void;
+  /** Git 只读开关：只查看 vs 可写（保护正在用的仓库） */
+  gitToggleReadOnly: () => void;
   gitPull: () => void;
   gitPush: () => void;
+  /** 行内 Git Blame 开关（跟随光标） */
+  gitToggleInlineBlame: () => void;
+  gitInlineBlameEnabled: () => boolean;
+  /** 逐行 Blame 对话框（命令面板入口） */
+  gitOpenBlame: () => void;
   /** 快捷键速查 / 关于（依赖 main.ts 的键位解析，保持注入） */
   showShortcuts: () => void;
   showAbout: () => void;
@@ -114,9 +129,14 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
+    showStructuredView,
     gitPickBranch,
+    gitToggleReadOnly,
     gitPull,
     gitPush,
+    gitToggleInlineBlame,
+    gitInlineBlameEnabled,
+    gitOpenBlame,
     showShortcuts,
     showAbout,
     showMessageHistory,
@@ -168,17 +188,26 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "config.openFile", title: "打开配置文件（config.json）", section: "设置", menu: "settings", menuOrder: 30, run: () => void fileService.openConfigFile() },
     { id: "config.reload", title: "重新加载配置（config.json）", section: "设置", menu: "settings", menuLabel: "重新加载配置", menuOrder: 40, run: () => void fileService.reloadConfig() },
     { id: "help.settings", title: "配置说明（字段含义与生效方式）", section: "设置", menu: "settings", menuLabel: "配置说明", menuOrder: 20, menuSeparatorBefore: true, run: () => showSettingsHelp() },
+    { id: "help.openLogs", title: "打开日志目录", section: "设置", menu: "settings", menuLabel: "打开日志目录", menuOrder: 22, run: () => {
+        void openLogsDir().catch((e) => showMessage(`打开日志目录失败：${firstLine(e)}`));
+      } },
+    { id: "help.exportDiagnostics", title: "导出诊断包（版本 / 系统 / 日志）", section: "设置", menu: "settings", menuLabel: "导出诊断包…", menuOrder: 24, run: () => {
+        void exportDiagnostics()
+          .then((path) => showMessage(`诊断包已导出：${path}`))
+          .catch((e) => showMessage(`导出诊断失败：${firstLine(e)}`));
+      } },
+    { id: "help.checkUpdates", title: "检查更新", section: "设置", menu: "settings", menuLabel: "检查更新…", menuOrder: 50, menuSeparatorBefore: true, run: () => void checkForUpdates(showMessage) },
     // ---- 编辑 ----
-    { id: "edit.format", title: "格式化文档（Shift+Alt+F）", section: "编辑", defaultKey: "Shift-Alt-F", altKeys: ["Mod-Shift-L"], menu: "edit", menuLabel: "格式化文档", menuOrder: 90, menuSeparatorBefore: true, run: () => void formatHost.formatCurrent() },
+    { id: "edit.format", title: "格式化文档", section: "编辑", defaultKey: "Shift-Alt-F", altKeys: ["Mod-Alt-Shift-F"], menu: "edit", menuLabel: "格式化文档", menuOrder: 90, menuSeparatorBefore: true, run: () => void formatHost.formatCurrent() },
     { id: "edit.formatSelection", title: "格式化选中内容", section: "编辑", menu: "edit", menuOrder: 100, run: () => void formatHost.formatSelectionCurrent() },
     // 选中同词：Ctrl+Alt+D / Ctrl+Alt+Shift+D（不改动 Mod-D = 删除当前行）
     { id: "edit.selectNextOccurrence", title: "选中下一个相同词", section: "编辑", defaultKey: "Mod-Alt-D", menu: "edit", menuOrder: 104, run: () => { if (!blockIfReadonly()) selectNextOccurrence(getView()); } },
     { id: "edit.selectAllOccurrences", title: "选中全部相同词", section: "编辑", defaultKey: "Mod-Alt-Shift-D", menu: "edit", menuOrder: 105, run: () => { if (!blockIfReadonly()) selectSelectionMatches(getView()); } },
     // 折叠全部：能力来自 foldKeymap，这里只补"可发现性"（菜单 + 快捷键速查）
-    { id: "edit.foldAll", title: "折叠全部（Ctrl+Alt+[）", section: "编辑", defaultKey: "Ctrl-Alt-[", fixed: true, menu: "edit", menuLabel: "折叠全部", menuOrder: 107, hidden: true, run: () => { foldAll(getView()); } },
-    { id: "edit.unfoldAll", title: "展开全部（Ctrl+Alt+]）", section: "编辑", defaultKey: "Ctrl-Alt-]", fixed: true, menu: "edit", menuLabel: "展开全部", menuOrder: 108, hidden: true, run: () => { unfoldAll(getView()); } },
-    { id: "edit.complete", title: "触发补全（Ctrl+Space / Alt+/）", section: "编辑", defaultKey: "Ctrl-Space", fixed: true, hidden: true, run: () => { /* 由 CM6 键位处理，仅用于速查展示 */ } },
-    { id: "edit.columnEditor", title: "列编辑器（Alt+C）", section: "编辑", defaultKey: "Alt-C", fixed: true, menu: "edit", menuLabel: "列编辑器", menuOrder: 110, run: () => { if (!blockIfReadonly()) openColumnEditor(getView()); } },
+    { id: "edit.foldAll", title: "折叠全部", section: "编辑", defaultKey: "Ctrl-Alt-[", fixed: true, menu: "edit", menuLabel: "折叠全部", menuOrder: 107, hidden: true, run: () => { foldAll(getView()); } },
+    { id: "edit.unfoldAll", title: "展开全部", section: "编辑", defaultKey: "Ctrl-Alt-]", fixed: true, menu: "edit", menuLabel: "展开全部", menuOrder: 108, hidden: true, run: () => { unfoldAll(getView()); } },
+    { id: "edit.complete", title: "触发补全", section: "编辑", defaultKey: "Ctrl-Space", fixed: true, hidden: true, run: () => { /* 由 CM6 键位处理，仅用于速查展示 */ } },
+    { id: "edit.columnEditor", title: "列编辑器", section: "编辑", defaultKey: "Alt-C", fixed: true, menu: "edit", menuLabel: "列编辑器", menuOrder: 110, run: () => { if (!blockIfReadonly()) openColumnEditor(getView()); } },
     // 行操作：按行语义（有选区取整行，无选区整篇），不占用默认键位
     { id: "edit.sortLinesAsc", title: "行操作：按升序排序", section: "编辑", run: () => runLineOp({ kind: "sort", options: {} }) },
     { id: "edit.sortLinesDesc", title: "行操作：按降序排序", section: "编辑", run: () => runLineOp({ kind: "sort", options: { desc: true } }) },
@@ -239,15 +268,20 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         runHost.showOutputPanel();
       } },
     { id: "code.stop", title: "停止运行", section: "运行", run: () => runHost.stop() },
-    { id: "search.toggleBookmark", title: "切换书签（Ctrl+F2）", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(getView()) },
-    { id: "search.nextBookmark", title: "下一个书签（F2）", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(getView(), 1) },
-    { id: "search.prevBookmark", title: "上一个书签（Shift+F2）", section: "查找", defaultKey: "Shift-F2", fixed: true, menu: "go", menuLabel: "上一个书签", menuOrder: 20, hidden: true, run: () => gotoBookmark(getView(), -1) },
+    { id: "search.toggleBookmark", title: "切换书签", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(getView()) },
+    { id: "search.nextBookmark", title: "下一个书签", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(getView(), 1) },
+    { id: "search.prevBookmark", title: "上一个书签", section: "查找", defaultKey: "Shift-F2", fixed: true, menu: "go", menuLabel: "上一个书签", menuOrder: 20, hidden: true, run: () => gotoBookmark(getView(), -1) },
     // 转到定义：文本级定位（复用工作区搜索的遍历，不是 LSP）。F12 此前空闲，可重绑。
     { id: "go.definition", title: "转到定义（工作区文本定位）", section: "查找", defaultKey: "F12", menu: "go", menuLabel: "转到定义（文本级）", menuOrder: 5, run: () => void symbolHost.jumpToDefinition() },
     // ---- 查找 / 替换（CM6 面板；仅菜单与快捷键，不进命令面板）----
     { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", menu: "edit", menuLabel: "查找…", menuOrder: 60, menuSeparatorBefore: true, hidden: true, run: () => {
-        // 只读文档的编辑器 DOM 不可聚焦，CM6 自身键位收不到按键，故全局兜底放行
-        if (getActiveTab()?.kind !== "text") return;
+        const tab = getActiveTab();
+        if (!tab || tab.kind !== "text") return;
+        // 虚拟视图的编辑器是隐藏的：打开 CM6 查找面板用户看不到任何东西
+        if (tab.virtual) {
+          showMessage("大文件虚拟视图请用工具条里的过滤");
+          return;
+        }
         // 纯预览模式下编辑器不可见：Ctrl+F 改为在渲染结果中查找
         if (preview.openFind()) return;
         openSearchPanel(getView());
@@ -255,6 +289,10 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "search.replace", title: "替换（当前文档）", section: "查找", defaultKey: "Mod-H", menu: "edit", menuLabel: "替换…", menuOrder: 70, hidden: true, run: () => {
         const tab = getActiveTab();
         if (tab?.kind !== "text") return;
+        if (tab.virtual) {
+          showMessage("大文件虚拟视图不支持替换");
+          return;
+        }
         const view = getView();
         openSearchPanel(view);
         // 面板内替换框（只读文档不渲染替换框，退化为仅查找）
@@ -268,7 +306,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         // layout 段是浅合并，必须整对象回传；保存成功后主进程订阅会触发 Compartment 重配
         void updateSettings({ layout: { ...getConfig().layout, minimap: next } })
           .then(() => showMessage(`Minimap 已${next ? "开启" : "关闭"}`))
-          .catch((e) => showMessage(`配置保存失败：${String(e).split("\n")[0]}`));
+          .catch((e) => showMessage(`配置保存失败：${firstLine(e)}`));
       } },
     { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
     { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
@@ -277,7 +315,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         void win
           .isFullscreen()
           .then((on) => win.setFullscreen(!on))
-          .catch((e) => showMessage(`全屏切换失败：${String(e).split("\n")[0]}`));
+          .catch((e) => showMessage(`全屏切换失败：${firstLine(e)}`));
       } },
     // 重新加载界面：改完前端资源 / 需要干净重放会话时用；执行前 flush 会话与草稿
     { id: "view.reloadWindow", title: "重新加载界面（Reload Window）", section: "视图", defaultKey: "Mod-Shift-R", menu: "view", menuLabel: "重新加载界面", menuOrder: 24, run: () => void reloadWindow() },
@@ -285,6 +323,16 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         const tab = getActiveTab();
         if (!tab || tab.kind !== "text") {
           showMessage("当前标签没有可统计的文本");
+          return;
+        }
+        // 虚拟标签没有 content 快照（snapshotOf 返回空串），直接统计会显示 0 行；
+        // 索引完成后用真实总行数，未完成则明确提示
+        if (tab.virtual) {
+          showMessage(
+            tab.totalLines == null
+              ? "大文件索引尚未完成，请稍后再试"
+              : `${tab.totalLines} 行 · 虚拟视图不统计词/字符`,
+          );
           return;
         }
         const stats = textStats(tabStore.snapshotOf(tab));
@@ -298,12 +346,25 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 40, run: () => showSidebarView("files") },
     { id: "view.sidebarSearch", title: "侧栏：搜索", section: "视图", menu: "view", menuLabel: "侧栏：搜索", menuOrder: 50, run: () => showSidebarView("search") },
     { id: "view.sidebarOutline", title: "侧栏：大纲", section: "视图", menu: "view", menuLabel: "侧栏：大纲", menuOrder: 60, run: () => showSidebarView("outline") },
+    { id: "view.sidebarBookmarks", title: "侧栏：书签", section: "视图", menu: "view", menuLabel: "侧栏：书签", menuOrder: 62, run: () => showSidebarView("bookmarks") },
+    // 结构化只读视图（不改文件，只换一种看法）
+    { id: "view.structuredCsv", title: "以表格查看（CSV / TSV）", section: "视图", menu: "view", menuLabel: "表格视图（CSV）", menuOrder: 64, menuSeparatorBefore: true, run: () => showStructuredView("csv") },
+    { id: "view.structuredJson", title: "以树查看（JSON）", section: "视图", menu: "view", menuLabel: "JSON 树视图", menuOrder: 65, run: () => showStructuredView("json") },
     // ---- Git ----
+    { id: "git.toggleReadOnly", title: "Git 只读模式（查看 / 可写切换）", section: "Git", menu: "view", menuLabel: "Git 只读模式（切换）", menuOrder: 66, run: () => gitToggleReadOnly() },
     { id: "git.pickBranch", title: "切换分支…", section: "Git", menu: "view", menuLabel: "切换 Git 分支…", menuOrder: 70, run: () => gitPickBranch() },
     { id: "git.pull", title: "拉取（快进合并）", section: "Git", menu: "view", menuLabel: "拉取", menuOrder: 72, run: () => gitPull() },
     { id: "git.push", title: "推送", section: "Git", menu: "view", menuLabel: "推送", menuOrder: 74, run: () => gitPush() },
+    { id: "git.inlineBlame", title: "切换行内 Git Blame（跟随光标）", section: "Git", menu: "view", menuLabel: "行内 Git Blame", menuOrder: 76, menuChecked: () => gitInlineBlameEnabled(), run: () => gitToggleInlineBlame() },
+    { id: "git.blameDialog", title: "Git：打开当前文件的 Blame 列表", section: "Git", run: () => gitOpenBlame() },
     { id: "help.shortcuts", title: "快捷键速查", section: "设置", menu: "settings", menuLabel: "快捷键速查…", menuOrder: 85, run: () => showShortcuts() },
     { id: "help.about", title: "关于 my-editor", section: "设置", menu: "settings", menuLabel: "关于…", menuOrder: 90, run: () => showAbout() },
+    // ---- 帮助菜单（文档随安装包打包，离线可用）----
+    { id: "help.guide", title: "用户指南", section: "帮助", menu: "help", menuLabel: "用户指南", menuOrder: 10, run: () => showHelpDialog("guide") },
+    { id: "help.faq", title: "常见问题（FAQ）", section: "帮助", menu: "help", menuLabel: "常见问题（FAQ）", menuOrder: 20, run: () => showHelpDialog("faq") },
+    // 与「设置」菜单同一动作的帮助入口：菜单里两处都能点，命令面板只保留一条
+    { id: "help.shortcutsInHelp", title: "快捷键速查", section: "帮助", menu: "help", menuOrder: 85, menuSeparatorBefore: true, hidden: true, run: () => showShortcuts() },
+    { id: "help.aboutInHelp", title: "关于 my-editor", section: "帮助", menu: "help", menuOrder: 90, hidden: true, run: () => showAbout() },
     // ---- 纯菜单项（系统/CM6 内置行为，仅展示）----
     { id: "edit.undo", title: "撤销", section: "编辑", defaultKey: "Mod-Z", fixed: true, menu: "edit", menuOrder: 10, hidden: true, run: () => void undo(getView()) },
     { id: "edit.redo", title: "重做", section: "编辑", defaultKey: "Mod-Shift-Z", fixed: true, menu: "edit", menuOrder: 20, hidden: true, run: () => void redo(getView()) },

@@ -27,6 +27,7 @@ import { rainbowBrackets } from "./rainbowBrackets";
 import { buildKeymap } from "./keymap";
 import { searchExtensions } from "./search";
 import { bookmarkGutter } from "./bookmarks";
+import { inlineBlameExtension } from "./blame";
 import { minimapExtension } from "./minimap";
 
 export interface EditorCompartments {
@@ -216,6 +217,7 @@ export function initialExtensions(
     c.theme.of(themeExtensions()),
     c.minimap.of(minimapExtensions()),
     ...bookmarkGutter,
+    ...inlineBlameExtension,
     ...searchExtensions(),
   ];
 }

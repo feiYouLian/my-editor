@@ -1,6 +1,6 @@
 /**
- * 「另存为指定编码」对话框：选择目标编码后走系统保存对话框。
- * 换行符与 BOM 沿用当前标签设置，只有编码按所选改写。
+ * 「另存为指定编码」对话框：选择目标编码与 BOM 后走系统保存对话框。
+ * 换行符沿用当前标签设置；BOM 仅 UTF-8 可单独选择（UTF-16 由编码本身强制带 BOM）。
  */
 
 export class SaveEncodingDialog {
@@ -18,12 +18,14 @@ export class SaveEncodingDialog {
   /**
    * @param encodings 可选编码（来自当前文件的候选编码）
    * @param current 当前编码（默认选中）
-   * @param onConfirm 选择编码并确认后的回调
+   * @param currentBom 当前是否带 BOM
+   * @param onConfirm 选择编码/BOM 并确认后的回调
    */
   open(
     encodings: string[],
     current: string,
-    onConfirm: (encoding: string) => void,
+    currentBom: boolean,
+    onConfirm: (encoding: string, hasBom: boolean) => void,
     context = "",
   ): void {
     if (this.isOpen) return;
@@ -42,8 +44,8 @@ export class SaveEncodingDialog {
     const hint = document.createElement("p");
     hint.className = "dialog-text";
     hint.textContent = context
-      ? `${context}；内容按所选编码写入新文件，换行符与 BOM 沿用当前设置。`
-      : "内容按所选编码写入新文件，换行符与 BOM 沿用当前设置。";
+      ? `${context}；换行符沿用当前设置，BOM 仅 UTF-8 可单独选择。`
+      : "换行符沿用当前设置，BOM 仅 UTF-8 可单独选择。";
     dialog.append(hint);
 
     const row = document.createElement("div");
@@ -62,6 +64,29 @@ export class SaveEncodingDialog {
     row.append(label, select);
     dialog.append(row);
 
+    const bomRow = document.createElement("label");
+    bomRow.className = "dialog-fields";
+    const bom = document.createElement("input");
+    bom.type = "checkbox";
+    bom.checked = currentBom;
+    const bomText = document.createElement("span");
+    bomText.textContent = "保存为 UTF-8 with BOM";
+    bomRow.append(bom, bomText);
+    dialog.append(bomRow);
+
+    const syncBom = (): void => {
+      const isUtf8 = select.value === "UTF-8";
+      bom.disabled = !isUtf8;
+      if (!isUtf8) bom.checked = false;
+      bomText.textContent = isUtf8
+        ? "保存为 UTF-8 with BOM"
+        : select.value.startsWith("UTF-16")
+          ? "UTF-16 自动带 BOM"
+          : "该编码不支持 BOM";
+    };
+    select.addEventListener("change", syncBom);
+    syncBom();
+
     const actions = document.createElement("div");
     actions.className = "dialog-actions";
     const cancelBtn = document.createElement("button");
@@ -74,8 +99,9 @@ export class SaveEncodingDialog {
     okBtn.textContent = "选择路径并保存";
     const confirm = () => {
       const encoding = select.value;
+      const hasBom = encoding === "UTF-8" ? bom.checked : encoding.startsWith("UTF-16");
       this.close();
-      onConfirm(encoding);
+      onConfirm(encoding, hasBom);
     };
     okBtn.addEventListener("click", confirm);
     actions.append(cancelBtn, okBtn);

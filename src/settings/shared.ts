@@ -12,6 +12,8 @@ import {
   type StatusBarFieldEntry,
   type ThemeSetting,
 } from "../config/settings";
+import type { WorkspaceOverrides } from "../core/workspaceOverrides";
+import { firstLine } from "../core/errors";
 
 export type Category = "theme" | "keybindings" | "layout" | "files";
 
@@ -41,9 +43,15 @@ export interface SettingsTabContext {
 
 /** 配置保存失败时的通知通道（面板打开时注册） */
 let settingsNotify: ((text: string) => void) | null = null;
+/** 配置保存失败时的重渲染通道：把控件状态拉回真实配置 */
+let settingsRerender: (() => void) | null = null;
 
 export function setSettingsNotify(fn: ((text: string) => void) | null): void {
   settingsNotify = fn;
+}
+
+export function setSettingsRerender(fn: (() => void) | null): void {
+  settingsRerender = fn;
 }
 
 /**
@@ -55,8 +63,43 @@ export function saveSettings(patch: Parameters<typeof updateSettings>[0]): void 
   void updateSettings(patch).catch((e: unknown) => {
     console.error("[settings] 保存配置失败", e);
     settingsNotify?.(
-      `配置保存失败: ${String(e instanceof Error ? e.message : e).split("\n")[0]}`,
+      `配置保存失败: ${firstLine(e)}`,
     );
+    // 控件已经先变成新值：保存失败时重渲染当前分类，恢复到磁盘上的真实值
+    settingsRerender?.();
+  });
+}
+
+/**
+ * 工作区覆盖的宿主钩子：root 与保存实现由 main.ts 注入。
+ * settings 层不直接依赖 services / 后端，保持依赖方向不变。
+ */
+export interface WorkspaceOverrideHooks {
+  /** 当前工作区根（未打开时为 null） */
+  getRoot: () => string | null;
+  /** 保存并立即生效；返回归一化后的覆盖项 */
+  apply: (patch: WorkspaceOverrides) => Promise<WorkspaceOverrides>;
+}
+
+let workspaceHooks: WorkspaceOverrideHooks | null = null;
+
+export function setWorkspaceOverrideHooks(hooks: WorkspaceOverrideHooks | null): void {
+  workspaceHooks = hooks;
+}
+
+export function workspaceOverrideHooks(): WorkspaceOverrideHooks | null {
+  return workspaceHooks;
+}
+
+/**
+ * 非 config.json 的保存（工作区覆盖等）：
+ * 失败时提示并把控件拉回真实值，避免"看起来保存成功"。
+ */
+export function saveExternal(run: () => Promise<void>): void {
+  void run().catch((e: unknown) => {
+    console.error("[settings] 保存失败", e);
+    settingsNotify?.(`保存失败：${firstLine(e)}`);
+    settingsRerender?.();
   });
 }
 

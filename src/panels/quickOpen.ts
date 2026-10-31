@@ -9,6 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { fuzzyMatch, fuzzyScore } from "../core/fuzzy";
 import { appendHighlighted } from "../ui/highlight";
+import { firstLine } from "../core/errors";
 
 interface WorkspaceFile {
   path: string;
@@ -42,6 +43,8 @@ export class QuickOpen {
   private loading = false;
   private visible: WorkspaceFile[] = [];
   private selected = 0;
+  /** 当前渲染窗口在 visible 中的起始下标（选中项始终在窗口内） */
+  private renderStart = 0;
   /** 上次渲染时的查询：查询变了要把选中项复位 */
   private lastQuery = "";
   /** 输入法组合中：组合期不刷新列表（拼音字母会造成大量无意义重算） */
@@ -148,7 +151,12 @@ export class QuickOpen {
   private move(delta: number): void {
     if (this.visible.length === 0) return;
     this.selected = (this.selected + delta + this.visible.length) % this.visible.length;
-    // 只切选中样式：重建 200 行 + 重新打分会让按住方向键时明显掉帧
+    // 选中项移出当前渲染窗口时重建窗口；否则只切样式（避免每次按键重排 200 行）
+    const idx = this.selected - this.renderStart;
+    if (idx < 0 || idx >= MAX_RENDERED) {
+      this.renderList();
+      return;
+    }
     this.updateSelection();
   }
 
@@ -184,7 +192,7 @@ export class QuickOpen {
       this.fetchedAt = Date.now();
     } catch (e) {
       this.files = [];
-      this.deps.showMessage(`文件列表读取失败: ${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`文件列表读取失败: ${firstLine(e)}`);
     } finally {
       this.loading = false;
       // 面板可能在等待期间被关闭：renderList 内部对空引用已做保护
@@ -239,9 +247,17 @@ export class QuickOpen {
     this.hintEl.textContent = `共 ${this.files.length} 个文件 · ↑↓ 选择 · Enter 打开 · Esc 关闭`;
 
     const frag = document.createDocumentFragment();
-    for (const [i, file] of this.visible.slice(0, MAX_RENDERED).entries()) {
+    // 只渲染 selected 附近的一个窗口：选中项可以越过第 200 条，但 DOM 始终 ≤200
+    const maxStart = Math.max(0, this.visible.length - MAX_RENDERED);
+    this.renderStart = Math.max(
+      0,
+      Math.min(this.selected - Math.floor(MAX_RENDERED / 2), maxStart),
+    );
+    const slice = this.visible.slice(this.renderStart, this.renderStart + MAX_RENDERED);
+    for (const [offset, file] of slice.entries()) {
+      const index = this.renderStart + offset;
       const item = document.createElement("div");
-      item.className = `palette-item${i === this.selected ? " selected" : ""}`;
+      item.className = `palette-item${index === this.selected ? " selected" : ""}`;
 
       const name = document.createElement("span");
       name.textContent = file.name;
@@ -259,8 +275,8 @@ export class QuickOpen {
       item.append(name, path);
       item.addEventListener("click", () => this.pick(file));
       item.addEventListener("mouseenter", () => {
-        if (this.selected !== i) {
-          this.selected = i;
+        if (this.selected !== index) {
+          this.selected = index;
           this.updateSelection();
         }
       });
@@ -271,7 +287,7 @@ export class QuickOpen {
     if (this.visible.length > MAX_RENDERED) {
       const more = document.createElement("div");
       more.className = "palette-empty";
-      more.textContent = `仅显示前 ${MAX_RENDERED} 条（共 ${this.visible.length} 条），请细化关键词`;
+      more.textContent = `显示第 ${this.renderStart + 1}–${this.renderStart + slice.length} 条（共 ${this.visible.length} 条），↑↓ 继续选择或细化关键词`;
       this.listEl.append(more);
     }
     this.updateSelection();
@@ -279,9 +295,10 @@ export class QuickOpen {
 
   private updateSelection(): void {
     if (!this.listEl) return;
-    this.listEl.querySelectorAll(".palette-item").forEach((el, idx) => {
-      el.classList.toggle("selected", idx === this.selected);
+    const idx = this.selected - this.renderStart;
+    this.listEl.querySelectorAll(".palette-item").forEach((el, i) => {
+      el.classList.toggle("selected", i === idx);
     });
-    this.listEl.children[this.selected]?.scrollIntoView({ block: "nearest" });
+    this.listEl.children[idx]?.scrollIntoView({ block: "nearest" });
   }
 }

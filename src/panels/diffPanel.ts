@@ -9,6 +9,7 @@
 import type {
   DiffAction,
   DiffPayload,
+  HunkAction,
   HunkAdopt,
 } from "./diffPanel/types";
 import { gapStarts, renderDiffRows } from "./diffPanel/render";
@@ -18,6 +19,7 @@ export type {
   DiffPayload,
   DiffRow,
   DiffSession,
+  HunkAction,
   HunkAdopt,
   HunkRef,
 } from "./diffPanel/types";
@@ -28,6 +30,8 @@ export class DiffPanel {
   private actions: DiffAction[] = [];
   private adopt: HunkAdopt | null = null;
   private adoptBtn: HTMLButtonElement | null = null;
+  private hunkAction: HunkAction | null = null;
+  private hunkActionBtn: HTMLButtonElement | null = null;
   private body!: HTMLElement;
   private navInfo!: HTMLElement;
   private currentHunk = -1;
@@ -35,6 +39,8 @@ export class DiffPanel {
   private wrap = true;
   /** 渲染代际：新渲染开始后旧的分帧任务立即作废 */
   private renderToken = 0;
+  /** 目标 hunk 尚未渲染：等 onDone 后再跳转 */
+  private pendingHunk: number | null = null;
 
   /** 当前展示的差异数据（供调用方在采用差异块后重新合并） */
   getPayload(): DiffPayload | null {
@@ -46,6 +52,7 @@ export class DiffPanel {
     payload: DiffPayload,
     actions: DiffAction[] = [],
     adopt?: HunkAdopt,
+    hunkAction?: HunkAction,
     initialHunk?: number,
   ): void {
     this.close();
@@ -53,6 +60,8 @@ export class DiffPanel {
     this.actions = actions;
     this.adopt = adopt ?? null;
     this.adoptBtn = null;
+    this.hunkAction = hunkAction ?? null;
+    this.hunkActionBtn = null;
     const last = payload.hunks.length - 1;
     this.currentHunk = payload.hunks.length
       ? Math.min(Math.max(initialHunk ?? 0, 0), last)
@@ -164,23 +173,37 @@ export class DiffPanel {
       dialog.append(actionBar);
     }
 
-    // ---- 差异块采用（块级合并：把当前差异块替换为某一侧内容） ----
-    if (this.adopt) {
+    // ---- 差异块操作（块级合并 / Git 暂存） ----
+    if (this.adopt || this.hunkAction) {
       const adoptBar = document.createElement("div");
       adoptBar.className = "diff-action-bar";
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "df-btn df-btn-wide";
-      btn.textContent = this.adopt.side === "left" ? "采用左侧" : "采用右侧";
-      btn.title =
-        this.adopt.title ??
-        `把当前差异块替换为${this.adopt.side === "left" ? "左侧" : "右侧"}内容（写回编辑器，需手动保存）`;
-      btn.addEventListener("click", () => {
-        if (this.currentHunk >= 0) this.adopt?.run(this.currentHunk);
-      });
-      adoptBar.append(btn);
+      if (this.adopt) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "df-btn df-btn-wide";
+        btn.textContent = this.adopt.side === "left" ? "采用左侧" : "采用右侧";
+        btn.title =
+          this.adopt.title ??
+          `把当前差异块替换为${this.adopt.side === "left" ? "左侧" : "右侧"}内容（写回编辑器，需手动保存）`;
+        btn.addEventListener("click", () => {
+          if (this.currentHunk >= 0) this.adopt?.run(this.currentHunk);
+        });
+        adoptBar.append(btn);
+        this.adoptBtn = btn;
+      }
+      if (this.hunkAction) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "df-btn df-btn-wide";
+        btn.textContent = this.hunkAction.label;
+        if (this.hunkAction.title) btn.title = this.hunkAction.title;
+        btn.addEventListener("click", () => {
+          if (this.currentHunk >= 0) this.hunkAction?.run(this.currentHunk);
+        });
+        adoptBar.append(btn);
+        this.hunkActionBtn = btn;
+      }
       dialog.append(adoptBar);
-      this.adoptBtn = btn;
     }
 
     // ---- 主体 ----
@@ -228,6 +251,7 @@ export class DiffPanel {
   close(): void {
     // 作废未完成的分帧渲染，避免关闭后仍往旧 body 里 append
     this.renderToken++;
+    this.pendingHunk = null;
     this.backdrop?.remove();
     this.backdrop = null;
     this.payload = null;
@@ -236,6 +260,9 @@ export class DiffPanel {
   private renderRows(): void {
     const payload = this.payload;
     if (!payload) return;
+    // 每次重渲染都换一代：展开折叠段/采用差异块时，旧分帧任务必须立即作废
+    this.renderToken += 1;
+    const token = this.renderToken;
     renderDiffRows({
       body: this.body,
       payload,
@@ -244,8 +271,15 @@ export class DiffPanel {
         this.expandedGaps.add(start);
         this.renderRows();
       },
-      token: this.renderToken,
-      isStale: (token) => token !== this.renderToken,
+      token,
+      isStale: (t) => t !== this.renderToken,
+      onDone: () => {
+        const pending = this.pendingHunk;
+        if (pending !== null) {
+          this.pendingHunk = null;
+          this.scrollToHunk(pending);
+        }
+      },
     });
   }
 
@@ -261,9 +295,14 @@ export class DiffPanel {
     if (!hunk) return;
     this.currentHunk = index;
     this.syncNav();
-    this.body
-      .querySelector<HTMLElement>(`[data-hunk="${index}"]`)
-      ?.scrollIntoView({ block: "center" });
+    const target = this.body.querySelector<HTMLElement>(`[data-hunk="${index}"]`);
+    if (target) {
+      this.pendingHunk = null;
+      target.scrollIntoView({ block: "center" });
+      return;
+    }
+    // 行是分帧渲染的：目标还没构建出来，等 onDone 再跳
+    this.pendingHunk = index;
   }
 
   private syncNav(): void {
@@ -271,6 +310,10 @@ export class DiffPanel {
     this.navInfo.textContent = total === 0 ? "无差异" : `第 ${this.currentHunk + 1} / ${total} 处`;
     if (this.adoptBtn) {
       this.adoptBtn.disabled = total === 0 || this.currentHunk < 0 || !this.adopt?.enabled();
+    }
+    if (this.hunkActionBtn) {
+      this.hunkActionBtn.disabled =
+        total === 0 || this.currentHunk < 0 || !this.hunkAction?.enabled();
     }
   }
 }

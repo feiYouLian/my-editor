@@ -11,9 +11,11 @@
 //! 安全：终端是任意命令执行入口（非沙箱），与 Code Run 的既有语义一致。
 //! `terminal_run_code` 仍校验文件路径在 PathGuard 范围内；终端内自行 `cd` 不受限制。
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +36,8 @@ pub const OUTPUT_EVENT: &str = "terminal://output";
 pub const EXIT_EVENT: &str = "terminal://exit";
 /// 单次输入上限（防大段粘贴撑爆后端）
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
+/// 同时保留的终端会话上限（每个会话一个 PTY 与读取线程）
+const MAX_SESSIONS: usize = 8;
 
 /// PowerShell 启动时把控制台输入/输出切到 UTF-8，避免中文乱码
 #[cfg(windows)]
@@ -63,15 +67,14 @@ struct TerminalExit {
     code: Option<i32>,
 }
 
-/// 终端应用状态：同一时刻只保留一个会话
+/// 终端应用状态：支持多个独立 PTY 会话（前端按 id 切换）
 #[derive(Default)]
 pub struct TerminalState {
-    slot: Arc<Mutex<Option<Session>>>,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
     seq: Arc<AtomicU64>,
 }
 
 struct Session {
-    id: String,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -165,6 +168,12 @@ pub fn terminal_open(
     rows: u16,
 ) -> Result<TerminalInfo, String> {
     let (program, args, shell_label) = resolve_shell(&shell);
+    {
+        let guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.len() >= MAX_SESSIONS {
+            return Err(format!("终端会话最多 {MAX_SESSIONS} 个，请先关闭一个"));
+        }
+    }
     let requested_cwd = PathBuf::from(cwd.trim());
     let cwd = if cwd.trim().is_empty() || !requested_cwd.is_dir() {
         default_cwd()
@@ -218,24 +227,20 @@ pub fn terminal_open(
         cwd: cwd.clone(),
     };
     let session = Session {
-        id: id.clone(),
         master: pair.master,
         writer,
         child,
         shell_kind: shell_kind(&program),
     };
 
-    // 新会话就绪后再替换旧会话；替换出来的旧会话在锁外结束，避免持锁做 taskkill
-    let old = {
-        let mut guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-        guard.replace(session)
-    };
-    if let Some(mut old) = old {
-        kill_session(&mut old);
+    // 多会话：新会话独立加入，不替换/终止已有会话
+    {
+        let mut guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(id.clone(), session);
     }
 
     spawn_reader(app.clone(), id.clone(), reader);
-    spawn_reaper(app, Arc::clone(&state.slot), id);
+    spawn_reaper(app, Arc::clone(&state.sessions), id);
     Ok(info)
 }
 
@@ -248,11 +253,10 @@ pub fn terminal_write(
     if data.len() > MAX_INPUT_BYTES {
         return Err("终端输入过长".to_string());
     }
-    let mut guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-    let session = guard.as_mut().ok_or_else(|| "终端未启动".to_string())?;
-    if session.id != id {
-        return Err("终端会话已变更，请重新打开终端".to_string());
-    }
+    let mut guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    let session = guard
+        .get_mut(&id)
+        .ok_or_else(|| "终端会话不存在（可能已退出）".to_string())?;
     session
         .writer
         .write_all(data.as_bytes())
@@ -270,11 +274,10 @@ pub fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let mut guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-    let session = guard.as_mut().ok_or_else(|| "终端未启动".to_string())?;
-    if session.id != id {
-        return Err("终端会话已变更，请重新打开终端".to_string());
-    }
+    let mut guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    let session = guard
+        .get_mut(&id)
+        .ok_or_else(|| "终端会话不存在（可能已退出）".to_string())?;
     session
         .master
         .resize(PtySize {
@@ -286,23 +289,25 @@ pub fn terminal_resize(
         .map_err(|e| format!("调整终端尺寸失败: {e}"))
 }
 
-/// 关闭终端会话；id 为空串时关闭当前会话
+/// 关闭终端会话；id 为空串时关闭全部会话。
 ///
 /// 结束 ConPTY 子进程要等 taskkill 返回，应用退出流程也会调用本命令，
 /// 因此放到阻塞线程执行，避免占住主线程让窗口「未响应」。
 #[tauri::command]
 pub async fn terminal_close(state: tauri::State<'_, TerminalState>, id: String) -> Result<(), String> {
-    let slot = state.slot.clone();
+    let sessions = Arc::clone(&state.sessions);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(session) = guard.as_mut() else {
-            return;
+        let removed: Vec<Session> = {
+            let mut guard = sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if id.is_empty() {
+                guard.drain().map(|(_, session)| session).collect()
+            } else {
+                guard.remove(&id).into_iter().collect()
+            }
         };
-        if !id.is_empty() && session.id != id {
-            return;
+        for mut session in removed {
+            kill_session(&mut session);
         }
-        kill_session(session);
-        *guard = None;
     })
     .await
     .map_err(|e| format!("关闭终端失败: {e}"))
@@ -341,11 +346,10 @@ fn write_command(
     id: &str,
     spec: &CommandSpec,
 ) -> Result<(), String> {
-    let mut guard = state.slot.lock().unwrap_or_else(|e| e.into_inner());
-    let session = guard.as_mut().ok_or_else(|| "终端未启动".to_string())?;
-    if session.id != id {
-        return Err("终端会话已变更，请重新打开终端".to_string());
-    }
+    let mut guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    let session = guard
+        .get_mut(id)
+        .ok_or_else(|| "终端会话不存在（可能已退出）".to_string())?;
     let line = render_shell_line(session.shell_kind, spec)?;
     session
         .writer
@@ -367,40 +371,79 @@ fn kill_session(session: &mut Session) {
     let _ = session.child.kill();
 }
 
-/// 读取线程：输出按字节 base64 回传，前端交给 xterm 解码。
-/// 每次读取即发送（8KB），保证提示符 / 单字符输入的延迟；高速输出由 xterm 自身缓冲。
+/// 读取线程：按 16ms / 32KB 批量回传 base64。
+/// 低延迟来自“16ms 内必冲一次”，高吞吐来自“攒满 32KB 再发”，
+/// 避免 `yes` / 编译日志这类高速输出产生事件风暴。
 fn spawn_reader(app: AppHandle, id: String, mut reader: Box<dyn Read + Send>) {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let app_flush = app.clone();
+    let id_flush = id.clone();
+    std::thread::spawn(move || {
+        let mut pending: Vec<u8> = Vec::with_capacity(32 * 1024);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(16)) {
+                Ok(chunk) => {
+                    pending.extend_from_slice(&chunk);
+                    if pending.len() >= 32 * 1024 {
+                        emit_output(&app_flush, &id_flush, &pending);
+                        pending.clear();
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if !pending.is_empty() {
+                        emit_output(&app_flush, &id_flush, &pending);
+                        pending.clear();
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if !pending.is_empty() {
+                        emit_output(&app_flush, &id_flush, &pending);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
     std::thread::spawn(move || {
         let mut buf = vec![0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let _ = app.emit(
-                        OUTPUT_EVENT,
-                        TerminalChunk {
-                            id: id.clone(),
-                            data: STANDARD.encode(&buf[..n]),
-                        },
-                    );
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
         }
+        // tx 在这里 drop，flush 线程收到 Disconnected 后做最后一次冲刷
     });
 }
 
-/// 守望线程：轮询退出状态并推送 `terminal://exit`
-fn spawn_reaper(app: AppHandle, slot: Arc<Mutex<Option<Session>>>, id: String) {
+fn emit_output(app: &AppHandle, id: &str, bytes: &[u8]) {
+    let _ = app.emit(
+        OUTPUT_EVENT,
+        TerminalChunk {
+            id: id.to_string(),
+            data: STANDARD.encode(bytes),
+        },
+    );
+}
+
+/// 守望线程：轮询退出状态并推送 `terminal://exit`；只处理自己的 id
+fn spawn_reaper(
+    app: AppHandle,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    id: String,
+) {
     std::thread::spawn(move || loop {
         let finished: Option<Option<i32>> = {
-            let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(session) = guard.as_mut() else {
+            let mut guard = sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(session) = guard.get_mut(&id) else {
                 return;
             };
-            if session.id != id {
-                return;
-            }
             match session.child.try_wait() {
                 Ok(Some(status)) => Some(Some(status.exit_code() as i32)),
                 Ok(None) => None,
@@ -409,10 +452,8 @@ fn spawn_reaper(app: AppHandle, slot: Arc<Mutex<Option<Session>>>, id: String) {
         };
         if let Some(code) = finished {
             {
-                let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-                if guard.as_ref().map(|s| s.id == id).unwrap_or(false) {
-                    *guard = None;
-                }
+                let mut guard = sessions.lock().unwrap_or_else(|e| e.into_inner());
+                guard.remove(&id);
             }
             let _ = app.emit(EXIT_EVENT, TerminalExit { id, code });
             return;

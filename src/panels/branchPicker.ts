@@ -7,6 +7,7 @@
  */
 
 import { fuzzyScore } from "../core/fuzzy";
+import { firstLine } from "../core/errors";
 
 export interface GitBranch {
   name: string;
@@ -18,6 +19,10 @@ export interface GitBranch {
 export interface BranchPickerDeps {
   load: () => Promise<GitBranch[]>;
   onPick: (name: string) => void;
+  /** 新建并切换分支（在左下角分支入口内完成，不弹对话框） */
+  onCreate: (name: string) => Promise<void>;
+  /** 删除本地分支（未合并时由 git 拒绝） */
+  onDelete: (name: string) => Promise<void>;
   showMessage: (text: string) => void;
 }
 
@@ -33,9 +38,14 @@ export class BranchPicker {
   private branches: GitBranch[] = [];
   private visible: GitBranch[] = [];
   private selected = 0;
+  /** 当前渲染窗口在 visible 中的起始下标（选中项始终在窗口内） */
+  private renderStart = 0;
   private loading = false;
   /** 上次渲染时的查询：查询变了要把选中项复位 */
   private lastQuery = "";
+  /** 新建模式：输入框暂时充当新分支名 */
+  private creating = false;
+  private pendingDelete = "";
 
   constructor(private deps: BranchPickerDeps) {}
 
@@ -61,13 +71,20 @@ export class BranchPicker {
     input.addEventListener("input", () => this.renderList());
     input.addEventListener("keydown", (e) => this.onKeydown(e));
 
+    const createBtn = document.createElement("button");
+    createBtn.type = "button";
+    createBtn.className = "palette-create";
+    createBtn.textContent = "＋ 新建分支";
+    createBtn.title = "新建并切换到新分支";
+    createBtn.addEventListener("click", () => this.startCreate());
+
     const list = document.createElement("div");
     list.className = "palette-list";
 
     const hint = document.createElement("div");
     hint.className = "palette-hint";
 
-    box.append(input, list, hint);
+    box.append(input, createBtn, list, hint);
     overlay.append(box);
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) this.close();
@@ -81,6 +98,8 @@ export class BranchPicker {
     this.branches = [];
     this.visible = [];
     this.selected = 0;
+    this.creating = false;
+    this.pendingDelete = "";
 
     this.renderList();
     input.focus();
@@ -103,7 +122,7 @@ export class BranchPicker {
       this.branches = await this.deps.load();
     } catch (e) {
       this.branches = [];
-      this.deps.showMessage(`读取分支失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`读取分支失败：${firstLine(e)}`);
     } finally {
       this.loading = false;
       this.renderList();
@@ -113,23 +132,90 @@ export class BranchPicker {
   private onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
       e.preventDefault();
-      this.close();
+      if (this.creating) this.cancelCreate();
+      else this.close();
     } else if (e.key === "Enter") {
       e.preventDefault();
+      if (this.creating) {
+        void this.create();
+        return;
+      }
       const branch = this.visible[this.selected];
       if (branch) this.pick(branch);
     } else if (e.key === "ArrowDown" || (e.ctrlKey && e.key === "n")) {
+      if (this.creating) return;
       e.preventDefault();
       this.move(1);
     } else if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
+      if (this.creating) return;
       e.preventDefault();
       this.move(-1);
+    }
+  }
+
+  private startCreate(): void {
+    if (!this.input) return;
+    this.creating = true;
+    this.input.value = "";
+    this.input.placeholder = "新分支名，Enter 创建并切换（Esc 取消）";
+    this.input.focus();
+    this.renderList();
+  }
+
+  private cancelCreate(): void {
+    this.creating = false;
+    this.pendingDelete = "";
+    if (this.input) {
+      this.input.value = "";
+      this.input.placeholder = "切换分支…（输入分支名片段，Esc 关闭）";
+      this.input.focus();
+    }
+    this.renderList();
+  }
+
+  private async create(): Promise<void> {
+    const name = this.input?.value.trim() ?? "";
+    if (!name) {
+      this.deps.showMessage("请输入分支名");
+      return;
+    }
+    try {
+      await this.deps.onCreate(name);
+      this.close();
+    } catch {
+      // GitHost 已提示错误；保留面板供用户修改名称
+    }
+  }
+
+  private async removeBranch(name: string): Promise<void> {
+    if (this.pendingDelete !== name) {
+      this.pendingDelete = name;
+      this.renderList();
+      window.setTimeout(() => {
+        if (this.pendingDelete === name) {
+          this.pendingDelete = "";
+          this.renderList();
+        }
+      }, 3000);
+      return;
+    }
+    this.pendingDelete = "";
+    try {
+      await this.deps.onDelete(name);
+      await this.reload();
+    } catch {
+      // GitHost 已提示错误
     }
   }
 
   private move(delta: number): void {
     if (this.visible.length === 0) return;
     this.selected = (this.selected + delta + this.visible.length) % this.visible.length;
+    const idx = this.selected - this.renderStart;
+    if (idx < 0 || idx >= MAX_RENDERED) {
+      this.renderList();
+      return;
+    }
     this.updateSelection();
   }
 
@@ -144,6 +230,11 @@ export class BranchPicker {
 
   private renderList(): void {
     if (!this.listEl || !this.hintEl) return;
+    if (this.creating) {
+      this.listEl.innerHTML = "";
+      this.hintEl.textContent = "输入新分支名后按 Enter 创建并切换；Esc 取消";
+      return;
+    }
     const query = this.input?.value.trim() ?? "";
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
 
@@ -190,9 +281,16 @@ export class BranchPicker {
     this.hintEl.textContent = `共 ${this.branches.length} 个分支 · ↑↓ 选择 · Enter 切换 · Esc 关闭`;
 
     const frag = document.createDocumentFragment();
-    for (const [i, branch] of this.visible.slice(0, MAX_RENDERED).entries()) {
+    const maxStart = Math.max(0, this.visible.length - MAX_RENDERED);
+    this.renderStart = Math.max(
+      0,
+      Math.min(this.selected - Math.floor(MAX_RENDERED / 2), maxStart),
+    );
+    const slice = this.visible.slice(this.renderStart, this.renderStart + MAX_RENDERED);
+    for (const [offset, branch] of slice.entries()) {
+      const index = this.renderStart + offset;
       const item = document.createElement("div");
-      item.className = `palette-item${i === this.selected ? " selected" : ""}`;
+      item.className = `palette-item${index === this.selected ? " selected" : ""}`;
 
       const name = document.createElement("span");
       name.textContent = branch.name;
@@ -206,10 +304,22 @@ export class BranchPicker {
       tag.textContent = parts.join(" ");
 
       item.append(name, tag);
+      if (!branch.current) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "palette-branch-delete";
+        del.textContent = this.pendingDelete === branch.name ? "确认" : "×";
+        del.title = this.pendingDelete === branch.name ? "再次点击确认删除" : "删除该本地分支";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          void this.removeBranch(branch.name);
+        });
+        item.append(del);
+      }
       item.addEventListener("click", () => this.pick(branch));
       item.addEventListener("mouseenter", () => {
-        if (this.selected !== i) {
-          this.selected = i;
+        if (this.selected !== index) {
+          this.selected = index;
           this.updateSelection();
         }
       });
@@ -220,7 +330,7 @@ export class BranchPicker {
     if (this.visible.length > MAX_RENDERED) {
       const more = document.createElement("div");
       more.className = "palette-empty";
-      more.textContent = `仅显示前 ${MAX_RENDERED} 条（共 ${this.visible.length} 条），请细化关键词`;
+      more.textContent = `显示第 ${this.renderStart + 1}–${this.renderStart + slice.length} 条（共 ${this.visible.length} 条），↑↓ 继续选择或细化关键词`;
       this.listEl.append(more);
     }
     this.updateSelection();
@@ -228,9 +338,10 @@ export class BranchPicker {
 
   private updateSelection(): void {
     if (!this.listEl) return;
-    this.listEl.querySelectorAll(".palette-item").forEach((el, idx) => {
-      el.classList.toggle("selected", idx === this.selected);
+    const idx = this.selected - this.renderStart;
+    this.listEl.querySelectorAll(".palette-item").forEach((el, i) => {
+      el.classList.toggle("selected", i === idx);
     });
-    this.listEl.children[this.selected]?.scrollIntoView({ block: "nearest" });
+    this.listEl.children[idx]?.scrollIntoView({ block: "nearest" });
   }
 }

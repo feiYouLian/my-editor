@@ -202,16 +202,21 @@ pub async fn write_draft(app: tauri::AppHandle, draft: DraftInput) -> Result<Dra
     .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
-/// 列出全部草稿（含过期判定；内容不返回）
+/// 列出草稿：目录遍历 + 每个草稿的原文件指纹（可能读 4MB）放到 spawn_blocking，
+/// 避免启动阶段阻塞事件循环。
 #[tauri::command]
-pub fn list_drafts(app: tauri::AppHandle) -> Vec<DraftInfo> {
-    let Ok(dir) = drafts_dir(&app) else {
-        return Vec::new();
-    };
-    read_all_drafts(&dir)
-        .into_iter()
-        .map(DraftInfo::from_file)
-        .collect()
+pub async fn list_drafts(app: tauri::AppHandle) -> Vec<DraftInfo> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(dir) = drafts_dir(&app) else {
+            return Vec::new();
+        };
+        read_all_drafts(&dir)
+            .into_iter()
+            .map(DraftInfo::from_file)
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 读取单个草稿内容（不存在返回 None）

@@ -311,13 +311,17 @@ pub(crate) fn reveal_path(p: &Path, select: bool) -> Result<(), String> {
 }
 
 /// 在系统文件管理器中定位（跨平台）。
-/// 安全：仅允许已登记工作区根目录之内。
+/// 安全：只读操作，不要求位于工作区内；仅做路径规范化与存在性校验，
+/// **不登记到 PathGuard**（避免一次“定位”就扩大可写入目录）。
 #[tauri::command]
 pub fn reveal_in_file_manager(
-    state: tauri::State<'_, PathGuard>,
+    _state: tauri::State<'_, PathGuard>,
     path: String,
 ) -> Result<(), String> {
-    let p = state.ensure_root_scope(&path)?;
+    let p = PathGuard::normalize(std::path::Path::new(&path))?;
+    if !p.exists() {
+        return Err("路径不存在".to_string());
+    }
     reveal_path(&p, true)
 }
 

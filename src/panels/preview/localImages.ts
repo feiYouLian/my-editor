@@ -4,7 +4,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { dirnameOf } from "../../core/paths";
+import { dirnameOf, joinVirtualPath } from "../../core/paths";
 
 /** 相对路径图片内联上限：超过则跳过，避免预览一次性读入大图 */
 const INLINE_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
@@ -60,25 +60,25 @@ export function resolveLocalImage(src: string, baseDir: string): string | null {
     } catch {
       // 保留原样
     }
-    return p.replace(/\//g, "\\");
+    return p;
   }
   if (/^[a-z]:[\\/]/i.test(raw) || raw.startsWith("\\\\")) {
     try {
-      return decodeURI(raw).replace(/\//g, "\\");
+      return decodeURI(raw);
     } catch {
-      return raw.replace(/\//g, "\\");
+      return raw;
     }
   }
 
   const clean = raw.split(/[?#]/)[0];
   if (!clean) return null;
-  let rel = clean.replace(/^\.\//, "").replace(/\//g, "\\");
+  let rel = clean.replace(/^\.\//, "").replace(/\\/g, "/");
   try {
     rel = decodeURI(rel);
   } catch {
     // 保留原样
   }
-  return `${baseDir}\\${rel}`;
+  return joinVirtualPath(baseDir, rel);
 }
 
 /** 读取本地图片为 data URL（带大小检查与缓存）。maxBytes 参与缓存键：
@@ -90,7 +90,7 @@ function loadLocalImage(path: string, maxBytes: number): Promise<string | null> 
   const entry: ImageCacheEntry = { task: Promise.resolve(null), bytes: 0 };
   entry.task = (async () => {
     try {
-      const probe = await invoke<{ size: number }>("probe_file", { path });
+      const probe = await invoke<{ size: number }>("probe_file", { path, register: false });
       if (probe.size > maxBytes) return null;
       entry.bytes = probe.size;
       evictImages();

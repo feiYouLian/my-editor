@@ -8,10 +8,18 @@ import { CommandPalette } from "./panels/commandPalette";
 import { QuickOpen } from "./panels/quickOpen";
 import { SearchView } from "./panels/searchView";
 import { OutlineView } from "./panels/outlineView";
+import { BookmarksView } from "./panels/bookmarksView";
+import { StructuredView } from "./panels/structuredView";
+import { removeBookmark } from "./editor/bookmarks";
 import { OpenEditorsView } from "./panels/openEditorsView";
 import { GitView } from "./panels/gitView";
 import type { GitFileEntry } from "./panels/gitView";
 import { BranchPicker } from "./panels/branchPicker";
+import { GitBlameDialog } from "./panels/gitBlame";
+import { GitHistoryPanel } from "./panels/gitHistoryPanel";
+import type { BlameLine } from "./panels/gitBlame";
+import type { BlameAnnotation } from "./editor/blame";
+import { ConflictGuideDialog } from "./panels/conflictGuide";
 import { SidebarViews } from "./ui/sidebar";
 import { WelcomePanel } from "./panels/welcome";
 import { showAboutDialog } from "./panels/aboutDialog";
@@ -50,16 +58,29 @@ import {
   type WorkspaceState,
 } from "./services/workspace";
 import { cleanupDrafts, loadSession } from "./services/session";
+import { TreeWatcher } from "./services/treeWatch";
+import { logError, logEvent } from "./services/diagnostics";
 import { onOpenExternalFiles, takePendingFiles } from "./services/launch";
 import {
   settings,
+  effectiveIgnoreDirs,
   findUserTheme,
   getConfig,
+  getWorkspaceOverrides,
   loadSettings,
   setUserThemes,
+  setWorkspaceOverrides,
   subscribeSettings,
   updateSettings,
 } from "./config/settings";
+import { loadWorkspaceOverrides, saveWorkspaceOverrides } from "./services/workspaceSettings";
+import { normalizeOverrides } from "./core/workspaceOverrides";
+import { setWorkspaceOverrideHooks } from "./settings/shared";
+import {
+  loadRecentWorkspaces,
+  pushRecentWorkspace,
+  removeRecentWorkspace,
+} from "./panels/recentWorkspaces";
 import { customThemeName } from "./config/userThemes";
 import { loadUserLanguages, loadUserThemes } from "./services/userAssets";
 import { openStatusMenu } from "./ui/statusMenu";
@@ -85,6 +106,7 @@ import type { SettingsPanel } from "./panels/settingsPanel";
 import { basenameOf } from "./core/paths";
 import { ensureFinalNewline, trimTrailing } from "./core/textOps";
 import { effectiveLanguage, languageLabel, setUserLanguages } from "./editor/languages";
+import { firstLine } from "./core/errors";
 
 // ---------------------------------------------------------------------------
 // 多标签页 + 文件树/工作区 + 命令面板 + Prettier 格式化
@@ -215,7 +237,7 @@ statusIndent.addEventListener("click", (e) => {
           void updateSettings({ tabSize: current.tabSize, insertSpaces: current.insertSpaces })
             .then(() => statusBar.showMessage("已设为全局默认缩进"))
             .catch((err) =>
-              statusBar.showMessage(`保存配置失败：${String(err).split("\n")[0]}`),
+              statusBar.showMessage(`保存配置失败：${firstLine(err)}`),
             );
         },
       },
@@ -287,6 +309,11 @@ let welcomeView: WelcomePanel | null = null;
 
 /** 工作区根目录（root/expanded 由文件树维护并落 workspace.json） */
 let workspaceRoot: string | null = null;
+/** 已加载覆盖项的工作区键；重复 setRoot（展开/折叠）不再打 IPC */
+let workspaceConfigFor: string | null = null;
+/** 最近一次展开目录（目录监听的同步依据） */
+let lastExpandedDirs: string[] = [];
+let treeWatcher: TreeWatcher | null = null;
 
 function activeTab(): Tab | null {
   return tabStore.active();
@@ -359,7 +386,7 @@ async function closeTab(id: string): Promise<void> {
             await fileService.writeTo(tab, target);
           }
         } catch (e) {
-          statusBar.showMessage(`保存失败: ${String(e).split("\n")[0]}`);
+          statusBar.showMessage(`保存失败: ${firstLine(e)}`);
           return;
         }
       }
@@ -511,6 +538,7 @@ tabStore.subscribe((kind) => {
   welcomeView?.setVisible(tabStore.list().length === 0);
   // 用"是否展开"而不是"最后激活"：多分区同时展开时，大纲不会因为没被最后点过就不刷新
   if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
+  if (sidebarViews.isExpanded("bookmarks")) sidebarBookmarks.refresh();
   breadcrumbView.render();
   statusBar.refresh();
   // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
@@ -536,7 +564,21 @@ tabStore.subscribe((kind) => {
 // ---- 工作区持久化（根目录与展开状态） ----
 
 function persistWorkspaceWithExpanded(expanded: string[]): void {
-  saveWorkspaceDebounced({ root: workspaceRoot, expanded });
+  lastExpandedDirs = expanded;
+  // 关闭记忆时不把展开状态写进 workspace.json；运行期仍保留当前展开
+  const remember = getConfig().workspace.rememberExpanded;
+  saveWorkspaceDebounced({ root: workspaceRoot, expanded: remember ? expanded : [] });
+  syncTreeWatchDirs();
+}
+
+/** 目录监听集合 = 工作区根 + 已展开目录（上限由 TreeWatcher 截断） */
+function syncTreeWatchDirs(): void {
+  if (!treeWatcher) return;
+  if (!getConfig().workspace.watchTree || !workspaceRoot) {
+    void treeWatcher.setDirs([]);
+    return;
+  }
+  void treeWatcher.setDirs([workspaceRoot, ...lastExpandedDirs]);
 }
 
 // ---- 会话与草稿持久化：见 app/sessionHost.ts ----
@@ -555,7 +597,7 @@ const fileTree = new FileTree(fileTreeEl, {
   onOpenTerminal: (dir) => void terminalHost.openAt(dir),
   onNotify: (message) => statusBar.showMessage(message),
   // 过滤框与快速打开共用同一份忽略目录，避免两处搜出来的文件不一致
-  getIgnoreDirs: () => getConfig().ignoreDirs,
+  getIgnoreDirs: () => effectiveIgnoreDirs(),
   // 空状态里的「打开目录」按钮（原来只有一行文字）
   onOpenFolder: () => void openWorkspaceDir(),
   // 删除文件/目录后同步右侧：干净标签直接关（否则一按保存就把文件"复活"），脏标签保留并说明
@@ -606,6 +648,7 @@ const fileTree = new FileTree(fileTreeEl, {
     }
   },
   onWorkspaceStateChange: (state) => {
+    const previousKey = workspaceKeyOf(workspaceRoot);
     workspaceRoot = state.root;
     wsName.textContent = state.root
       ? (basenameOf(state.root) || state.root)
@@ -613,6 +656,8 @@ const fileTree = new FileTree(fileTreeEl, {
     wsName.title = state.root ?? "";
     persistWorkspaceWithExpanded(state.expanded);
     breadcrumbView.render();
+    // 只在根目录真的变了时重载覆盖项：展开/折叠也会触发本回调
+    if (workspaceKeyOf(state.root) !== previousKey) void applyWorkspaceConfig(state.root);
   },
 });
 fileTree.mountGlobalListeners();
@@ -620,7 +665,7 @@ fileTree.mountGlobalListeners();
 // ---- 侧栏多视图：文件 / 搜索 / 大纲 ----
 const sidebarSearch = new SearchView($("sidebar-search"), {
   getRoot: () => workspaceRoot,
-  getIgnoreDirs: () => getConfig().ignoreDirs,
+  getIgnoreDirs: () => effectiveIgnoreDirs(),
   onOpenLocation: (path, line) => void openFileAt(path, line),
   isDirtyPath: (path) => tabStore.findByPath(path)?.dirty === true,
   // 批量替换已写盘：重载已打开的标签 + 重建文件树（新增 .bak 也要可见）
@@ -668,6 +713,35 @@ const sidebarOutline = new OutlineView($("sidebar-outline"), {
     const tab = activeTab();
     return !!tab && editorHandle.docId() === tab.id;
   },
+});
+const sidebarBookmarks = new BookmarksView($("sidebar-bookmarks"), {
+  activeTab: () => activeTab(),
+  linesOf: (docId) => editorHandle.bookmarksOf(docId),
+  lineText: (line) => {
+    const tab = activeTab();
+    if (!tab || editorHandle.docId() !== tab.id) return "";
+    const doc = editorHandle.view.state.doc;
+    return line >= 1 && line <= doc.lines ? doc.line(line).text : "";
+  },
+  onJump: (line) => {
+    editorHandle.gotoLine(line);
+    editorHandle.view.focus();
+  },
+  onRemove: (line) => {
+    // 直接派发移除效果：书签 field 会自行重映射，视图随后由 onBookmarkChange 刷新
+    editorHandle.view.dispatch({ effects: removeBookmark.of(line) });
+  },
+});
+// 结构化只读视图（CSV 表格 / JSON 树）：内容取自当前标签快照，不改文件
+const structuredView = new StructuredView({
+  getSource: () => {
+    const tab = activeTab();
+    if (!tab || tab.kind !== "text" || tab.virtual) return null;
+    const content =
+      editorHandle.docId() === tab.id ? editorHandle.getContent() : tabStore.snapshotOf(tab);
+    return { name: tab.name, path: tab.path, content };
+  },
+  onMessage: statusBar.showMessage,
 });
 /** 复制文本到剪贴板（打开的文件 / 源代码管理右键共用） */
 function copyTextToClipboard(text: string, okMessage: string): void {
@@ -721,6 +795,8 @@ openEditors.refresh();
 const branchPicker = new BranchPicker({
   load: () => gitHost.listBranches(),
   onPick: (name) => gitHost.checkout(name),
+  onCreate: (name) => gitHost.createBranch(name, true),
+  onDelete: (name) => gitHost.deleteBranch(name, false),
   showMessage: statusBar.showMessage,
 });
 const gitStatusItem = new GitStatusItem(
@@ -734,13 +810,32 @@ const gitStatusItem = new GitStatusItem(
 );
 
 // 源代码管理：只读状态 + 暂存/取消暂存/提交（串行队列 + 防抖刷新）
-const gitView = new GitView($("sidebar-git"), {
+const gitBlameDialog = new GitBlameDialog();
+const gitHistoryPanel = new GitHistoryPanel(document.getElementById("git-history-panel")!, {
+  load: () => gitHost.listCommits(),
+  loadCommit: (hash) => gitHost.showCommit(hash),
+});
+gitHistoryPanel.mount();
+const conflictGuideDialog = new ConflictGuideDialog();
+const gitView: GitView = new GitView($("sidebar-git"), {
   onRefresh: () => gitHost.refresh(),
   onOpenDiff: (path, staged) => void diffService.diffGitPath(path, staged),
   onStage: (entries) => gitHost.stage(entries),
   onUnstage: (entries) => gitHost.unstage(entries),
   onDiscard: (entries, staged) => void confirmDiscardGitChanges(entries, staged),
   onCommit: (message) => gitHost.commit(message),
+  onOpenHistory: () => {
+    terminalHost.hide();
+    runHost.hideOutputPanel();
+    gitHistoryPanel.open();
+  },
+  onResolveConflicts: (entries) =>
+    conflictGuideDialog.open(
+      workspaceRoot ?? "",
+      entries,
+      (path) => void fileService.openFilePath(path),
+      (dir) => void terminalHost.openAt(dir),
+    ),
   onOpenFile: (path) => void fileService.openFilePath(path),
   onCopyPath: copyPathToClipboard,
   onCopyRelative: (relative) => copyTextToClipboard(relative, "已复制相对路径"),
@@ -748,7 +843,7 @@ const gitView = new GitView($("sidebar-git"), {
   // terminalHost 在下文构造：回调运行时才访问（闭包，无 TDZ 风险）
   onOpenTerminal: (dir) => void terminalHost.openAt(dir),
 });
-const gitHost = new GitHost({
+const gitHost: GitHost = new GitHost({
   getRoot: () => workspaceRoot,
   view: gitView,
   showMessage: statusBar.showMessage,
@@ -772,10 +867,24 @@ const gitHost = new GitHost({
     gitStatusItem.update(status);
   },
   // 切分支 / 拉取后磁盘内容变了：重载未编辑的标签
-  onWorkspaceChanged: () => void reloadCleanTabs(),
+  onWorkspaceChanged: () => {
+    void reloadCleanTabs();
+    // 切分支 / 拉取后如果历史面板开着，同步刷新提交列表
+    if (gitHistoryPanel.isOpen) gitHistoryPanel.open();
+  },
 });
 // 窗口重新聚焦时刷新一次 Git 状态（外部变更后回来能看到最新）
 window.addEventListener("focus", () => gitHost.scheduleRefresh());
+
+// 文件树监听（只监听已展开目录）：外部增删改名后只刷新对应层，并顺带刷新 Git 状态
+treeWatcher = new TreeWatcher(
+  (dirs) => {
+    for (const dir of dirs) fileTree.refreshDirectory(dir);
+    gitHost.scheduleRefresh();
+  },
+  () => statusBar.showMessage("文件树监听目录过多，仅监听前 200 个"),
+);
+void treeWatcher.start().then(() => syncTreeWatchDirs());
 /**
  * 侧栏布局是否已恢复。restore 之前切标签（会话恢复）不要自动展开分区：
  * 那时 switch() 会把布局写回 config，覆盖用户上次的收起状态。
@@ -789,6 +898,7 @@ const sidebarViews = new SidebarViews(
     files: $("file-tree"),
     search: $("sidebar-search"),
     outline: $("sidebar-outline"),
+    bookmarks: $("sidebar-bookmarks"),
   },
   {
     onChange: (view) => {
@@ -797,6 +907,7 @@ const sidebarViews = new SidebarViews(
       if (view === "git") gitHost.refresh();
       if (view === "search") sidebarSearch.focusInput();
       if (view === "outline") sidebarOutline.scheduleRefresh();
+      if (view === "bookmarks") sidebarBookmarks.refresh();
       if (view === "files") {
         // 展开「文件」分区时补一次定位：侧栏隐藏/分区收起期间切换过的标签，
         // 选中状态没法在隐藏的 DOM 上体现，展开这一下要能立刻看到当前文件
@@ -812,13 +923,16 @@ const sidebarViews = new SidebarViews(
 );
 
 /** 菜单 / 快捷键：展开侧栏并切到指定视图 */
-function showSidebarView(view: "open" | "git" | "files" | "search" | "outline"): void {
+function showSidebarView(
+  view: "open" | "git" | "files" | "search" | "outline" | "bookmarks",
+): void {
   layout.setSidebarVisible(true);
   sidebarViews.switch(view);
   if (view === "open") openEditors.refresh();
   if (view === "git") gitHost.refresh();
   if (view === "search") sidebarSearch.focusInput();
   if (view === "outline") sidebarOutline.scheduleRefresh();
+  if (view === "bookmarks") sidebarBookmarks.refresh();
 }
 
 /** 菜单 / 快捷键：展开侧栏并聚焦工作区搜索；编辑器有选区时带入关键词 */
@@ -855,6 +969,127 @@ btnOpenDir.addEventListener("click", () => void openWorkspaceDir());
 // ---- 标签页右键菜单：见 ui/tabsBar.ts ----
 
 // ---- 编辑器初始化（CM6 仅承载 <20MB 文档）----
+
+const INLINE_BLAME_KEY = "my-editor.inlineBlame";
+let inlineBlameEnabled = (() => {
+  try {
+    return localStorage.getItem(INLINE_BLAME_KEY) !== "0";
+  } catch {
+    return true;
+  }
+})();
+let lastCursorLine = 1;
+let lastBlamePath = "";
+/** path → 行号映射；Promise 缓存避免光标每次移动都重新跑 git blame */
+const inlineBlameCache = new Map<string, Promise<Map<number, BlameAnnotation>>>();
+
+function toBlameAnnotation(line: BlameLine): BlameAnnotation {
+  return {
+    line: line.line,
+    hash: line.hash,
+    shortHash: line.shortHash,
+    author: line.author,
+    authorTime: line.authorTime,
+    summary: line.summary,
+  };
+}
+
+/** 按当前光标行更新内联 Blame；不满足条件时清除 */
+function updateInlineBlame(line = lastCursorLine): void {
+  lastCursorLine = line;
+  const tab = activeTab();
+  if (
+    !inlineBlameEnabled ||
+    !tab ||
+    tab.kind !== "text" ||
+    !tab.path ||
+    tab.virtual ||
+    tab.dirty ||
+    editorHandle.docId() !== tab.id
+  ) {
+    editorHandle.setBlame(null);
+    return;
+  }
+  const path = tab.path;
+  // 换文件先清掉上一文件的注释，避免加载新 blame 期间显示错行
+  if (lastBlamePath !== path) {
+    lastBlamePath = path;
+    editorHandle.setBlame(null);
+  }
+  let cached = inlineBlameCache.get(path);
+  if (!cached) {
+    cached = gitHost
+      .blame(path)
+      .then((report) => {
+        const map = new Map<number, BlameAnnotation>();
+        for (const item of report.lines) map.set(item.line, toBlameAnnotation(item));
+        return map;
+      })
+      .catch(() => {
+        // 未跟踪 / 大文件 / 无提交：缓存空结果，避免每次光标移动都重试 IPC；
+        // 保存或编辑时会清掉缓存，文件进入 Git 后可重新拉取
+        return new Map<number, BlameAnnotation>();
+      });
+    inlineBlameCache.set(path, cached);
+    // 每份 Blame 最多 1 万行：只保留最近 8 个文件，避免切文件累积内存
+    while (inlineBlameCache.size > 8) {
+      const oldest = inlineBlameCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      inlineBlameCache.delete(oldest);
+    }
+  }
+  const pending = cached;
+  void pending.then((map) => {
+    const current = activeTab();
+    if (
+      !inlineBlameEnabled ||
+      !current ||
+      current.path !== path ||
+      current.dirty ||
+      editorHandle.docId() !== current.id
+    ) {
+      return;
+    }
+    editorHandle.setBlame(map.get(lastCursorLine) ?? null);
+  });
+}
+
+function toggleInlineBlame(): void {
+  inlineBlameEnabled = !inlineBlameEnabled;
+  try {
+    localStorage.setItem(INLINE_BLAME_KEY, inlineBlameEnabled ? "1" : "0");
+  } catch {
+    // localStorage 不可用时仅本次会话生效
+  }
+  if (inlineBlameEnabled) {
+    updateInlineBlame(lastCursorLine);
+    statusBar.showMessage("行内 Git Blame 已开启", 3000);
+  } else {
+    editorHandle.setBlame(null);
+    lastBlamePath = "";
+    statusBar.showMessage("行内 Git Blame 已关闭", 3000);
+  }
+}
+
+/** 命令面板入口：逐行 Blame 对话框（左侧按钮已移除） */
+function openBlameDialog(): void {
+  const tab = activeTab();
+  if (!tab || tab.kind !== "text" || !tab.path) {
+    statusBar.showMessage("请先打开一个磁盘上的文本文件");
+    return;
+  }
+  if (tab.virtual) {
+    statusBar.showMessage("大文件只读视图不支持 Git Blame");
+    return;
+  }
+  const path = tab.path;
+  gitBlameDialog.open(
+    tab.name,
+    () => gitHost.blame(path),
+    (line) => void openFileAt(path, line),
+    tab.dirty,
+  );
+}
 editorHandle = createEditor($("editor"), {
   onDocChange: () => {
     const tab = activeTab();
@@ -866,6 +1101,8 @@ editorHandle = createEditor($("editor"), {
     tabStore.markEdited(tab.id);
     const t = tabStore.findById(tab.id);
     if (t) preview.scheduleRender(t);
+    // 行号已变化：Blame 缓存作废；编辑器状态字段会在 docChanged 时自动隐藏
+    if (t?.path) inlineBlameCache.delete(t.path);
     // 结果面板存的是绝对偏移：编辑后防抖重枚举，否则双击跳错位置
     resultsPanel?.scheduleRefresh();
     // 未保存内容防抖写入草稿（始终开启，不提供关闭入口）
@@ -885,6 +1122,10 @@ editorHandle = createEditor($("editor"), {
       sessionHost.setCursor(tab.id, { line, col });
       // 大纲跟随光标（只在侧栏确实显示大纲时更新，否则纯属浪费）
       if (sidebarViews.isExpanded("outline")) sidebarOutline.followCursor(line);
+      // 行内 Blame 跟随光标（缓存按文件复用，不重复跑 git blame）
+      updateInlineBlame(line);
+    } else {
+      editorHandle.setBlame(null);
     }
   },
   onHighlightDisabled: (reason) => {
@@ -895,6 +1136,7 @@ editorHandle = createEditor($("editor"), {
   // setState 不触发 onDocChange，只靠 200ms 防抖会在文档还没载入时按旧文档渲染
   onDocLoaded: () => {
     if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
+    if (sidebarViews.isExpanded("bookmarks")) sidebarBookmarks.refresh();
   },
   onUndoHistoryLost: () => {
     // 每个文档只触发一次；说明原因，否则「Ctrl+Z 没反应」会被当成 bug
@@ -904,7 +1146,11 @@ editorHandle = createEditor($("editor"), {
     );
   },
   // 书签 / 折叠变化写进会话（400ms 防抖），重启后自动恢复
-  onBookmarkChange: () => sessionHost.persistSession(),
+  onBookmarkChange: () => {
+    sessionHost.persistSession();
+    // 书签列表是当前文档的实时视图：增删后立即同步（含 gutter 与列表一致）
+    if (sidebarViews.isExpanded("bookmarks")) sidebarBookmarks.refresh();
+  },
   onFoldChange: () => sessionHost.persistSession(),
 });
 
@@ -921,6 +1167,9 @@ subscribeSettings(() => {
   statusBar.applyTheme(getConfig());
   statusBar.applyFields(getConfig().layout.statusBarFields);
   editorHandle.applySettings();
+  // 列编辑器键位可能刚被改绑：保留集必须同步，否则旧键永久占用、新键可能被全局命令抢
+  setExtraReservedKeys([getConfig().editorEnhancements.columnEditorKey]);
+  syncTreeWatchDirs();
   statusBar.refresh();
   statusBar.refreshWhitespace();
   // 语言映射 / 只读阈值等配置会影响可运行性判断
@@ -1015,7 +1264,7 @@ const formatHost = new FormatHost({
 const symbolHost = new SymbolHost({
   getView: () => editorHandle.view,
   getWorkspaceRoot: () => workspaceRoot,
-  getIgnoreDirs: () => getConfig().ignoreDirs,
+  getIgnoreDirs: () => effectiveIgnoreDirs(),
   openAt: (path, line) => openFileAt(path, line),
   showMessage: statusBar.showMessage,
 });
@@ -1052,8 +1301,8 @@ const fileService = new FileService({
   insertAtCursor,
   syncWatchedFiles: () => sessionHost.syncWatchedDebounced(),
   refreshStatus: () => statusBar.refresh(),
-  pickEncoding: (encodings, current, onPick, note) =>
-    runHost.pickEncoding(encodings, current, onPick, note),
+  pickEncoding: (encodings, current, currentBom, onPick, note) =>
+    runHost.pickEncoding(encodings, current, currentBom, onPick, note),
   largeHost,
   // 保存前格式化：单编辑器实例，只处理激活标签；失败不阻塞保存
   formatBeforeSave: (tab) => formatHost.beforeSave(tab),
@@ -1076,10 +1325,17 @@ const fileService = new FileService({
     }
   },
   // 写盘成功后刷新 Git 状态（源代码管理分区）
-  onAfterSave: () => gitHost.scheduleRefresh(),
+  onAfterSave: () => {
+    gitHost.scheduleRefresh();
+    const tab = activeTab();
+    if (tab?.path) inlineBlameCache.delete(tab.path);
+    // 保存后行号与提交归属可能变化：重新拉取并刷新当前行
+    updateInlineBlame(lastCursorLine);
+  },
   // 保存失败不得静默：弹可复制详情的对话框 + 状态栏常驻红字（直到下次保存成功）
   reportSaveError: (tab, error) => {
     const detail = String(error ?? "未知错误");
+    logEvent("error", `保存失败：${tab.name}`, firstLine(detail));
     // 失败后直接给出两条出路：另存为（换路径）、从磁盘重新载入（文件被外部占用/改动时）
     showErrorDialog(`保存失败：「${tab.name}」`, detail, [
       { label: "另存为…", run: () => void fileService.saveFileAs() },
@@ -1102,7 +1358,7 @@ const fileService = new FileService({
 // 快速打开（Ctrl+P）：工作区文件模糊过滤 → 打开（含大文件分流）
 const quickOpen = new QuickOpen({
   getRoot: () => workspaceRoot,
-  getIgnoreDirs: () => getConfig().ignoreDirs,
+  getIgnoreDirs: () => effectiveIgnoreDirs(),
   onOpen: (path) => void fileService.openFilePath(path),
   showMessage: statusBar.showMessage,
 });
@@ -1113,7 +1369,10 @@ const terminalHost = new TerminalHost({
   getActiveTab: activeTab,
   getWorkspaceRoot: () => workspaceRoot,
   showMessage: statusBar.showMessage,
-  onBeforeOpen: () => runHostRef?.hideOutputPanel(),
+  onBeforeOpen: () => {
+    runHostRef?.hideOutputPanel();
+    gitHistoryPanel.hide();
+  },
 });
 
 // 运行与工具面板宿主（Code Run / Cron / 批量编码 / 正则 / 表格 / 最近打开）
@@ -1127,7 +1386,10 @@ const runHost = new RunHost(runBtn, {
   runInTerminal: (path, runner) => void terminalHost.runFile(path, runner),
   runCurlInTerminal: (script) => void terminalHost.runCurlScript(script),
   onOpenLocation: (path, line) => void openFileAt(path, line),
-  onBeforeRun: () => terminalHost.hide(),
+  onBeforeRun: () => {
+    terminalHost.hide();
+    gitHistoryPanel.hide();
+  },
   // F5 / 在终端运行：未保存时先落盘（writeTo 负责脏标记与草稿语义）
   onSaveTab: async (tab) => {
     if (!tab.path) return false;
@@ -1135,7 +1397,7 @@ const runHost = new RunHost(runBtn, {
       await fileService.writeTo(tab, tab.path);
       return true;
     } catch (e) {
-      statusBar.showMessage(`保存失败: ${String(e).split("\n")[0]}`);
+      statusBar.showMessage(`保存失败: ${firstLine(e)}`);
       return false;
     }
   },
@@ -1154,6 +1416,8 @@ welcomeView = new WelcomePanel($("welcome"), {
     void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
 });
 welcomeView.setVisible(tabStore.list().length === 0);
+// 最近工作区：跨会话记忆，首屏可直接切换（启动时还没有工作区也能看到）
+refreshWelcomeRecents();
 
 // 网页抓取编排（默认目录 / PathGuard 登记 / 抓取后打开）
 const fetchHost = new FetchHost({
@@ -1168,6 +1432,7 @@ const diffService = new DiffService({
   getActiveTab: activeTab,
   showMessage: statusBar.showMessage,
   onReloadActiveTab: () => reloadActiveTab(),
+  onGitChanged: () => gitHost.scheduleRefresh(),
 });
 
 // 窗口 chrome（标题栏按钮 / 缩放热区 / 退出清理）
@@ -1228,7 +1493,7 @@ const dropHost = new DropHost({
       try {
         kind = await invoke<"file" | "dir">("path_kind", { path });
       } catch (e) {
-        statusBar.showMessage(`无法读取路径: ${String(e).split("\n")[0]}`);
+        statusBar.showMessage(`无法读取路径: ${firstLine(e)}`);
         continue;
       }
       if (kind === "dir") {
@@ -1252,6 +1517,12 @@ const layout = new LayoutPane({
       const tab = activeTab();
       if (tab?.path) fileTree.revealPath(tab.path);
     }
+  },
+  persistSplitRatio: (ratio) => {
+    // 松手时立即写一次（不是每帧）：避免防抖窗口内其它配置写入把旧比例覆盖
+    void updateSettings({ layout: { ...getConfig().layout, splitRatio: ratio } }).catch((e) => {
+      statusBar.showMessage(`保存分栏比例失败：${firstLine(e)}`);
+    });
   },
 });
 
@@ -1473,9 +1744,14 @@ registerCommands(
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
+    showStructuredView: (mode) => structuredView.open(mode),
     gitPickBranch: () => branchPicker.open(),
+    gitToggleReadOnly: () => void toggleGitReadOnly(),
     gitPull: () => gitHost.pull(),
     gitPush: () => gitHost.push(),
+    gitToggleInlineBlame: () => toggleInlineBlame(),
+    gitInlineBlameEnabled: () => inlineBlameEnabled,
+    gitOpenBlame: () => openBlameDialog(),
     showShortcuts: () => showShortcutsDialog(shortcutRows()),
     showAbout: () =>
       void showAboutDialog({ onShowShortcuts: () => showShortcutsDialog(shortcutRows()) }),
@@ -1520,6 +1796,94 @@ async function openWorkspaceDir(): Promise<void> {
   gitHost.scheduleRefresh();
 }
 
+/**
+ * Git 只读开关：只查看 ↔ 可写。
+ * 前端所有写操作经 GitHost 守卫，后端按 config.json 再校验一次；
+ * 切换后刷新源代码管理面板，让提交按钮与提示立刻跟着变。
+ */
+async function toggleGitReadOnly(): Promise<void> {
+  const next = !getConfig().git.readOnly;
+  try {
+    await updateSettings({ git: { ...getConfig().git, readOnly: next } });
+    gitHost.refresh();
+    statusBar.showMessage(
+      next
+        ? "Git 已切换为只读：只能查看状态 / 差异 / 历史，暂存与提交等写入操作会被拒绝"
+        : "Git 已恢复可写：可以暂存、提交、推送",
+      5000,
+    );
+  } catch (e) {
+    statusBar.showMessage(`切换 Git 只读模式失败：${firstLine(e)}`);
+  }
+}
+
+// ---- per-workspace 设置覆盖（缩进 / 忽略目录）+ 最近工作区 ----
+
+/** 工作区比较键：分隔符与大小写不敏感（Windows 同一目录算同一个） */
+function workspaceKeyOf(root: string | null): string | null {
+  return root ? root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() : null;
+}
+
+/** 刷新首屏「最近工作区」列表 */
+function refreshWelcomeRecents(): void {
+  welcomeView?.setRecentWorkspaces(loadRecentWorkspaces(), (path) => void switchWorkspace(path));
+}
+
+/**
+ * 切换工作区后载入该工作区的覆盖项。
+ * 只改生效值（不动 config.json）；读失败按"无覆盖"处理，不打断打开流程。
+ */
+async function applyWorkspaceConfig(root: string | null): Promise<void> {
+  const key = workspaceKeyOf(root);
+  if (key === workspaceConfigFor) return;
+  workspaceConfigFor = key;
+  if (!root) {
+    setWorkspaceOverrides(null);
+    refreshWelcomeRecents();
+    return;
+  }
+  const overrides = await loadWorkspaceOverrides(root);
+  // 期间用户又切了工作区：丢弃过期结果，避免把 A 的缩进套到 B 上
+  if (workspaceConfigFor !== key) return;
+  setWorkspaceOverrides(overrides);
+  pushRecentWorkspace(root);
+  refreshWelcomeRecents();
+}
+
+/** 从欢迎页切换工作区：目录已不存在时清掉记录并提示 */
+async function switchWorkspace(path: string): Promise<void> {
+  let kind: "file" | "dir";
+  try {
+    kind = await invoke<"file" | "dir">("path_kind", { path });
+  } catch {
+    removeRecentWorkspace(path);
+    refreshWelcomeRecents();
+    statusBar.showMessage(`工作区已不可用，已从最近列表移除：${path}`);
+    return;
+  }
+  if (kind !== "dir") {
+    removeRecentWorkspace(path);
+    refreshWelcomeRecents();
+    statusBar.showMessage(`不是目录，已从最近列表移除：${path}`);
+    return;
+  }
+  fileTree.setRoot(path);
+  gitHost.scheduleRefresh();
+}
+
+// 设置页「工作区覆盖」的保存通道：保存到 <配置目录>/workspaces/<hash>.json 并立即生效
+setWorkspaceOverrideHooks({
+  getRoot: () => workspaceRoot,
+  apply: async (patch) => {
+    const root = workspaceRoot;
+    if (!root) throw new Error("当前没有打开工作区");
+    const next = normalizeOverrides({ ...getWorkspaceOverrides(), ...patch, root });
+    const saved = await saveWorkspaceOverrides(root, next);
+    setWorkspaceOverrides(saved);
+    return saved;
+  },
+});
+
 /** 打开运行输出中的文件位置（堆栈点击）：打开文件并跳到指定行 */
 async function openFileAt(path: string, line: number): Promise<void> {
   await fileService.openFilePath(path);
@@ -1546,7 +1910,7 @@ setExtraReservedKeys([settings.columnEditorKey]);
  * 模态期间屏蔽全局快捷键：否则会在模态背后关标签、启动子进程等。
  */
 const MODAL_SELECTORS =
-  ".dialog-backdrop, .settings-backdrop, .diff-backdrop, .palette-overlay";
+  ".dialog-backdrop, .settings-backdrop, .diff-backdrop, .palette-overlay, .sv-backdrop";
 
 function isModalOpen(): boolean {
   return document.querySelector(MODAL_SELECTORS) !== null;
@@ -1677,7 +2041,9 @@ async function bootstrap(): Promise<void> {
   sidebarViews.restore(getConfig().layout);
   // restore 之后才允许「切标签自动展开文件分区」，避免启动早期覆盖用户的收起状态
   sidebarRestored = true;
-  // 3) 分栏默认比例：localStorage 无记录时按配置（不写回，留给用户拖动/设置时落盘）
+  // 书签分区若在配置里是展开的，先渲染一次空态（会话恢复载入文档后会再刷）
+  sidebarBookmarks.refresh();
+  // 3) 分栏比例：config.json 是唯一真源（会话不再覆盖）
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集
   setExtraReservedKeys([settings.columnEditorKey]);
@@ -1690,7 +2056,8 @@ async function bootstrap(): Promise<void> {
   }
   workspaceRoot = state.root;
   if (state.root) {
-    fileTree.setRoot(state.root, state.expanded);
+    const expanded = getConfig().workspace.rememberExpanded ? state.expanded : [];
+    fileTree.setRoot(state.root, expanded);
     wsName.textContent = basenameOf(state.root) || state.root;
     wsName.title = state.root;
   }
@@ -1707,7 +2074,6 @@ async function bootstrap(): Promise<void> {
   if (getConfig().session.restoreOnStartup) {
     try {
       const sess = await loadSession();
-      if (sess.splitRatio != null) statusBar.setSplitRatio(sess.splitRatio);
       sessionActiveUntitled = sess.activeUntitledName ?? null;
       sessionHost.primeRestoredCursors(sess.openFiles);
       // 按会话记录的顺序建标签：选中项静默载入内容，其余先建占位标签（顺序因此与关闭前一致）
@@ -1800,8 +2166,14 @@ window.addEventListener("unhandledrejection", (e) => {
     return;
   }
   console.error("[unhandled]", reason);
+  logError("unhandledrejection", reason);
   showErrorDialog("操作失败", text);
   e.preventDefault();
+});
+
+// 同步异常（事件处理器 / 渲染错误）同样落本地日志；不额外弹窗，避免与上面的对话框重复
+window.addEventListener("error", (e) => {
+  logError("window.onerror", `${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`);
 });
 
 void (async () => {

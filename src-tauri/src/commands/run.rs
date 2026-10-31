@@ -1,10 +1,10 @@
 //! Code Run：运行当前文件并流式回传输出（**非沙箱**）。
-//! 仅支持 Python / Node / Java / cURL；超时 30s、输出上限 1MB、可随时停止。
+//! 仅支持 Python / Node / Java / cURL；超时/输出上限可配置（默认 30s / 1MB），可随时停止。
 //! 停止采用「结束整棵进程树」策略：Windows 用 `taskkill /T /F`，其它平台 kill 直接子进程。
 //! 说明：这里用 `std::process` + 线程实现（不引入 tokio/process 特性），行为与设计一致。
 
 use serde::Serialize;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -12,10 +12,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
-/// 单次运行超时
+/// 单次运行默认超时（可被 run_code 参数覆盖）
 const TIMEOUT_SECS: u64 = 30;
-/// 输出总量上限（stdout + stderr 合计）
+/// 输出总量默认上限（可被 run_code 参数覆盖）
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MIN_TIMEOUT_SECS: u64 = 1;
+const MAX_TIMEOUT_SECS: u64 = 600;
+const MIN_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_OUTPUT_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_STDIN_BYTES: usize = 1024 * 1024;
+const MAX_ENV_PAIRS: usize = 64;
 /// 输出批量回传：间隔与体积阈值（事件节流，避免逐行刷屏）
 const FLUSH_MS: u128 = 80;
 const FLUSH_BYTES: usize = 16 * 1024;
@@ -371,6 +377,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     reader: R,
     counter: Arc<AtomicUsize>,
     truncated: Arc<AtomicBool>,
+    max_output: usize,
 ) {
     std::thread::spawn(move || {
         let mut reader = reader;
@@ -382,7 +389,7 @@ fn spawn_reader<R: Read + Send + 'static>(
                 Ok(0) => break,
                 Ok(n) => {
                     let used = counter.fetch_add(n, Ordering::Relaxed) + n;
-                    if used > MAX_OUTPUT_BYTES {
+                    if used > max_output {
                         truncated.store(true, Ordering::Relaxed);
                         continue;
                     }
@@ -436,9 +443,10 @@ fn spawn_reaper(
     started: Instant,
     truncated: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    timeout_secs: u64,
 ) {
     std::thread::spawn(move || {
-        let timeout = Duration::from_secs(TIMEOUT_SECS);
+        let timeout = Duration::from_secs(timeout_secs);
         let mut timed_out = false;
         let code: Option<i32>;
         loop {
@@ -492,14 +500,27 @@ fn spawn_run(
     generation_counter: &Arc<AtomicU64>,
     mut cmd: Command,
     label: &str,
+    stdin: Option<String>,
+    timeout_secs: u64,
+    max_output: usize,
 ) -> Result<(), String> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动失败（{label} 是否已安装并在 PATH 中？）: {e}"))?;
+    // stdin 可能在子进程大量输出时阻塞：放到独立线程写，读完即 drop 触发 EOF
+    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(text.as_bytes());
+        });
+    }
     // 取管道失败时必须终止已启动的进程，否则留下孤儿进程
     let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
         (Some(out), Some(err)) => (out, err),
@@ -522,6 +543,7 @@ fn spawn_run(
         stdout,
         Arc::clone(&counter),
         Arc::clone(&truncated),
+        max_output,
     );
     spawn_reader(
         app.clone(),
@@ -529,6 +551,7 @@ fn spawn_run(
         stderr,
         Arc::clone(&counter),
         Arc::clone(&truncated),
+        max_output,
     );
 
     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
@@ -536,7 +559,15 @@ fn spawn_run(
         stopped: Arc::clone(&stopped),
         generation,
     });
-    spawn_reaper(app, Arc::clone(slot), generation, started, truncated, stopped);
+    spawn_reaper(
+        app,
+        Arc::clone(slot),
+        generation,
+        started,
+        truncated,
+        stopped,
+        timeout_secs,
+    );
     Ok(())
 }
 
@@ -552,11 +583,34 @@ pub async fn run_code(
     guard: tauri::State<'_, crate::commands::paths::PathGuard>,
     path: String,
     runner: String,
+    stdin: Option<String>,
+    timeout_secs: Option<u64>,
+    max_output_bytes: Option<usize>,
+    env: Option<Vec<(String, String)>>,
 ) -> Result<(), String> {
     guard.ensure_file_scope(&path)?;
     let file = PathBuf::from(&path);
     if !file.is_file() {
         return Err(format!("文件不存在: {path}"));
+    }
+    let timeout = timeout_secs
+        .unwrap_or(TIMEOUT_SECS)
+        .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+    let max_output = max_output_bytes
+        .unwrap_or(MAX_OUTPUT_BYTES)
+        .clamp(MIN_OUTPUT_BYTES, MAX_OUTPUT_LIMIT_BYTES);
+    let stdin = stdin.filter(|text| !text.is_empty());
+    if stdin.as_ref().map(|text| text.len() > MAX_STDIN_BYTES).unwrap_or(false) {
+        return Err("stdin 超过 1MB 上限".to_string());
+    }
+    let env = env.unwrap_or_default();
+    if env.len() > MAX_ENV_PAIRS {
+        return Err(format!("环境变量最多 {MAX_ENV_PAIRS} 个"));
+    }
+    for (key, value) in &env {
+        if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return Err(format!("环境变量名或值不合法: {key}"));
+        }
     }
     let work_dir = file
         .parent()
@@ -567,8 +621,20 @@ pub async fn run_code(
     tauri::async_runtime::spawn_blocking(move || {
         kill_tree(&slot);
         let mut cmd = build_command(&runner, &file)?;
+        for (key, value) in &env {
+            cmd.env(key, value);
+        }
         cmd.current_dir(&work_dir);
-        spawn_run(app, &slot, &generation, cmd, &runner)
+        spawn_run(
+            app,
+            &slot,
+            &generation,
+            cmd,
+            &runner,
+            stdin,
+            timeout,
+            max_output,
+        )
     })
     .await
     .map_err(|e| format!("任务调度失败: {e}"))?
@@ -596,7 +662,16 @@ pub async fn run_curl(
             cmd.current_dir(dir);
         }
         crate::commands::no_console(&mut cmd);
-        spawn_run(app, &slot, &generation, cmd, "curl")
+        spawn_run(
+            app,
+            &slot,
+            &generation,
+            cmd,
+            "curl",
+            None,
+            TIMEOUT_SECS,
+            MAX_OUTPUT_BYTES,
+        )
     })
     .await
     .map_err(|e| format!("任务调度失败: {e}"))?

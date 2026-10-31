@@ -1,5 +1,5 @@
 /**
- * 终端编排：懒加载 xterm 面板，管理 Rust PTY 会话生命周期，
+ * 终端编排：懒加载 xterm 面板，管理多个 Rust PTY 会话（标签切换），
  * 提供「在终端运行当前文件 / cURL 脚本」入口。
  */
 
@@ -9,6 +9,7 @@ import type { Tab } from "../store/tabs";
 import { dirnameOf } from "../core/paths";
 import { getConfig, subscribeSettings } from "../config/settings";
 import type { TerminalPanel } from "../panels/terminalPanel";
+import { firstLine } from "../core/errors";
 
 interface TerminalInfo {
   id: string;
@@ -27,6 +28,12 @@ interface TerminalExit {
   code: number | null;
 }
 
+interface SessionMeta {
+  shell: string;
+  cwd: string;
+  exited: boolean;
+}
+
 export interface TerminalHostDeps {
   getActiveTab: () => Tab | null;
   getWorkspaceRoot: () => string | null;
@@ -35,6 +42,8 @@ export interface TerminalHostDeps {
   onBeforeOpen?: () => void;
 }
 
+const MAX_SESSIONS = 8;
+
 function decodeBase64(data: string): Uint8Array {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
@@ -42,17 +51,15 @@ function decodeBase64(data: string): Uint8Array {
   return bytes;
 }
 
-function firstLine(value: unknown): string {
-  return String(value).split("\n")[0];
+function normPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
 export class TerminalHost {
   private panel: TerminalPanel | null = null;
   private panelPromise: Promise<TerminalPanel> | null = null;
-  private id = "";
-  private exited = false;
-  private shellLabel = "shell";
-  private cwd = "";
+  private sessions = new Map<string, SessionMeta>();
+  private activeId = "";
   private starting: Promise<string | null> | null = null;
   private unlistens: UnlistenFn[] = [];
   private listenersReady: Promise<void>;
@@ -70,22 +77,21 @@ export class TerminalHost {
     try {
       const output = await listen<TerminalChunk>("terminal://output", (e) => {
         const bytes = decodeBase64(e.payload.data);
-        if (!this.id) {
+        if (!this.sessions.has(e.payload.id)) {
           this.bufferChunk(e.payload.id, bytes);
           return;
         }
-        if (e.payload.id !== this.id) return;
-        this.panel?.write(bytes);
+        this.panel?.write(e.payload.id, bytes);
       });
       this.unlistens.push(output);
       const exit = await listen<TerminalExit>("terminal://exit", (e) => {
-        if (!this.id) {
+        const meta = this.sessions.get(e.payload.id);
+        if (!meta) {
           this.pendingExit.set(e.payload.id, e.payload.code);
           return;
         }
-        if (e.payload.id !== this.id) return;
-        this.exited = true;
-        this.panel?.setExit(e.payload.code);
+        meta.exited = true;
+        this.panel?.setExit(e.payload.id, e.payload.code);
       });
       this.unlistens.push(exit);
     } catch (e) {
@@ -114,17 +120,18 @@ export class TerminalHost {
     if (list) {
       for (const chunk of list) {
         this.pendingBytes -= chunk.length;
-        this.panel?.write(chunk);
+        this.panel?.write(id, chunk);
       }
       this.pendingChunks.delete(id);
     }
     const exit = this.pendingExit.get(id);
     if (exit !== undefined) {
       this.pendingExit.delete(id);
-      this.exited = true;
-      this.panel?.setExit(exit);
+      const meta = this.sessions.get(id);
+      if (meta) meta.exited = true;
+      this.panel?.setExit(id, exit);
     }
-    // 旧会话的尾部输出不再需要，顺手清理，避免缓存累积
+    // 旧/未知会话的尾部输出不再需要，顺手清理，避免缓存累积
     for (const key of [...this.pendingChunks.keys()]) {
       if (key === id) continue;
       const stale = this.pendingChunks.get(key) ?? [];
@@ -144,10 +151,17 @@ export class TerminalHost {
           const host = document.getElementById("terminal-panel");
           if (!host) throw new Error("缺少 #terminal-panel 容器");
           const panel = new TerminalPanel(host, {
-            onInput: (data) => this.write(data),
-            onResize: (cols, rows) => this.resize(cols, rows),
-            onRestart: () => void this.restart(),
-            onClose: () => void this.close(),
+            onInput: (id, data) => this.write(id, data),
+            onResize: (id, cols, rows) => this.resize(id, cols, rows),
+            onRestart: (id) => void this.restart(id),
+            onClose: (id) => void this.closeSession(id),
+            onNew: () =>
+              void this.newSession(
+                this.sessions.get(this.activeId)?.cwd ?? this.defaultCwd(),
+              ),
+            onActive: (id) => {
+              this.activeId = id;
+            },
             onToggle: () => void this.toggle(),
           });
           panel.mount();
@@ -183,39 +197,89 @@ export class TerminalHost {
   }
 
   /**
-   * 在指定目录打开终端（文件树 / 面包屑右键「在终端中打开」）。
-   * 已有会话且目录相同：只显示并聚焦；目录不同：先关旧会话再新开，
-   * 保证终端 cwd 与用户所指目录一致（而不是在旧会话里静默 alter）。
+   * 在指定目录打开终端：优先复用该目录的会话，否则新建一个（不关闭其它会话）。
    */
   async openAt(cwd: string): Promise<void> {
     try {
-      if (this.id && !this.exited && this.cwd === cwd) {
-        await this.ensureOpen(cwd);
+      if (this.sessions.size >= MAX_SESSIONS && !this.findSessionAt(cwd)) {
+        this.deps.showMessage(`终端会话最多 ${MAX_SESSIONS} 个，请先关闭一个`);
         return;
       }
-      if (this.id && !this.exited) await this.closeSession();
-      await this.ensureOpen(cwd);
+      const id = await this.ensureSessionAt(cwd);
+      if (id) this.panel?.show();
     } catch {
-      // ensurePanel / ensureOpen 已提示
+      // ensurePanel / startSession 已提示
     }
   }
 
-  /** 确保终端可见且有活动会话，返回会话 id */
+  /** 确保有一个可用会话（优先激活当前会话） */
   async ensureOpen(cwd: string): Promise<string | null> {
-    if (this.id && !this.exited) {
+    if (this.activeId && this.sessions.get(this.activeId)?.exited === false) {
       try {
         const panel = await this.ensurePanel();
         this.deps.onBeforeOpen?.();
-        this.cwd = cwd || this.cwd;
-        panel.show(this.shellLabel, this.cwd, "就绪");
+        panel.show();
+        panel.activate(this.activeId);
         panel.focus();
-        return this.id;
+        return this.activeId;
       } catch (e) {
-        // 会话还在但面板唤起失败：这条路径不走 startSession 的提示，必须自己说一声
         console.warn("[terminal] 唤起面板失败", e);
         this.deps.showMessage("终端面板打开失败");
         return null;
       }
+    }
+    const anyAlive = [...this.sessions.entries()].find(([, meta]) => !meta.exited);
+    if (anyAlive) {
+      const panel = await this.ensurePanel();
+      this.deps.onBeforeOpen?.();
+      this.activeId = anyAlive[0];
+      panel.show();
+      panel.activate(anyAlive[0]);
+      panel.focus();
+      return anyAlive[0];
+    }
+    if (this.starting) return this.starting;
+    this.deps.onBeforeOpen?.();
+    this.starting = this.startSession(cwd);
+    try {
+      return await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  /** 新建一个终端会话（标签 +），即使同 cwd 也新开 */
+  async newSession(cwd?: string): Promise<void> {
+    if (this.starting) return;
+    this.deps.onBeforeOpen?.();
+    this.starting = this.startSession(cwd ?? this.defaultCwd());
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+    this.panel?.show();
+  }
+
+  /** 找到 cwd 匹配的存活会话（大小写/分隔符不敏感） */
+  private findSessionAt(cwd: string): string | null {
+    const target = normPath(cwd);
+    for (const [id, meta] of this.sessions) {
+      if (!meta.exited && normPath(meta.cwd) === target) return id;
+    }
+    return null;
+  }
+
+  private async ensureSessionAt(cwd: string): Promise<string | null> {
+    const found = this.findSessionAt(cwd);
+    if (found) {
+      const panel = await this.ensurePanel();
+      this.deps.onBeforeOpen?.();
+      this.activeId = found;
+      panel.show();
+      panel.activate(found);
+      panel.focus();
+      return found;
     }
     if (this.starting) return this.starting;
     this.deps.onBeforeOpen?.();
@@ -228,67 +292,63 @@ export class TerminalHost {
   }
 
   private async startSession(cwd: string): Promise<string | null> {
+    if (this.sessions.size >= MAX_SESSIONS) {
+      this.deps.showMessage(`终端会话最多 ${MAX_SESSIONS} 个，请先关闭一个`);
+      return null;
+    }
     try {
       await this.listenersReady;
       const panel = await this.ensurePanel();
-      panel.reset();
-      panel.show("启动中…", cwd || "", "启动中…");
-      panel.setStatus("启动中…", "running");
-      // 先完成一次布局，才能拿到准确行列
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      panel.fit();
-      const { cols, rows } = panel.dimensions();
-      this.pendingChunks.clear();
-      this.pendingBytes = 0;
-      this.pendingExit.clear();
-      this.id = "";
-      this.exited = false;
+      // xterm 需要可见容器才能量尺寸；创建后再用真实行列 resize 一次
+      panel.show();
       const info = await invoke<TerminalInfo>("terminal_open", {
         shell: getConfig().terminal.shell,
         cwd: cwd || "",
-        cols,
-        rows,
+        cols: 80,
+        rows: 24,
       });
-      this.id = info.id;
-      this.exited = false;
-      this.cwd = info.cwd;
-      this.shellLabel = info.shell;
-      panel.show(info.shell, info.cwd, "就绪");
+      this.sessions.set(info.id, { shell: info.shell, cwd: info.cwd, exited: false });
+      this.activeId = info.id;
+      try {
+        panel.createSession(info);
+      } catch (e) {
+        this.sessions.delete(info.id);
+        this.activeId = "";
+        void invoke("terminal_close", { id: info.id }).catch(() => {});
+        throw e;
+      }
       this.flushPending(info.id);
+      panel.show();
       panel.focus();
+      const dims = panel.dimensions(info.id);
+      void invoke("terminal_resize", { id: info.id, cols: dims.cols, rows: dims.rows }).catch(
+        () => {},
+      );
       return info.id;
     } catch (e) {
-      this.id = "";
-      this.pendingChunks.clear();
-      this.pendingBytes = 0;
-      this.pendingExit.clear();
-      this.panel?.setStatus("启动失败", "error");
-      this.panel?.write(new TextEncoder().encode(`\r\n${firstLine(e)}\r\n`));
       this.deps.showMessage(`终端启动失败: ${firstLine(e)}`);
+      if (this.sessions.size === 0) this.panel?.hide();
       return null;
     }
   }
 
-  /** 重启当前 shell（cwd 保持） */
-  async restart(): Promise<void> {
-    await this.closeSession();
-    await this.ensureOpen(this.cwd || this.defaultCwd());
+  /** 重启指定会话（cwd 保持） */
+  async restart(id: string): Promise<void> {
+    const meta = this.sessions.get(id);
+    if (!meta) return;
+    const cwd = meta.cwd;
+    await this.closeSession(id);
+    await this.openAt(cwd || this.defaultCwd());
   }
 
-  /** 关闭按钮 / 应用退出：结束进程并隐藏 */
-  async close(): Promise<void> {
-    await this.closeSession();
-    this.panel?.hide();
-  }
-
-  private async closeSession(): Promise<void> {
-    const id = this.id;
-    this.id = "";
-    this.exited = false;
-    this.pendingChunks.clear();
-    this.pendingBytes = 0;
-    this.pendingExit.clear();
-    if (!id) return;
+  /** 关闭指定会话；没有剩余会话时隐藏面板 */
+  async closeSession(id: string): Promise<void> {
+    this.sessions.delete(id);
+    if (this.activeId === id) this.activeId = "";
+    this.pendingChunks.delete(id);
+    this.pendingExit.delete(id);
+    this.panel?.removeSession(id);
+    if (this.sessions.size === 0) this.panel?.hide();
     try {
       await invoke("terminal_close", { id });
     } catch {
@@ -296,11 +356,15 @@ export class TerminalHost {
     }
   }
 
-  /** 在终端运行当前文件：要求已保存且无未保存改动（与 F5 一致） */
+  /** 在终端运行当前文件：优先复用文件所在目录的会话 */
   async runFile(path: string, runner: string): Promise<void> {
     const dir = dirnameOf(path);
     const cwd = dir && dir !== path ? dir : this.defaultCwd();
-    const id = await this.ensureOpen(cwd);
+    if (!this.findSessionAt(cwd) && this.sessions.size >= MAX_SESSIONS) {
+      this.deps.showMessage(`终端会话最多 ${MAX_SESSIONS} 个，请先关闭一个`);
+      return;
+    }
+    const id = await this.ensureSessionAt(cwd);
     if (!id) return;
     try {
       await invoke("terminal_run_code", { id, path, runner });
@@ -326,9 +390,18 @@ export class TerminalHost {
     this.panel?.applySettings();
   }
 
-  /** 应用退出：结束进程并释放 xterm */
+  /** 应用退出：结束全部会话并释放 xterm */
   async dispose(): Promise<void> {
-    await this.closeSession();
+    const ids = [...this.sessions.keys()];
+    this.sessions.clear();
+    this.activeId = "";
+    for (const id of ids) {
+      try {
+        await invoke("terminal_close", { id });
+      } catch {
+        // 忽略
+      }
+    }
     for (const un of this.unlistens) un();
     this.unlistens.length = 0;
     this.pendingChunks.clear();
@@ -339,16 +412,18 @@ export class TerminalHost {
     this.panelPromise = null;
   }
 
-  private write(data: string): void {
-    if (!this.id || this.exited) return;
-    void invoke("terminal_write", { id: this.id, data }).catch(() => {
+  private write(id: string, data: string): void {
+    const meta = this.sessions.get(id);
+    if (!meta || meta.exited) return;
+    void invoke("terminal_write", { id, data }).catch(() => {
       // 会话可能已退出；exit 事件会更新状态，不在每次按键时打扰用户
     });
   }
 
-  private resize(cols: number, rows: number): void {
-    if (!this.id || this.exited) return;
-    void invoke("terminal_resize", { id: this.id, cols, rows }).catch(() => {});
+  private resize(id: string, cols: number, rows: number): void {
+    const meta = this.sessions.get(id);
+    if (!meta || meta.exited) return;
+    void invoke("terminal_resize", { id, cols, rows }).catch(() => {});
   }
 
   private defaultCwd(): string {

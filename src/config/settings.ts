@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setLanguageOverrides, setLegacyLanguages } from "../editor/languages";
+import { normalizeOverrides, type WorkspaceOverrides } from "../core/workspaceOverrides";
 import type { UserTheme } from "./userThemes";
 
 /**
@@ -62,7 +63,7 @@ export interface StatusBarFieldEntry {
 export interface LayoutSettings {
   sidebarVisible: boolean;
   /** 侧栏当前分区：打开的文件 / 源代码管理 / 文件 / 搜索 / 大纲 */
-  sidebarView: "open" | "git" | "files" | "search" | "outline";
+  sidebarView: "open" | "git" | "files" | "search" | "outline" | "bookmarks";
   /** 启动时展开的侧栏分区组合（空 = 默认展开「文件」，见 ui/sidebar.ts） */
   sidebarExpanded: string[];
   /** 侧栏分区高度（px，键为分区 id；仅记录用户手拖的高度） */
@@ -95,17 +96,14 @@ export interface SessionSettings {
 export interface WorkspaceSettings {
   rememberExpanded: boolean;
   lastDirectory: string;
+  /** 文件树是否监听外部增删改名（只监听已展开目录） */
+  watchTree: boolean;
 }
 
 export interface LargeFileSettings {
   logExtensions: string[];
   sparseIndexAnchorBytes: number;
   viewportPaddingLines: number;
-}
-
-export interface SearchSettings {
-  parallelism: string;
-  chunkSizeBytes: number;
 }
 
 /** 网页抓取设置 */
@@ -125,6 +123,15 @@ export interface GlobalReplaceSettings {
 }
 
 /** 文件树 / 侧栏列表的交互设置 */
+export interface GitSettings {
+  /**
+   * Git 只读模式：只允许查看（状态 / 差异 / 历史 / Blame / 分支列表），
+   * 暂存、取消暂存、提交、放弃、拉取、推送、切分支、建/删分支一律拒绝。
+   * 前端拦 + 后端按 config.json 再校验（前端被绕过也拦得住）。
+   */
+  readOnly: boolean;
+}
+
 export interface FileSettings {
   /** 打开手势：true = 双击（首次点击仅选中），false = 单击 */
   openWithDoubleClick: boolean;
@@ -134,17 +141,13 @@ export interface FileSettings {
   ensureFinalNewlineOnSave: boolean;
   /** 按文件记忆编码（默认开：只在自动检测不可靠时生效） */
   encodeMemory: boolean;
+  /** 保存成功后给一条轻提示（默认开：脏标记消失是隐式的，容易误判是否已落盘） */
+  notifyOnSave: boolean;
 }
 
 export interface FormatterEntry {
   tool: string;
   args: string[];
-}
-
-export interface AiSettings {
-  provider: string;
-  model: string;
-  enabled: boolean;
 }
 
 export interface AppConfig {
@@ -167,15 +170,15 @@ export interface AppConfig {
   session: SessionSettings;
   workspace: WorkspaceSettings;
   largeFile: LargeFileSettings;
-  search: SearchSettings;
   fetch: FetchSettings;
   terminal: TerminalSettings;
   globalReplace: GlobalReplaceSettings;
   files: FileSettings;
+  /** Git 行为：只读模式下禁止一切写入类 Git 操作（后端同样校验） */
+  git: GitSettings;
   ignoreDirs: string[];
   fileEncodingMemory: Record<string, string>;
   formatters: Record<string, FormatterEntry>;
-  ai: AiSettings;
 }
 
 /** 编辑器直接消费的配置子集（由 AppConfig 派生） */
@@ -288,13 +291,12 @@ export function defaultConfig(): AppConfig {
       draftDebounceMs: 1000,
       draftRetentionDays: 7,
     },
-    workspace: { rememberExpanded: true, lastDirectory: "" },
+    workspace: { rememberExpanded: true, lastDirectory: "", watchTree: true },
     largeFile: {
       logExtensions: [".log"],
       sparseIndexAnchorBytes: 65536,
       viewportPaddingLines: 200,
     },
-    search: { parallelism: "auto", chunkSizeBytes: 4 * 1024 * 1024 },
     fetch: { allowPrivateNetwork: false },
     terminal: { shell: "" },
     globalReplace: { backup: true },
@@ -303,7 +305,9 @@ export function defaultConfig(): AppConfig {
       trimTrailingWhitespaceOnSave: false,
       ensureFinalNewlineOnSave: false,
       encodeMemory: true,
+      notifyOnSave: true,
     },
+    git: { readOnly: false },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},
     // 附加语言默认全关：勾选后才注册，打开对应文件才加载分片
@@ -312,11 +316,18 @@ export function defaultConfig(): AppConfig {
       python: { tool: "black", args: ["-q", "-"] },
       go: { tool: "gofmt", args: [] },
       java: { tool: "google-java-format", args: ["--aosp"] },
+      rust: { tool: "rustfmt", args: [] },
       cpp: { tool: "clang-format", args: ["-style=file", "-assume-filename=__PLACEHOLDER__"] },
     },
-    ai: { provider: "ollama", model: "qwen2.5-coder:7b", enabled: false },
   };
 }
+
+/**
+ * 当前工作区的覆盖项（空 = 全部跟随全局）。
+ * 只在内存里生效：落盘位置是 `<配置目录>/workspaces/<hash>.json`（Rust 侧），
+ * 绝不并进 config.json —— 否则切到别的项目就会带着上一个项目的缩进。
+ */
+let workspaceOverrides: WorkspaceOverrides = {};
 
 /** 编辑器消费的配置子集：可原地刷新，保持引用稳定 */
 export const settings: EditorSettings = deriveEditor(defaultConfig());
@@ -331,7 +342,8 @@ function deriveEditor(cfg: AppConfig): EditorSettings {
     editorTheme: cfg.editorTheme,
     editorFontSize: cfg.layout.editorFontSize,
     editorFontFamily: cfg.layout.editorFontFamily,
-    tabSize: cfg.tabSize,
+    // 工作区覆盖优先：只影响生效值，不写回 config.json
+    tabSize: workspaceOverrides.tabSize ?? cfg.tabSize,
     insertSpaces: cfg.insertSpaces,
     formatOnSave: cfg.formatOnSave,
     highlighterDisabledOver: cfg.highlighterDisabledOver,
@@ -372,6 +384,26 @@ function applyConfig(cfg: AppConfig): void {
 /** 当前完整配置（只读快照，勿直接改；改动走 updateSettings） */
 export function getConfig(): AppConfig {
   return current;
+}
+
+/**
+ * 设置 / 清除当前工作区覆盖（由宿主在切换工作区时调用）。
+ * 归一化后合并到生效值，并通知订阅者（编辑器缩进经 Compartment 立即重配）。
+ */
+export function setWorkspaceOverrides(next: WorkspaceOverrides | null): void {
+  workspaceOverrides = normalizeOverrides(next);
+  applyConfig(current);
+}
+
+/** 当前工作区覆盖（只读；保存时基于它展开，避免覆盖掉兄弟项） */
+export function getWorkspaceOverrides(): WorkspaceOverrides {
+  return workspaceOverrides;
+}
+
+/** 生效的忽略目录：工作区覆盖优先，其次全局配置 */
+export function effectiveIgnoreDirs(): string[] {
+  const over = workspaceOverrides.ignoreDirs;
+  return over && over.length > 0 ? over : current.ignoreDirs;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+import { firstLine } from "../core/errors";
+
 /**
  * 自定义语言：`<配置目录>/languages/<名字>.json` 的结构、校验与默认值。
  *
@@ -86,7 +88,7 @@ export function parseUserLanguage(name: string, text: string): LanguageParseResu
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    return { ok: false, error: `不是合法 JSON（${String(e).split("\n")[0]}）` };
+    return { ok: false, error: `不是合法 JSON（${firstLine(e)}）` };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { ok: false, error: "顶层必须是对象" };

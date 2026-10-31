@@ -9,6 +9,7 @@ import {
   deleteLine,
   historyKeymap,
   indentWithTab,
+  redo,
 } from "@codemirror/commands";
 import { keymap, type EditorView, type KeyBinding } from "@codemirror/view";
 import { foldKeymap } from "@codemirror/language";
@@ -35,6 +36,9 @@ function smartHome(view: EditorView, select: boolean): boolean {
 function lineEditKeys(): KeyBinding[] {
   return [
     { key: "Mod-d", preventDefault: true, run: deleteLine },
+    // CM6 的 historyKeymap 在 Windows/Linux 只绑了 Mod-y；
+    // 再显式绑 Mod-Shift-z，兼顾 VS Code 习惯（macOS 本来就是 Cmd+Shift+Z）
+    { key: "Mod-Shift-z", preventDefault: true, run: redo },
     { key: "Mod-Alt-ArrowUp", preventDefault: true, run: copyLineUp },
     { key: "Mod-Alt-ArrowDown", preventDefault: true, run: copyLineDown },
     { key: "Home", preventDefault: true, run: (v) => smartHome(v, false) },

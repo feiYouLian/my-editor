@@ -10,6 +10,7 @@
 
 import { placeMenu } from "../ui/menu";
 import { bindOpenGesture } from "../ui/openGesture";
+import { getConfig } from "../config/settings";
 
 export interface GitFileEntry {
   path: string;
@@ -29,6 +30,15 @@ export interface GitStatus {
   truncated: boolean;
 }
 
+export interface GitCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  refs: string;
+  subject: string;
+}
+
 export interface GitViewDeps {
   onRefresh: () => void;
   onOpenDiff: (path: string, staged: boolean) => void;
@@ -37,6 +47,10 @@ export interface GitViewDeps {
   /** 放弃更改（不可撤销）：确认弹窗由 main.ts 负责；staged 仅用于提示文案 */
   onDiscard: (entries: GitFileEntry[], staged: boolean) => void;
   onCommit: (message: string) => void;
+  /** 打开底部 Git 历史面板（提交明细在终端区域展示） */
+  onOpenHistory: () => void;
+  /** 冲突文件处理引导 */
+  onResolveConflicts: (entries: GitFileEntry[]) => void;
   /** 右键：在编辑器中打开文件 */
   onOpenFile: (path: string) => void;
   onCopyPath: (path: string) => void;
@@ -146,11 +160,23 @@ export class GitView {
     this.commitBtn.disabled = true;
     this.commitBtn.addEventListener("click", () => this.submitCommit());
     commit.append(this.messageEl, this.commitBtn);
+    // 只读模式：提交区整体隐藏（不能提交，留着只会误导）
+    if (this.readOnly) commit.classList.add("hidden");
 
     this.bodyEl = document.createElement("div");
     this.bodyEl.className = "git-body";
 
-    host.append(commit, this.bodyEl);
+    const actions = document.createElement("div");
+    actions.className = "git-actions";
+    const historyBtn = document.createElement("button");
+    historyBtn.type = "button";
+    historyBtn.className = "git-action-btn";
+    historyBtn.textContent = "历史";
+    historyBtn.title = "在底部面板查看提交历史与补丁";
+    historyBtn.addEventListener("click", () => this.deps.onOpenHistory());
+    actions.append(historyBtn);
+
+    host.append(actions, commit, this.bodyEl);
   }
 
   private submitCommit(): void {
@@ -159,18 +185,42 @@ export class GitView {
     this.deps.onCommit(message);
   }
 
+  /** 只读模式：写入类按钮一律不渲染（而不是禁用后让用户去猜原因） */
+  private get readOnly(): boolean {
+    return getConfig().git.readOnly;
+  }
+
   private syncCommitButton(): void {
     const staged = this.status?.staged.length ?? 0;
+    const conflicts = this.conflictEntries().length;
     const emptyMessage = this.messageEl.value.trim() === "";
-    this.commitBtn.disabled = this.busy || staged === 0 || emptyMessage;
+    // Git 只读模式：整块写入入口都关掉（后端同样会拒绝）
+    const readOnly = getConfig().git.readOnly;
+    this.commitBtn.disabled =
+      readOnly || this.busy || staged === 0 || emptyMessage || conflicts > 0;
     // 灰掉的按钮必须说明原因，否则用户只能猜
-    this.commitBtn.title = this.busy
-      ? "正在提交…"
-      : staged === 0
-        ? "先暂存要提交的更改"
-        : emptyMessage
-          ? "填写提交信息后即可提交（Ctrl+Enter）"
-          : "提交（Ctrl+Enter）";
+    this.commitBtn.title = readOnly
+      ? "Git 只读模式已开启：只能查看，不能提交（在设置 ▸ 文件与会话里关闭）"
+      : this.busy
+        ? "正在提交…"
+        : conflicts > 0
+          ? `有 ${conflicts} 个冲突文件未解决，先处理冲突再提交`
+          : staged === 0
+            ? "先暂存要提交的更改"
+            : emptyMessage
+              ? "填写提交信息后即可提交（Ctrl+Enter）"
+              : "提交（Ctrl+Enter）";
+  }
+
+  /** 状态中的冲突条目（porcelain 归并为 U） */
+  private conflictEntries(): GitFileEntry[] {
+    const status = this.status;
+    if (!status) return [];
+    const seen = new Map<string, GitFileEntry>();
+    for (const entry of [...status.staged, ...status.changes]) {
+      if (entry.status === "U") seen.set(entry.path, entry);
+    }
+    return [...seen.values()];
   }
 
   private render(): void {
@@ -197,6 +247,21 @@ export class GitView {
       this.appendEmpty("没有更改");
       this.syncCommitButton();
       return;
+    }
+
+    const conflicts = this.conflictEntries();
+    if (conflicts.length > 0) {
+      const banner = document.createElement("div");
+      banner.className = "git-conflict-banner";
+      const text = document.createElement("span");
+      text.textContent = `检测到 ${conflicts.length} 个冲突文件，提交前需先解决`;
+      const resolve = document.createElement("button");
+      resolve.type = "button";
+      resolve.className = "git-group-action";
+      resolve.textContent = "处理冲突";
+      resolve.addEventListener("click", () => this.deps.onResolveConflicts(conflicts));
+      banner.append(text, resolve);
+      this.bodyEl.append(banner);
     }
 
     this.bodyEl.append(this.renderGroup("暂存的更改", status.staged, true));
@@ -240,7 +305,8 @@ export class GitView {
         : `${title} (${entries.length})`;
     head.append(chevron, label);
 
-    if (entries.length > 0) {
+    // 只读模式：不渲染组级暂存 / 取消 / 放弃按钮（刷新按钮保留）
+    if (entries.length > 0 && !this.readOnly) {
       // 有选中就只作用于选中项，否则整组（与 VS Code 的 SCM 一致）
       const target = selected.length > 0 ? selected : entries;
       const action = document.createElement("button");
@@ -366,21 +432,24 @@ export class GitView {
 
     // 行内只保留"暂存 / 取消暂存"；放弃更改（不可撤销）只在右键菜单里，
     // 避免与高频按钮紧挨着被误点（原实现的红色撤回按钮就在旁边）
-    const action = document.createElement("button");
-    action.type = "button";
-    action.className = "git-row-action";
-    action.title = staged ? "取消暂存" : "暂存";
-    action.setAttribute("aria-label", action.title);
-    action.disabled = this.busy;
-    action.innerHTML = staged
-      ? '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
-      : '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>';
-    action.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (staged) this.deps.onUnstage([entry]);
-      else this.deps.onStage([entry]);
-    });
-    row.append(action);
+    // 只读模式：行内不渲染暂存 / 取消暂存按钮
+    if (!this.readOnly) {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "git-row-action";
+      action.title = staged ? "取消暂存" : "暂存";
+      action.setAttribute("aria-label", action.title);
+      action.disabled = this.busy;
+      action.innerHTML = staged
+        ? '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
+        : '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>';
+      action.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (staged) this.deps.onUnstage([entry]);
+        else this.deps.onStage([entry]);
+      });
+      row.append(action);
+    }
 
     // 修饰键多选：必须在 openGesture 之前注册，靠 stopImmediatePropagation
     // 挡住"打开 diff"（同级监听器按注册顺序执行，capture 标记在 target 上无效）
@@ -416,7 +485,16 @@ export class GitView {
       this.render();
     });
 
-    // 固定单击看 diff（不受"双击打开"配置影响）；双击在编辑器中打开文件
+    // 固定单击看 diff（不受"双击打开"配置影响）；双击在编辑器中打开文件。
+    // 双击会先派发 detail=2 的第二次 click：在捕获阶段吞掉，避免 diff 被触发两次；
+    // 第一次 click 仍按单击语义打开一次 diff（不引入延迟，保证单击即时）。
+    row.addEventListener(
+      "click",
+      (e) => {
+        if (e.detail > 1) e.stopImmediatePropagation();
+      },
+      true,
+    );
     bindOpenGesture(row, {
       forceSingleClick: true,
       onOpen: () => this.deps.onOpenDiff(entry.path, staged),
@@ -459,17 +537,22 @@ export class GitView {
         label: staged ? "查看暂存的更改" : "查看更改",
         run: () => this.deps.onOpenDiff(entry.path, staged),
       },
-      { separator: true },
-      staged
-        ? { label: "取消暂存", run: () => this.deps.onUnstage([entry]) }
-        : { label: "暂存更改", run: () => this.deps.onStage([entry]) },
-      // 放弃更改会把磁盘内容回退（新增/未跟踪文件直接删除），红色提示不可撤销
-      {
-        label: staged ? "放弃更改（还原到 HEAD）" : "放弃更改",
-        danger: true,
-        run: () => this.deps.onDiscard([entry], staged),
-      },
-      { separator: true },
+      // 只读模式不提供任何写入项（避免"点了被拒"的体验）
+      ...(this.readOnly
+        ? []
+        : [
+            { separator: true } as MenuEntry,
+            staged
+              ? { label: "取消暂存", run: () => this.deps.onUnstage([entry]) }
+              : { label: "暂存更改", run: () => this.deps.onStage([entry]) },
+            // 放弃更改会把磁盘内容回退（新增/未跟踪文件直接删除），红色提示不可撤销
+            {
+              label: staged ? "放弃更改（还原到 HEAD）" : "放弃更改",
+              danger: true,
+              run: () => this.deps.onDiscard([entry], staged),
+            },
+            { separator: true } as MenuEntry,
+          ]),
       { label: "复制路径", run: () => this.deps.onCopyPath(entry.path) },
       { label: "复制相对路径", run: () => this.deps.onCopyRelative(entry.relative) },
       { separator: true },
@@ -491,18 +574,22 @@ export class GitView {
   ): void {
     const empty = entries.length === 0;
     const items: MenuEntry[] = [
-      staged
-        ? {
-            label: `全部取消暂存（${entries.length}）`,
-            disabled: empty || this.busy,
-            run: () => this.deps.onUnstage(entries),
-          }
-        : {
-            label: `全部暂存（${entries.length}）`,
-            disabled: empty || this.busy,
-            run: () => this.deps.onStage(entries),
-          },
-      { separator: true },
+      ...(this.readOnly
+        ? []
+        : [
+            staged
+              ? {
+                  label: `全部取消暂存（${entries.length}）`,
+                  disabled: empty || this.busy,
+                  run: () => this.deps.onUnstage(entries),
+                }
+              : {
+                  label: `全部暂存（${entries.length}）`,
+                  disabled: empty || this.busy,
+                  run: () => this.deps.onStage(entries),
+                },
+            { separator: true } as MenuEntry,
+          ]),
       { label: "刷新状态", run: () => this.deps.onRefresh() },
     ];
     this.showMenu(x, y, items);

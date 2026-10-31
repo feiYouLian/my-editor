@@ -79,6 +79,8 @@ export interface RenderDiffRowsOptions {
   token: number;
   /** 代际校验：返回 true 表示已开始新一轮渲染，本次分帧应立即作废 */
   isStale: (token: number) => boolean;
+  /** 全部分帧构建完成（用于等待目标 hunk 渲染后再跳转） */
+  onDone?: () => void;
 }
 
 /**
@@ -100,13 +102,14 @@ export function renderDiffRows(opts: RenderDiffRowsOptions): void {
     return;
   }
 
-  // 先展开成完整的条目序列（行 / 折叠占位），再分帧构建 DOM
-  const items: HTMLElement[] = [];
+  // 先只生成轻量描述（行下标 / 折叠占位），DOM 构建放到分帧循环里；
+  // 否则数万行仍会在首帧前同步 new 出全部元素，等于没分帧。
+  type ItemSpec =
+    | { kind: "row"; index: number }
+    | { kind: "gap"; start: number; hidden: number };
+  const items: ItemSpec[] = [];
   const push = (index: number) => {
-    const el = buildDiffRow(rows[index]);
-    const hunkIndex = hunkOf.get(index);
-    if (hunkIndex !== undefined) el.dataset.hunk = `${hunkIndex}`;
-    items.push(el);
+    items.push({ kind: "row", index });
   };
 
   let i = 0;
@@ -117,7 +120,7 @@ export function renderDiffRows(opts: RenderDiffRowsOptions): void {
       const run = j - i;
       if (run > COLLAPSE_OVER && !expandedGaps.has(i)) {
         for (let k = i; k < i + COLLAPSE_KEEP && k < j; k += 1) push(k);
-        items.push(buildGap(i, run - COLLAPSE_KEEP * 2, onExpandGap));
+        items.push({ kind: "gap", start: i, hidden: run - COLLAPSE_KEEP * 2 });
         for (let k = j - COLLAPSE_KEEP; k < j; k += 1) push(k);
       } else {
         for (let k = i; k < j; k += 1) push(k);
@@ -129,13 +132,23 @@ export function renderDiffRows(opts: RenderDiffRowsOptions): void {
     i += 1;
   }
 
-  // 分帧 append：每帧至多 RENDER_CHUNK 个节点，帧间让出主线程
+  // 分帧构建 + append：每帧至多 RENDER_CHUNK 个节点，帧间让出主线程
   const step = (): void => {
     if (isStale(token)) return; // 已开始新一轮渲染
-    const batch = items.splice(0, RENDER_CHUNK);
-    if (batch.length === 0) return;
+    const specs = items.splice(0, RENDER_CHUNK);
+    if (specs.length === 0) return;
+    const batch = specs.map((spec) => {
+      if (spec.kind === "gap") {
+        return buildGap(spec.start, spec.hidden, onExpandGap);
+      }
+      const el = buildDiffRow(rows[spec.index]);
+      const hunkIndex = hunkOf.get(spec.index);
+      if (hunkIndex !== undefined) el.dataset.hunk = `${hunkIndex}`;
+      return el;
+    });
     body.append(...batch);
     if (items.length > 0) requestAnimationFrame(step);
+    else opts.onDone?.();
   };
   requestAnimationFrame(step);
 }

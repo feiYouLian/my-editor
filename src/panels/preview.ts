@@ -12,7 +12,9 @@
 
 import type { EditorView } from "@codemirror/view";
 import { pathKindOf as kindOf } from "./preview/pathKind";
-import { loadMarkdownPipeline } from "./preview/markdownPipeline";
+import { loadMarkdownPipeline, type MarkdownRenderer } from "./preview/markdownPipeline";
+import type { TocEntry } from "./preview/markdownToc";
+import { hydrateMermaid } from "./preview/mermaid";
 import { EXPORT_IMAGE_MAX_BYTES, inlineLocalImages } from "./preview/localImages";
 import { renderImageViewer } from "./preview/imageViewer";
 import { PreviewFindBar, type PreviewFindScope } from "./preview/findBar";
@@ -47,7 +49,7 @@ export class PreviewHost {
   private readonly findBar: PreviewFindBar;
   private activeId: string | null = null;
   private mdReady: Promise<void> | null = null;
-  private md: { render(text: string): string } | null = null;
+  private md: MarkdownRenderer | null = null;
   private dompurify: { sanitize(html: string): string } | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private contentEl: HTMLElement;
@@ -55,6 +57,9 @@ export class PreviewHost {
   private renderedTabId: string | null = null;
   /** 渲染代际：await 后据此丢弃被更新渲染取代的旧结果 */
   private renderSeq = 0;
+  /** Markdown 目录：按钮 + 面板（懒创建；无标题或非 md 时隐藏） */
+  private tocBtn: HTMLButtonElement | null = null;
+  private tocPanel: HTMLElement | null = null;
 
   // ---- 双栏滚动联动状态 ----
   /** 最近一次参与联动的编辑器视图（供重渲染 / 图片加载后校准用） */
@@ -97,6 +102,75 @@ export class PreviewHost {
     this.pane.querySelectorAll(".image-toolbar").forEach((el) => el.remove());
   }
 
+  // ---- 目录（TOC） ----
+
+  /** 懒创建「目录」按钮与面板：只有含标题的 Markdown 预览才需要它们 */
+  private ensureTocUi(): { btn: HTMLButtonElement; panel: HTMLElement } {
+    if (this.tocBtn && this.tocPanel) return { btn: this.tocBtn, panel: this.tocPanel };
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "md-toc-toggle";
+    btn.textContent = "目录";
+    btn.title = "显示 / 隐藏标题目录";
+    btn.setAttribute("aria-expanded", "false");
+    const panel = document.createElement("div");
+    panel.className = "md-toc-panel hidden";
+    panel.setAttribute("role", "navigation");
+    panel.setAttribute("aria-label", "文档目录");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const hidden = panel.classList.toggle("hidden");
+      btn.classList.toggle("active", !hidden);
+      btn.setAttribute("aria-expanded", String(!hidden));
+    });
+    // 事件委托：每次重渲染都重建条目，逐个绑监听会越积越多
+    panel.addEventListener("click", (e) => {
+      const item = (e.target as HTMLElement | null)?.closest<HTMLElement>("[data-toc-target]");
+      if (!item) return;
+      e.stopPropagation();
+      const id = item.dataset.tocTarget ?? "";
+      if (!id) return;
+      const target = this.contentEl.querySelector<HTMLElement>(
+        `[data-toc-anchor="${CSS.escape(id)}"]`,
+      );
+      target?.scrollIntoView({ block: "start" });
+    });
+    this.pane.append(btn, panel);
+    this.tocBtn = btn;
+    this.tocPanel = panel;
+    return { btn, panel };
+  }
+
+  /** 用解析阶段收集到的标题填充目录；少于两项时不显示入口（纯噪音） */
+  private renderToc(entries: TocEntry[]): void {
+    const usable = entries.filter((entry) => entry.text !== "");
+    if (usable.length < 2) {
+      this.hideToc();
+      return;
+    }
+    const { btn, panel } = this.ensureTocUi();
+    btn.hidden = false;
+    panel.innerHTML = "";
+    for (const entry of usable) {
+      const item = document.createElement("div");
+      item.className = "md-toc-item";
+      item.dataset.tocTarget = entry.id;
+      item.dataset.level = String(entry.level);
+      item.textContent = entry.text;
+      item.title = entry.text;
+      panel.append(item);
+    }
+  }
+
+  private hideToc(): void {
+    if (this.tocBtn) {
+      this.tocBtn.hidden = true;
+      this.tocBtn.classList.remove("active");
+      this.tocBtn.setAttribute("aria-expanded", "false");
+    }
+    this.tocPanel?.classList.add("hidden");
+  }
+
   /** 标签/模式变化时调用：应用布局并按需渲染 */
   apply(tab: PreviewTab | null, mode: PreviewMode): void {
     const prevId = this.activeId;
@@ -108,6 +182,7 @@ export class PreviewHost {
       this.kind = null;
       this.renderedTabId = null;
       this.contentEl.classList.remove("md-doc");
+      this.hideToc();
       this.findBar.forget();
       this.setAreaMode("image");
       renderImageViewer(this.pane, this.contentEl, tab, (w, h) =>
@@ -371,6 +446,7 @@ export class PreviewHost {
         '<div class="preview-note">文件过大（超过 20MB），预览已禁用</div>';
       this.markerCache = null;
       this.renderedTabId = null;
+      this.hideToc();
       return;
     }
     if (kind === "md") {
@@ -381,7 +457,9 @@ export class PreviewHost {
       // 先渲染为 DOM：本地图片需在消毒前替换为 data URL
       // （盘符路径会被 DOMPurify 当作未知协议而移除 src）
       const holder = document.createElement("div");
-      holder.innerHTML = this.md!.render(tab.content);
+      // 一次解析同时拿到 HTML 与目录（heading id 在解析期间打上）
+      const rendered = this.md!.renderWithToc(tab.content);
+      holder.innerHTML = rendered.html;
       await inlineLocalImages(holder, tab.path);
       // 解析期间可能已切标签 / 切模式，或已有更新的渲染：丢弃过期结果
       if (this.isStale(tab, seq)) return;
@@ -391,6 +469,11 @@ export class PreviewHost {
       this.contentEl.innerHTML = this.dompurify!.sanitize(holder.innerHTML);
       this.contentEl.scrollTop = scrollTop;
       this.renderedTabId = tab.id;
+      this.renderToc(rendered.toc);
+      // Mermaid 图表：懒加载后把占位块替换成 SVG（失败降级为源码块）
+      void hydrateMermaid(this.contentEl, (html) => this.dompurify!.sanitize(html)).catch(
+        () => {},
+      );
       // 新内容：块标记缓存必须重建（scrollHeight 变化不一定能完全反映）
       this.markerCache = null;
       this.bindImageLoadResync();
@@ -399,6 +482,7 @@ export class PreviewHost {
       this.findBar.revive();
     } else {
       this.contentEl.classList.remove("md-doc");
+      this.hideToc();
       // 同一标签重渲染（编辑停顿 / 模式切换）保留 iframe 滚动位置；换标签仍从顶部开始
       let prevScroll = 0;
       if (this.renderedTabId === tab.id) {
@@ -481,7 +565,7 @@ export class PreviewHost {
 
   /** 管线构建完成后安装（供 loadMarkdownPipeline 回调） */
   installMarkdown(
-    md: { render(text: string): string },
+    md: MarkdownRenderer,
     dompurify: { sanitize(html: string): string },
   ): void {
     this.md = md;
@@ -496,6 +580,8 @@ export class PreviewHost {
       holder.innerHTML = this.md!.render(tab.content);
       // 导出文件可能被保存到任意目录：本地图片转 data URL，保证打开即可见
       await inlineLocalImages(holder, tab.path, EXPORT_IMAGE_MAX_BYTES);
+      // 图表导出为静态 SVG：对方环境没有 mermaid 也能正常显示
+      await hydrateMermaid(holder, (html) => this.dompurify!.sanitize(html)).catch(() => {});
       return this.dompurify!.sanitize(holder.innerHTML);
     }
     // html 类文件：导出/打印前也过一遍消毒，避免把原始内容里的

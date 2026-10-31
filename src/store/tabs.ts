@@ -253,6 +253,8 @@ class TabStore {
     newline: string;
     totalLines?: number;
   }): Tab {
+    // 同路径普通标签可能正承载编辑器内容：先落回标签，避免把用户输入丢掉
+    if (this.activeId) this.syncContent(this.activeId);
     const existing = this.tabs.find((t) => t.path === info.path);
     if (existing) {
       if (existing.virtual) {

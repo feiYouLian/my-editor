@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { EditorView } from "@codemirror/view";
 import { getConfig } from "../config/settings";
+import { joinVirtualPath } from "../core/paths";
 import { tabStore, type Tab } from "../store/tabs";
 import {
   PreviewHost,
@@ -23,6 +24,7 @@ import {
 } from "../panels/preview";
 import { placeMenu } from "../ui/menu";
 import type { SaveResult } from "../types/app";
+import { firstLine } from "../core/errors";
 
 export interface PreviewControllerDeps {
   getActiveTab: () => Tab | null;
@@ -278,7 +280,7 @@ export class PreviewController {
       const fileName = `image-${++index}.${ext}`;
       try {
         await invoke("write_binary_file", {
-          path: `${folder}\\${fileName}`,
+          path: joinVirtualPath(folder, fileName),
           base64Data: match[2],
         });
         const rel = `${folderName}/${fileName}`;
@@ -339,7 +341,7 @@ export class PreviewController {
       });
       showMessage(`已导出: ${result.path}`);
     } catch (e) {
-      showMessage(`导出失败: ${String(e).split("\n")[0]}`);
+      showMessage(`导出失败: ${firstLine(e)}`);
       console.error("[export]", e);
     }
   }

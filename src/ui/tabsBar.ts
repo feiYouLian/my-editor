@@ -28,6 +28,9 @@ export class TabsBar {
   /** 上次渲染时的激活标签 id（用于只切 class 的增量路径） */
   private activeId = "";
   private menu: HTMLElement | null = null;
+  /** 溢出下拉：标签多到看不全时才出现 */
+  private overflowBtn: HTMLButtonElement | null = null;
+  private overflowMenu: HTMLElement | null = null;
 
   /** 标签栏右侧常驻「新建」按钮（双击空白仍可用，此处只为发现性） */
   private ensureAddButton(): void {
@@ -44,6 +47,88 @@ export class TabsBar {
       this.callbacks.onNewTab();
     });
     this.container.after(add);
+  }
+
+  /**
+   * 溢出下拉入口：标签总宽超过可视宽度时出现在「+」左边。
+   * 只在溢出时显示——标签不多时它是纯噪声；溢出后滚动找标签又太慢。
+   */
+  private ensureOverflowButton(): void {
+    const parent = this.container.parentElement;
+    if (!parent || parent.querySelector(".tab-overflow")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "icon-btn tab-overflow";
+    btn.textContent = "▾";
+    btn.title = "全部标签";
+    btn.setAttribute("aria-label", "全部标签");
+    btn.hidden = true;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleOverflow();
+    });
+    this.container.after(btn);
+    this.overflowBtn = btn;
+    // 窗口宽度变化会改变是否溢出
+    window.addEventListener("resize", () => this.syncOverflowVisibility());
+  }
+
+  private syncOverflowVisibility(): void {
+    const btn = this.overflowBtn;
+    if (!btn) return;
+    const el = this.container;
+    btn.hidden = el.scrollWidth <= el.clientWidth + 2;
+  }
+
+  private toggleOverflow(): void {
+    if (this.overflowMenu) {
+      this.closeOverflow();
+      return;
+    }
+    const btn = this.overflowBtn;
+    if (!btn) return;
+    const menu = document.createElement("div");
+    menu.className = "menu-dropdown tab-overflow-menu";
+    menu.setAttribute("role", "menu");
+    const activeId = tabStore.active()?.id ?? "";
+    for (const tab of tabStore.list()) {
+      const item = document.createElement("div");
+      item.className = "menu-item";
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      item.title = tab.path ?? "未命名";
+      const check = document.createElement("span");
+      check.className = "menu-check";
+      check.textContent = tab.id === activeId ? "✓" : "";
+      const label = document.createElement("span");
+      label.className = "menu-label";
+      label.textContent = tab.dirty ? `● ${tab.name}` : tab.name;
+      item.append(check, label);
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.closeOverflow();
+        this.callbacks.onActivate(tab.id);
+      });
+      menu.append(item);
+    }
+    document.body.append(menu);
+    const rect = btn.getBoundingClientRect();
+    menu.style.minWidth = `${Math.max(200, rect.width * 2)}px`;
+    menu.style.maxHeight = "60vh";
+    menu.style.overflow = "auto";
+    menu.style.left = `${Math.max(8, rect.left - 140)}px`;
+    menu.style.top = `${rect.bottom}px`;
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth - 8) {
+      menu.style.left = `${window.innerWidth - menuRect.width - 8}px`;
+    }
+    menu.addEventListener("click", (e) => e.stopPropagation());
+    this.overflowMenu = menu;
+  }
+
+  private closeOverflow(): void {
+    this.overflowMenu?.remove();
+    this.overflowMenu = null;
   }
 
   constructor(
@@ -70,10 +155,17 @@ export class TabsBar {
     });
 
     this.ensureAddButton();
+    this.ensureOverflowButton();
 
-    document.addEventListener("click", () => this.closeMenu());
+    document.addEventListener("click", () => {
+      this.closeMenu();
+      this.closeOverflow();
+    });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.closeMenu();
+      if (e.key === "Escape") {
+        this.closeMenu();
+        this.closeOverflow();
+      }
     });
 
     this.wireDrag();
@@ -200,7 +292,11 @@ export class TabsBar {
     if (activeId === this.activeId) return;
     this.activeId = activeId;
     this.container.querySelectorAll<HTMLElement>(".tab").forEach((el) => {
-      el.classList.toggle("active", el.dataset.tabId === activeId);
+      const on = el.dataset.tabId === activeId;
+      el.classList.toggle("active", on);
+      el.setAttribute("aria-selected", String(on));
+      // 焦点跟随当前标签的漫游位（否则键盘 Tab 会停在旧标签上）
+      el.tabIndex = on ? 0 : -1;
     });
     this.scrollActiveIntoView();
   }
@@ -216,16 +312,47 @@ export class TabsBar {
     const signature = this.renderSignature();
     if (signature === this.signature) {
       this.syncActive();
+      this.syncOverflowVisibility();
       return;
     }
     this.signature = signature;
     this.activeId = tabStore.active()?.id ?? "";
 
     this.container.innerHTML = "";
+    // 无障碍：标签栏是 tablist，标签支持 ←/→/Home/End 切换、Delete 关闭
+    this.container.setAttribute("role", "tablist");
+    this.container.setAttribute("aria-label", "已打开的标签");
     for (const tab of tabStore.list()) {
+      const active = tab.id === tabStore.active()?.id;
       const el = document.createElement("div");
-      el.className = `tab${tab.id === tabStore.active()?.id ? " active" : ""}`;
+      el.className = `tab${active ? " active" : ""}`;
       el.dataset.tabId = tab.id;
+      el.setAttribute("role", "tab");
+      el.setAttribute("aria-selected", String(active));
+      // 漫游 tabindex：整个标签栏只占一个 Tab 停靠点（与菜单栏一致）
+      el.tabIndex = active ? 0 : -1;
+      el.addEventListener("keydown", (e) => {
+        const tabs = [...this.container.querySelectorAll<HTMLElement>(".tab")];
+        const index = tabs.indexOf(el);
+        if (index < 0) return;
+        let next = -1;
+        if (e.key === "ArrowRight") next = (index + 1) % tabs.length;
+        else if (e.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = tabs.length - 1;
+        else if (e.key === "Delete") {
+          e.preventDefault();
+          this.callbacks.onClose(tab.id);
+          return;
+        } else {
+          return;
+        }
+        e.preventDefault();
+        const target = tabs[next];
+        if (!target) return;
+        this.callbacks.onActivate(target.dataset.tabId ?? "");
+        target.focus({ preventScroll: true });
+      });
 
       // 外部修改标记：后台标签也可见（状态栏只显示激活标签，靠它才不会错过）
       if (tab.externallyChanged) {
@@ -250,6 +377,9 @@ export class TabsBar {
       close.className = "tab-close";
       close.textContent = "×";
       close.title = "关闭";
+      // 读屏需要一个名字：× 本身没有语义
+      close.setAttribute("role", "button");
+      close.setAttribute("aria-label", `关闭 ${tab.name}`);
       close.addEventListener("click", (e) => {
         e.stopPropagation();
         this.callbacks.onClose(tab.id);
@@ -270,6 +400,7 @@ export class TabsBar {
     }
     this.container.classList.toggle("hidden", tabStore.list().length === 0);
     this.scrollActiveIntoView();
+    this.syncOverflowVisibility();
   }
 
   private closeMenu(): void {

@@ -8,14 +8,16 @@
  */
 
 import type { EditorView } from "@codemirror/view";
+import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/settings";
 import { tabStore, type Tab } from "../store/tabs";
 import { CronPanel } from "../panels/cronPanel";
 import { BatchEncodingPanel } from "../panels/batchEncoding";
 import { RegexTesterPanel } from "../panels/regexTester";
 import { MarkdownTableDialog } from "../panels/tableDialog";
-import { RecentFilesDialog } from "../panels/recentFiles";
+import { RecentFilesDialog, removeRecentFile } from "../panels/recentFiles";
 import { SaveEncodingDialog } from "../panels/saveEncoding";
+import { RunConfigDialog } from "../panels/runConfig";
 import { RunPanel } from "../panels/runPanel";
 import { applyCase, applyJson, CASE_LABELS, type CaseMode } from "../editor/transforms";
 import { insertTable, toggleWrap } from "../editor/markdownTools";
@@ -36,6 +38,7 @@ import { jsonToJava } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
 import { dirnameOf } from "../core/paths";
 import { looksLikeCurlScript as isCurlScriptText } from "../core/curlScript";
+import { firstLine } from "../core/errors";
 
 export interface RunHostDeps {
   getActiveTab: () => Tab | null;
@@ -63,6 +66,7 @@ export class RunHost {
   private readonly batchEncodingPanel = new BatchEncodingPanel();
   private readonly regexTester = new RegexTesterPanel();
   private readonly saveEncodingDialog = new SaveEncodingDialog();
+  private readonly runConfigDialog = new RunConfigDialog();
   private runActive = false;
 
   private readonly tableDialog: MarkdownTableDialog;
@@ -85,7 +89,7 @@ export class RunHost {
     });
 
     // 最近打开：点击后走统一的打开流程（含大文件分流）
-    this.recentFiles = new RecentFilesDialog((path) => deps.onOpenFile(path));
+    this.recentFiles = new RecentFilesDialog((path) => void this.openRecentFile(path));
 
     // Code Run 输出面板（按语言分类、堆栈位置可点击）
     this.runPanel = new RunPanel(
@@ -95,6 +99,7 @@ export class RunHost {
         this.refreshRunButton();
       },
       (path, line) => deps.onOpenLocation(path, line),
+      () => this.runConfigDialog.open(() => deps.showMessage("运行配置已保存")),
     );
     this.runPanel.mount();
 
@@ -302,6 +307,22 @@ export class RunHost {
     this.recentFiles.toggle();
   }
 
+  /**
+   * 最近打开条目：先探一次存在性。
+   * 直接打开已删除的文件会走"打开失败"弹窗，且条目会一直留在列表里反复失败；
+   * 这里失效即移除并明确告知。
+   */
+  private async openRecentFile(path: string): Promise<void> {
+    try {
+      await invoke<"file" | "dir">("path_kind", { path });
+    } catch {
+      removeRecentFile(path);
+      this.deps.showMessage(`文件已不存在，已从最近列表移除：${path.split(/[\\/]/).pop() ?? path}`);
+      return;
+    }
+    this.deps.onOpenFile(path);
+  }
+
   toggleTableDialog(): void {
     this.tableDialog.toggle();
   }
@@ -310,10 +331,11 @@ export class RunHost {
   pickEncoding(
     encodings: string[],
     current: string,
-    onPick: (encoding: string) => void,
+    currentBom: boolean,
+    onPick: (encoding: string, hasBom: boolean) => void,
     note: string,
   ): void {
-    this.saveEncodingDialog.open(encodings, current, onPick, note);
+    this.saveEncodingDialog.open(encodings, current, currentBom, onPick, note);
   }
 
   /** Markdown 选中包裹切换（加粗 / 斜体 / 高亮） */
@@ -383,7 +405,7 @@ export class RunHost {
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      this.deps.showMessage(message.split("\n")[0] || "转换失败");
+      this.deps.showMessage(firstLine(message) || "转换失败");
     }
   }
 

@@ -1,0 +1,27 @@
+{
+  "statusBarFields": [
+    "path",
+    "readonly",
+    "size",
+    "encoding",
+    "newline",
+    "language",
+    "indent",
+    "whitespace",
+    "wrap",
+    "cursor",
+    "lines",
+    "dirty"
+  ],
+  "formatterKeys": ["cpp", "go", "java", "python", "rust"],
+  "largeViewEncodings": [
+    "UTF-8",
+    "GBK",
+    "GB18030",
+    "Big5",
+    "Windows-1252",
+    "Shift_JIS",
+    "EUC-KR",
+    "Windows-1251"
+  ]
+}

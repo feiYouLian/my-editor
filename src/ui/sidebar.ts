@@ -15,10 +15,17 @@
  *   config.layout.sidebarView 仍记录当前分区）。
  */
 
-export type SidebarView = "open" | "git" | "files" | "search" | "outline";
+export type SidebarView = "open" | "git" | "files" | "search" | "outline" | "bookmarks";
 
 /** 全部合法分区 id（用于校验 config.json 这类外部输入） */
-const SIDEBAR_VIEWS: readonly SidebarView[] = ["open", "git", "files", "search", "outline"];
+const SIDEBAR_VIEWS: readonly SidebarView[] = [
+  "open",
+  "git",
+  "files",
+  "search",
+  "outline",
+  "bookmarks",
+];
 
 /** 锁定分区：高度由计算得出，不响应拖拽、不写回配置 */
 const LOCKED_VIEWS: readonly SidebarView[] = ["open", "files"];

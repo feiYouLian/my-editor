@@ -15,6 +15,7 @@ import {
 } from "../config/settings";
 import { formatSize } from "../core/format";
 import { recordMessage } from "../core/messageLog";
+import { announce } from "./a11y";
 import type { Tab } from "../store/tabs";
 
 /** 图片标签下无意义的字段（只读二进制：无行列 / 编码 / 换行 / 语言 / 开关 / 脏标记） */
@@ -219,6 +220,8 @@ export function createStatusBar(
     // 先记一条历史：这条消息 3 秒后就在界面上消失了，但「刚才说了什么」
     // 还能从通知面板的「最近消息」里翻回来（存 core/messageLog，不落盘）
     recordMessage(text);
+    // 界面上的消息 3 秒就消失：同步给读屏（aria-live=polite，不打断朗读）
+    announce(text);
     const visible = !elements.message.classList.contains("hidden");
     messageCount = visible ? messageCount + 1 : 0;
     elements.message.textContent = messageCount > 0 ? `${text}（+${messageCount}）` : text;
@@ -253,6 +256,8 @@ export function createStatusBar(
     elements.error.textContent = text;
     elements.error.title = text;
     elements.error.classList.remove("hidden");
+    // 常驻错误是"必须知道"的信息：同样播报一次
+    announce(text);
   }
 
   function clearStickyError(): void {
@@ -334,16 +339,11 @@ export function createStatusBar(
     applyFieldVisibility(true);
   }
 
-  /** 应用分栏比例（设置中心滑杆 / 配置默认值共用） */
+  /** 应用分栏比例（只改界面；持久化由调用方写 config） */
   function setSplitRatio(ratio: number): void {
     if (!splitArea) return;
     const clamped = Math.min(0.85, Math.max(0.15, ratio));
     splitArea.style.setProperty("--split-ratio", `${(clamped * 100).toFixed(1)}%`);
-    try {
-      localStorage.setItem("my-editor.splitRatio", String(clamped));
-    } catch {
-      // localStorage 不可用时仅会话内生效
-    }
   }
 
   return {

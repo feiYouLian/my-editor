@@ -1,3 +1,5 @@
+import { firstLine } from "../core/errors";
+
 /**
  * 自定义编辑器主题：文件格式、校验与 `custom:<名字>` 取值约定。
  *
@@ -120,7 +122,7 @@ export function parseUserTheme(name: string, text: string): ThemeParseResult {
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    return { ok: false, error: `不是合法 JSON（${String(e).split("\n")[0]}）` };
+    return { ok: false, error: `不是合法 JSON（${firstLine(e)}）` };
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { ok: false, error: "顶层必须是对象" };

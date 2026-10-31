@@ -4,6 +4,7 @@
  */
 
 import type { EditorView } from "@codemirror/view";
+import { firstLine } from "../core/errors";
 
 /** 将选区写入系统剪贴板；cut 为真时同时删除选区 */
 export async function copyFromEditor(
@@ -17,7 +18,7 @@ export async function copyFromEditor(
   try {
     await navigator.clipboard.writeText(text);
   } catch (e) {
-    onError(`写入剪贴板失败：${String(e).split("\n")[0]}`);
+    onError(`写入剪贴板失败：${firstLine(e)}`);
     return;
   }
   if (cut && !view.state.readOnly) {
@@ -37,7 +38,7 @@ export async function pasteIntoEditor(
   try {
     text = await navigator.clipboard.readText();
   } catch (e) {
-    onError(`读取剪贴板失败：${String(e).split("\n")[0]}`);
+    onError(`读取剪贴板失败：${firstLine(e)}`);
     return;
   }
   if (!text) return;

@@ -1,0 +1,46 @@
+name: ci
+
+# 日常门禁：任何提交/PR 都跑与本地「验收基线」相同的四项检查。
+# 发布（打 tag、安装包、Release）见 release.yml；签名与更新资产的密钥由仓库 Secrets 提供。
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # 与发布目标平台一致：只在 Windows 上验证，避免"本地通过、打包失败"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      # 类型检查 + 生产构建（等价于本地 `npm run verify`）
+      - name: 类型检查与构建
+        run: npm run verify
+
+      - name: 前端单测
+        run: npm test
+
+      - name: Rust 单测
+        run: cargo test --lib
+        working-directory: src-tauri

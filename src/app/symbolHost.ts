@@ -13,6 +13,7 @@ import type { EditorView } from "@codemirror/view";
 
 import { tabStore } from "../store/tabs";
 import { openStatusMenu } from "../ui/statusMenu";
+import { firstLine } from "../core/errors";
 
 interface SymbolHit {
   path: string;
@@ -75,7 +76,7 @@ export class SymbolHost {
       });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      showMessage(`符号定位失败：${reason.split("\n")[0]}`);
+      showMessage(`符号定位失败：${firstLine(reason)}`);
       return;
     }
 

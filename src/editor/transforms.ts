@@ -1,4 +1,5 @@
 import type { EditorView } from "@codemirror/view";
+import { firstLine } from "../core/errors";
 
 /**
  * 文本变换：大小写 / 命名风格转换与 JSON 美化压缩。
@@ -121,7 +122,7 @@ export function applyJson(
       const parsed: unknown = JSON.parse(text);
       return minify ? JSON.stringify(parsed) : JSON.stringify(parsed, null, indent);
     } catch (e) {
-      parseError = String(e).split("\n")[0];
+      parseError = firstLine(e);
       return null;
     }
   });

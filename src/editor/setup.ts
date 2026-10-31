@@ -27,6 +27,7 @@ import {
   type EditorCompartments,
 } from "./extensions";
 import { detectIndent, type IndentStyle } from "../core/indentDetect";
+import { setBlameAnnotation, type BlameAnnotation } from "./blame";
 import {
   addBookmark,
   addBookmarks,
@@ -110,6 +111,8 @@ export interface EditorHandle {
   currentLanguage: () => string | null;
   /** 跳转到指定行（1 基）并聚焦编辑器 */
   gotoLine: (line: number) => void;
+  /** 设置当前行内联 Blame（null 清除） */
+  setBlame: (info: BlameAnnotation | null) => void;
   /** 应用当前 settings 到编辑器（配置载入/热更新后调用） */
   applySettings: () => void;
   /**
@@ -493,6 +496,9 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       const from = view.state.doc.line(n).from;
       view.dispatch({ selection: { anchor: from }, scrollIntoView: true });
       view.focus();
+    },
+    setBlame: (info: BlameAnnotation | null) => {
+      view.dispatch({ effects: setBlameAnnotation.of(info) });
     },
     bookmarksOf: (docId) => {
       if (docId === activeDocKey) {

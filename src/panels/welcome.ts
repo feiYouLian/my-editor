@@ -1,7 +1,7 @@
 /**
  * 欢迎页：无打开标签时的首屏引导。
  *
- * 纯展示 + 入口转发：打开文件 / 新建 / 打开目录 / 最近打开 + 常用快捷键。
+ * 纯展示 + 入口转发：打开文件 / 新建 / 打开目录 / 最近打开 / 最近工作区 + 常用快捷键。
  * 动作由 main.ts 注入（panels 不反向依赖 app）。
  */
 
@@ -23,14 +23,26 @@ interface WelcomeAction {
 }
 
 export class WelcomePanel {
+  /** 最近工作区（由宿主注入，变化时重绘；空列表不占位） */
+  private recentWorkspaces: string[] = [];
+  private onPickWorkspace: ((path: string) => void) | null = null;
+
   constructor(
     private readonly host: HTMLElement,
-    deps: WelcomeDeps,
+    private readonly deps: WelcomeDeps,
   ) {
-    this.render(deps);
+    this.render();
   }
 
-  private render(deps: WelcomeDeps): void {
+  /** 刷新最近工作区列表（打开/切换工作区后调用） */
+  setRecentWorkspaces(list: string[], onPick?: (path: string) => void): void {
+    this.recentWorkspaces = list;
+    if (onPick) this.onPickWorkspace = onPick;
+    this.render();
+  }
+
+  private render(): void {
+    const deps = this.deps;
     this.host.innerHTML = "";
 
     const card = document.createElement("div");
@@ -91,8 +103,49 @@ export class WelcomePanel {
       links.append(link);
     }
 
-    card.append(title, subtitle, grid, tips, links);
+    card.append(title, subtitle, grid, tips);
+    const recent = this.renderRecentWorkspaces();
+    if (recent) card.append(recent);
+    card.append(links);
     this.host.append(card);
+  }
+
+  /**
+   * 最近工作区：直接切换（省掉「打开目录 → 对话框里再找一遍」）。
+   * 列表为空时不占位，首屏保持简洁。
+   */
+  private renderRecentWorkspaces(): HTMLElement | null {
+    if (this.recentWorkspaces.length === 0) return null;
+    const box = document.createElement("div");
+    box.className = "welcome-recent";
+
+    const title = document.createElement("div");
+    title.className = "welcome-recent-title";
+    title.textContent = "最近工作区";
+    box.append(title);
+
+    const list = document.createElement("div");
+    list.className = "recent-list welcome-recent-list";
+    for (const path of this.recentWorkspaces) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "recent-row";
+      row.title = path;
+
+      const name = document.createElement("span");
+      name.className = "recent-name";
+      name.textContent = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+      const dir = document.createElement("span");
+      dir.className = "recent-path";
+      dir.textContent = path;
+
+      row.append(name, dir);
+      row.addEventListener("click", () => this.onPickWorkspace?.(path));
+      list.append(row);
+    }
+    box.append(list);
+    return box;
   }
 
   /** 无标签时显示；有标签时隐藏 */

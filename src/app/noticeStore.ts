@@ -18,6 +18,8 @@ export interface Notice {
   kind: NoticeKind;
   text: string;
   actions: NoticeAction[];
+  /** 去重键：同一 key 只保留最新一条（如 fmt:tabId / git:push） */
+  key?: string;
 }
 
 const MAX_NOTICES = 50;
@@ -37,7 +39,7 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
-/** 追加一条（同文案的旧条目会被移除，避免重复刷屏） */
+/** 追加一条（同 key 的旧条目会被移除，避免重复刷屏） */
 export function addNotice(
   kind: NoticeKind,
   text: string,
@@ -45,11 +47,11 @@ export function addNotice(
   dedupeKey?: string,
 ): number {
   if (dedupeKey) {
-    const existing = notices.findIndex((n) => n.kind === kind && n.text === text);
+    const existing = notices.findIndex((n) => n.key === dedupeKey);
     if (existing >= 0) notices.splice(existing, 1);
   }
   const id = ++seq;
-  notices.unshift({ id, kind, text, actions });
+  notices.unshift({ id, kind, text, actions, key: dedupeKey });
   if (notices.length > MAX_NOTICES) notices.length = MAX_NOTICES;
   emit();
   return id;

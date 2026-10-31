@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/settings";
 import { confirmAction } from "../ui/dialogs";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
+import { firstLine } from "../core/errors";
 
 interface SearchMatch {
   line: number;
@@ -77,6 +78,10 @@ export interface SearchViewDeps {
 const DEBOUNCE_MS = 300;
 const MAX_FILES = 200;
 const MAX_MATCHES = 2000;
+const SEARCH_HISTORY_KEY = "my-editor.searchHistory";
+const SEARCH_INCLUDE_KEY = "my-editor.searchInclude";
+const SEARCH_EXCLUDE_KEY = "my-editor.searchExclude";
+const MAX_HISTORY = 20;
 
 /** 备份 / 临时文件：与后端 `replace_in_files` 的过滤保持一致 */
 function isBackupPath(path: string): boolean {
@@ -86,6 +91,9 @@ function isBackupPath(path: string): boolean {
 
 export class SearchView {
   private queryEl!: HTMLInputElement;
+  private includeEl!: HTMLInputElement;
+  private excludeEl!: HTMLInputElement;
+  private historyEl!: HTMLDataListElement;
   private countEl!: HTMLElement;
   private listEl!: HTMLElement;
   private replaceEl!: HTMLInputElement;
@@ -203,13 +211,60 @@ export class SearchView {
 
     toolbar.append(this.queryEl, caseBtn, regexBtn, wordBtn, replaceToggle);
 
+    // 包含 / 排除 glob：按 gitignore 语义传给后端（include 白名单，exclude 用 !pattern）
+    const globRow = document.createElement("div");
+    globRow.className = "sv-glob-row";
+    this.includeEl = document.createElement("input");
+    this.includeEl.type = "text";
+    this.includeEl.className = "sv-input sv-glob";
+    this.includeEl.placeholder = "包含：src/**/*.ts（逗号分隔）";
+    this.includeEl.spellcheck = false;
+    this.excludeEl = document.createElement("input");
+    this.excludeEl.type = "text";
+    this.excludeEl.className = "sv-input sv-glob";
+    this.excludeEl.placeholder = "排除：*.min.js（逗号分隔）";
+    this.excludeEl.spellcheck = false;
+    for (const el of [this.includeEl, this.excludeEl]) {
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void this.run();
+        }
+      });
+    }
+    const historyClear = document.createElement("button");
+    historyClear.type = "button";
+    historyClear.className = "sv-toggle";
+    historyClear.style.width = "auto";
+    historyClear.style.padding = "0 8px";
+    historyClear.textContent = "清空历史";
+    historyClear.title = "清空搜索历史（不影响包含/排除规则）";
+    historyClear.addEventListener("click", () => {
+      try {
+        localStorage.removeItem(SEARCH_HISTORY_KEY);
+      } catch {
+        // localStorage 不可用时忽略
+      }
+      this.renderHistory([]);
+      this.deps.showMessage("搜索历史已清空");
+    });
+    globRow.append(this.includeEl, this.excludeEl, historyClear);
+
+    this.historyEl = document.createElement("datalist");
+    this.historyEl.id = "sv-search-history";
+    this.queryEl.setAttribute("list", this.historyEl.id);
+    this.host.append(globRow, this.historyEl);
+    this.includeEl.value = this.loadGlob(SEARCH_INCLUDE_KEY);
+    this.excludeEl.value = this.loadGlob(SEARCH_EXCLUDE_KEY);
+    this.renderHistory(this.loadHistory());
+
     // 替换行：输入框 + 全部替换（勾选文件后可用）
     this.replaceRowEl = document.createElement("div");
     this.replaceRowEl.className = "sv-replace hidden";
     this.replaceEl = document.createElement("input");
     this.replaceEl.type = "text";
     this.replaceEl.className = "sv-input";
-    this.replaceEl.placeholder = "替换为…（正则模式支持 $1）";
+    this.replaceEl.placeholder = "替换为…（Rust：$1 / $0 / ${name}）";
     this.replaceEl.spellcheck = false;
     this.replaceEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -271,6 +326,11 @@ export class SearchView {
       return;
     }
 
+    const includeGlobs = this.splitGlobs(this.includeEl.value);
+    const excludeGlobs = this.splitGlobs(this.excludeEl.value);
+    this.saveGlob(SEARCH_INCLUDE_KEY, this.includeEl.value);
+    this.saveGlob(SEARCH_EXCLUDE_KEY, this.excludeEl.value);
+
     const id = ++this.requestId;
     this.countEl.textContent = "搜索中…";
     try {
@@ -281,17 +341,74 @@ export class SearchView {
         regex: this.regexOn,
         wholeWord: this.wholeWord,
         ignoreDirs: this.deps.getIgnoreDirs(),
+        includeGlobs,
+        excludeGlobs,
         maxFiles: MAX_FILES,
         maxMatches: MAX_MATCHES,
       });
       if (id !== this.requestId) return; // 过期结果丢弃
+      this.recordHistory(query);
       this.renderReport(report);
     } catch (e) {
       if (id !== this.requestId) return;
       this.countEl.textContent = "";
-      this.renderEmpty(`搜索失败: ${String(e).split("\n")[0]}`);
+      this.renderEmpty(`搜索失败: ${firstLine(e)}`);
       this.deps.showMessage("工作区搜索失败（详见侧栏提示）");
     }
+  }
+
+  private splitGlobs(value: string): string[] {
+    return value
+      .split(/[,\n]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  private loadGlob(key: string): string {
+    try {
+      return localStorage.getItem(key) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  private saveGlob(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // localStorage 不可用时忽略
+    }
+  }
+
+  private loadHistory(): string[] {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) ?? "[]") as unknown;
+      return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private renderHistory(items: string[]): void {
+    this.historyEl.innerHTML = "";
+    for (const item of items) {
+      const option = document.createElement("option");
+      option.value = item;
+      this.historyEl.append(option);
+    }
+  }
+
+  private recordHistory(query: string): void {
+    const items = [query, ...this.loadHistory().filter((item) => item !== query)].slice(
+      0,
+      MAX_HISTORY,
+    );
+    try {
+      localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(items));
+    } catch {
+      // localStorage 不可用时忽略
+    }
+    this.renderHistory(items);
   }
 
   private renderReport(report: SearchReport): void {
@@ -440,7 +557,7 @@ export class SearchView {
     this.updateReplaceButton();
   }
 
-  /** 预览替换后的命中文本：正则模式按 JS 语义展开 $1（失败则原样显示模板） */
+  /** 预览替换后的命中文本：按 Rust regex 的 $1 / $0 / ${name} 语义展开 */
   private expandReplacement(hit: string): string {
     const replacement = this.replaceEl.value;
     if (!this.regexOn) return replacement;
@@ -448,9 +565,14 @@ export class SearchView {
     if (!query) return replacement;
     try {
       const re = new RegExp(query, this.caseSensitive ? "" : "i");
-      const out = hit.replace(re, replacement);
-      // 命中片段单独匹配不上（如 ^ 或依赖上下文的断言）时退回模板原样
-      return out === hit ? replacement : out;
+      const match = re.exec(hit);
+      if (!match) return replacement;
+      return replacement.replace(/\$(\$|\d{1,2}|\{[\w.]+\})/g, (_all, token: string) => {
+        if (token === "$") return "$";
+        if (/^\d+$/.test(token)) return match[Number(token)] ?? "";
+        const name = token.slice(1, -1);
+        return match.groups?.[name] ?? "";
+      });
     } catch {
       return replacement;
     }
@@ -480,7 +602,7 @@ export class SearchView {
       );
       await this.run();
     } catch (e) {
-      this.deps.showMessage(`撤销失败: ${String(e).split("\n")[0]}`, 8000);
+      this.deps.showMessage(`撤销失败: ${firstLine(e)}`, 8000);
     } finally {
       this.replacing = false;
       this.updateReplaceButton();
@@ -569,7 +691,7 @@ export class SearchView {
       );
       await this.run();
     } catch (e) {
-      this.deps.showMessage(`替换失败: ${String(e).split("\n")[0]}`, 8000);
+      this.deps.showMessage(`替换失败: ${firstLine(e)}`, 8000);
     } finally {
       this.replacing = false;
       this.updateReplaceButton();

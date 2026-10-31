@@ -10,6 +10,7 @@
 import {
   CATEGORY_LABELS,
   setSettingsNotify,
+  setSettingsRerender,
   type Category,
   type SettingsPanelCallbacks,
   type SettingsTabContext,
@@ -32,6 +33,7 @@ export class SettingsPanel {
 
   constructor(private readonly callbacks: SettingsPanelCallbacks) {
     setSettingsNotify(callbacks.onMessage);
+    setSettingsRerender(() => this.tabContext().rerender());
   }
 
   get isOpen(): boolean {

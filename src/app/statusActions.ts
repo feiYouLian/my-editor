@@ -17,6 +17,7 @@ import {
   languageName,
 } from "../editor/languages";
 import type { FileContent } from "../types/app";
+import { firstLine } from "../core/errors";
 
 const NEWLINE_OPTIONS: { value: string; label: string }[] = [
   { value: "LF", label: "LF（Unix / macOS）" },
@@ -90,6 +91,11 @@ export class StatusActions {
       this.deps.showMessage("当前文件不支持切换换行符");
       return;
     }
+    // 虚拟视图/只读文件不能保存，改了只会留下无法清除的脏标记
+    if (tab.virtual || tab.readonly) {
+      this.deps.showMessage("只读或虚拟视图不支持切换换行符");
+      return;
+    }
     openStatusMenu({
       anchor: { x, y },
       header: `当前换行符：${tab.newline}`,
@@ -161,6 +167,11 @@ export class StatusActions {
       this.deps.showMessage("当前文件不支持切换编码");
       return;
     }
+    // 虚拟视图由大文件视图自己的编码下拉处理；只读文件无法保存转码结果
+    if (tab.virtual || tab.readonly) {
+      this.deps.showMessage("只读或虚拟视图不支持切换编码");
+      return;
+    }
     const candidates = tab.encodingCandidates.length
       ? tab.encodingCandidates
       : this.deps.fallbackEncodings;
@@ -227,7 +238,7 @@ export class StatusActions {
           : `已重新打开为 ${data.encoding}`,
       );
     } catch (e) {
-      this.deps.showMessage(`重新打开失败: ${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`重新打开失败: ${firstLine(e)}`);
     }
   }
 

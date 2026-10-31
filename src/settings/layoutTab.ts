@@ -3,7 +3,7 @@
  */
 
 import type { ColumnModifier, StatusBarFieldEntry } from "../config/settings";
-import { getConfig } from "../config/settings";
+import { getConfig, getWorkspaceOverrides } from "../config/settings";
 import { legacyLanguageCount, setUserLanguages, userLanguageCount } from "../editor/languages";
 import { LEGACY_MODES, legacyModeNames } from "../editor/legacyModes";
 import { loadUserLanguages, openLanguagesDir } from "../services/userAssets";
@@ -28,6 +28,7 @@ import {
   type SettingsTabContext,
   type ViewMode,
 } from "./shared";
+import { firstLine } from "../core/errors";
 
 export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   const cfg = getConfig();
@@ -62,9 +63,14 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   );
   main.append(previewSection.el);
 
+  // 工作区覆盖会盖住全局 Tab 宽度：不提示的话，改这里会"看起来没生效"
+  const wsTabSize = getWorkspaceOverrides().tabSize ?? null;
   const editorSection = section(
     "编辑器",
-    "显示项与缩进行为，即时生效。多光标：Ctrl+点击；列选择：Alt+拖选（VS Code 用 Alt+点击，在本项目是列选择）。",
+    "显示项与缩进行为，即时生效。多光标：Ctrl+点击；列选择：Alt+拖选（VS Code 用 Alt+点击，在本项目是列选择）。" +
+      (wsTabSize !== null
+        ? `当前工作区的 Tab 宽度已被覆盖为 ${wsTabSize}（见「文件与会话 ▸ 工作区覆盖」）。`
+        : ""),
   );
   editorSection.body.append(
     checkRow("显示行号", cfg.layout.showLineNumbers, (value) => {
@@ -223,7 +229,7 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
             .then((dir) => ctx.callbacks.onMessage(`已打开语言目录：${dir}`))
             .catch((e: unknown) => {
               const reason = e instanceof Error ? e.message : String(e);
-              ctx.callbacks.onMessage(`打开语言目录失败：${reason.split("\n")[0]}`);
+              ctx.callbacks.onMessage(`打开语言目录失败：${firstLine(reason)}`);
             });
         },
       },

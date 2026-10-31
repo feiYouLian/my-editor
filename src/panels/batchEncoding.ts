@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { firstLine } from "../core/errors";
 
 /**
  * 批量另存为编码对话框（命令面板入口）：
@@ -261,7 +262,7 @@ export class BatchEncodingPanel {
       }
       this.renderFiles();
     } catch (e) {
-      this.setResult(`转换失败：${String(e).split("\n")[0]}`, true);
+      this.setResult(`转换失败：${firstLine(e)}`, true);
     } finally {
       this.runBtn.disabled = false;
     }

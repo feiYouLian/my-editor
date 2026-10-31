@@ -117,11 +117,24 @@ export function openStatusMenu<T>(config: StatusMenuConfig<T>): void {
   const onKeydown = (e: KeyboardEvent) => {
     if (e.key === "Escape") closeStatusMenu();
   };
-  document.addEventListener("click", onDocClick);
-  document.addEventListener("keydown", onKeydown);
+  // 打开菜单的这次 click 仍在派发中：若同步注册 document 监听，
+  // 同一次 click 冒泡到 document 时会把刚打开的菜单立刻关掉。
+  // 用宏任务（而不是微任务）确保整个 click 派发已结束，并用 bound/closed 防止泄漏。
+  let bound = false;
+  let closed = false;
+  const bind = (): void => {
+    if (bound || closed) return;
+    bound = true;
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onKeydown);
+  };
+  const timer = window.setTimeout(bind, 0);
   current = {
     cleanup: () => {
+      closed = true;
+      window.clearTimeout(timer);
       menu.remove();
+      if (!bound) return;
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("keydown", onKeydown);
     },

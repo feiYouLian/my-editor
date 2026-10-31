@@ -1,6 +1,6 @@
 /**
  * 布局：侧栏显隐 / 侧栏宽度拖拽 / 双栏分割线拖动。
- * 宽度与比例记忆于 localStorage（双击复位）。
+ * 侧栏宽度记忆于 localStorage；分栏比例写回 config.json（单一真源）。
  */
 
 import { getConfig } from "../config/settings";
@@ -13,6 +13,8 @@ export interface LayoutDeps {
   isSplitMode: () => boolean;
   /** 侧栏显隐持久化（防抖写 config.json） */
   persistSidebarVisible: (visible: boolean) => void;
+  /** 分栏比例持久化（config.json 单一真源） */
+  persistSplitRatio: (ratio: number) => void;
 }
 
 export class LayoutPane {
@@ -161,43 +163,27 @@ export class LayoutPane {
       this.pendingSplitX = null;
       el?.classList.remove("dragging");
       document.body.classList.remove("dragging-split");
-      // 松手才落盘（拖动中每次写 localStorage 会让手感发涩）
-      try {
-        localStorage.setItem("my-editor.splitRatio", String(this.splitRatioLast));
-      } catch {
-        // localStorage 不可用时静默降级为会话内记忆
-      }
+      // 松手才落盘：以当前 CSS 值为准（滑杆刚改过、拖拽未移动时也不会写回旧比例）
+      const applied = parseFloat(
+        this.splitArea()?.style.getPropertyValue("--split-ratio") ?? "",
+      ) / 100;
+      const ratio = Number.isFinite(applied)
+        ? Math.min(0.85, Math.max(0.15, applied))
+        : this.splitRatioLast;
+      this.splitRatioLast = ratio;
+      this.deps.persistSplitRatio(ratio);
     });
     el?.addEventListener("dblclick", () => {
+      this.splitRatioLast = 0.5;
       this.splitArea()?.style.setProperty("--split-ratio", "50%");
-      try {
-        localStorage.removeItem("my-editor.splitRatio");
-      } catch {
-        // 同上
-      }
+      this.deps.persistSplitRatio(0.5);
     });
-    // 恢复上次的分栏比例
-    try {
-      const saved = localStorage.getItem("my-editor.splitRatio");
-      if (saved) {
-        this.splitArea()?.style.setProperty(
-          "--split-ratio",
-          `${(Number(saved) * 100).toFixed(1)}%`,
-        );
-      }
-    } catch {
-      // 同上
-    }
   }
 
-  /** 启动时：localStorage 无分栏比例记录则按配置默认值（不写回，留给用户拖动/设置时落盘） */
+  /** 启动时按配置应用分栏比例（config 是唯一真源） */
   applyConfiguredSplitRatio(): void {
-    try {
-      if (localStorage.getItem("my-editor.splitRatio")) return;
-    } catch {
-      return;
-    }
-    const ratio = Math.round(getConfig().layout.splitRatio * 100);
-    this.splitArea()?.style.setProperty("--split-ratio", `${ratio}%`);
+    const configured = getConfig().layout.splitRatio;
+    this.splitRatioLast = configured;
+    this.splitArea()?.style.setProperty("--split-ratio", `${(configured * 100).toFixed(1)}%`);
   }
 }

@@ -80,7 +80,7 @@ export function promptText(message: string, initial = ""): Promise<string | null
     dialog.append(actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
-  trapFocus(dialog);
+    trapFocus(dialog);
 
     const done = (value: string | null) => {
       dismiss(backdrop);
@@ -136,7 +136,7 @@ export function confirmAction(message: string, confirmLabel = "确定"): Promise
     dialog.append(actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
-  trapFocus(dialog);
+    trapFocus(dialog);
 
     const done = (ok: boolean) => {
       dismiss(backdrop);
@@ -286,7 +286,7 @@ export function confirmCloseDirty(name: string): Promise<"save" | "discard" | "c
     dialog.append(actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
-  trapFocus(dialog);
+    trapFocus(dialog);
 
     const done = (value: "save" | "discard" | "cancel") => {
       dismiss(backdrop);
@@ -354,7 +354,7 @@ export function confirmExitDirty(
     dialog.append(actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
-  trapFocus(dialog);
+    trapFocus(dialog);
 
     const done = (value: "save" | "discard" | "cancel") => {
       dismiss(backdrop);

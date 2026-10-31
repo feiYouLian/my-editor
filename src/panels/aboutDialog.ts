@@ -18,7 +18,12 @@ export async function showAboutDialog(deps: AboutDeps): Promise<void> {
     getVersion(),
     invoke<string>("app_config_dir"),
   ]);
-  const version = versionRes.status === "fulfilled" ? versionRes.value : "0.1.0";
+  const version =
+    versionRes.status === "fulfilled"
+      ? versionRes.value
+      : typeof __APP_VERSION__ === "string"
+        ? __APP_VERSION__
+        : "0.0.0";
   const configDir = dirRes.status === "fulfilled" ? dirRes.value : "";
 
   if (document.querySelector(".dialog-backdrop")) return;

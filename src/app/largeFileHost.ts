@@ -12,7 +12,9 @@ import { getConfig, settings } from "../config/settings";
 import { tabStore, type Tab } from "../store/tabs";
 import { LargeView, type LargeFileInfo } from "../panels/largeView";
 import { confirmAction } from "../ui/dialogs";
+import { normalizeLogExtensions } from "../core/logExtensions";
 import type { FileContent } from "../types/app";
+import { firstLine } from "../core/errors";
 
 export interface LargeFileHostDeps {
   showMessage: (text: string) => void;
@@ -57,7 +59,11 @@ export class LargeFileHost {
   /** 是否走只读虚拟视图：体积超阈值，或扩展名命中日志列表 */
   needVirtualView(size: number, extension: string): boolean {
     if (size >= settings.largeFileThreshold) return true;
-    return extension !== "" && getConfig().largeFile.logExtensions.includes(extension);
+    if (!extension) return false;
+    // 配置可能写成 "LOG" / "log" / ".LOG"：统一成小写带点再比较，
+    // 否则前端与后端 file.rs 的口径会不一致
+    const normalized = normalizeLogExtensions(getConfig().largeFile.logExtensions);
+    return normalized.includes(extension.toLowerCase());
   }
 
   /**
@@ -104,7 +110,7 @@ export class LargeFileHost {
       return true;
     } catch (e) {
       tabStore.close(tab.id);
-      this.deps.showMessage(`载入失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`载入失败：${firstLine(e)}`);
       return false;
     }
   }
@@ -150,7 +156,7 @@ export class LargeFileHost {
         data.readonly ? `${data.readonly_reason}，已以只读方式打开` : "已在编辑器中打开",
       );
     } catch (e) {
-      this.deps.showMessage(`打开失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`打开失败：${firstLine(e)}`);
     }
   }
 }

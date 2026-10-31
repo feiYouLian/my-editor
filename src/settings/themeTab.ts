@@ -19,6 +19,7 @@ import {
   THEME_OPTIONS,
   type SettingsTabContext,
 } from "./shared";
+import { firstLine } from "../core/errors";
 
 /** 主题文件重读的统一入口：刷新载入态 → 重绘编辑器 → 反馈给用户 */
 async function reloadThemes(ctx: SettingsTabContext): Promise<void> {
@@ -98,7 +99,7 @@ export function renderTheme(main: HTMLElement, ctx: SettingsTabContext): void {
             .then((dir) => ctx.callbacks.onMessage(`已打开主题目录：${dir}`))
             .catch((e: unknown) => {
               const reason = e instanceof Error ? e.message : String(e);
-              ctx.callbacks.onMessage(`打开主题目录失败：${reason.split("\n")[0]}`);
+              ctx.callbacks.onMessage(`打开主题目录失败：${firstLine(reason)}`);
             });
         },
       },

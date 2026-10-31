@@ -1,8 +1,17 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
+
+// 构建时注入 package.json 版本：关于页在 getVersion() 失败时仍有真实回退值
+const pkg = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 // Tauri 推荐的 Vite 配置：固定端口、不清屏、构建目标 ES2022
 export default defineConfig({
   clearScreen: false,
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     port: 5173,
     strictPort: true,

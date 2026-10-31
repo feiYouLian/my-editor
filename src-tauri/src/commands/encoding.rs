@@ -4,8 +4,17 @@ use encoding_rs::Encoding;
 use serde::Serialize;
 
 /// 「重新打开为」菜单的候选编码
-pub const CANDIDATES: [&str; 7] = [
-    "UTF-8", "GBK", "GB18030", "UTF-16 LE", "UTF-16 BE", "Big5", "Windows-1252",
+pub const CANDIDATES: [&str; 10] = [
+    "UTF-8",
+    "GBK",
+    "GB18030",
+    "UTF-16 LE",
+    "UTF-16 BE",
+    "Big5",
+    "Windows-1252",
+    "Shift_JIS",
+    "EUC-KR",
+    "Windows-1251",
 ];
 
 /// 检测结果
@@ -29,6 +38,9 @@ pub fn lookup(name: &str) -> Option<&'static Encoding> {
         "UTF-16 BE" => "utf-16be",
         "BIG5" => "big5",
         "WINDOWS-1252" | "CP1252" => "windows-1252",
+        "SHIFT_JIS" | "SHIFT-JIS" | "SJIS" => "shift_jis",
+        "EUC-KR" | "EUC_KR" => "euc-kr",
+        "WINDOWS-1251" | "CP1251" => "windows-1251",
         _ => return None,
     };
     Encoding::for_label(label.as_bytes())
@@ -50,6 +62,12 @@ fn display_name(enc: &'static Encoding) -> String {
         "UTF-16 BE".into()
     } else if enc == encoding_rs::WINDOWS_1252 {
         "Windows-1252".into()
+    } else if enc == encoding_rs::SHIFT_JIS {
+        "Shift_JIS".into()
+    } else if enc == encoding_rs::EUC_KR {
+        "EUC-KR".into()
+    } else if enc == encoding_rs::WINDOWS_1251 {
+        "Windows-1251".into()
     } else {
         enc.name().to_string()
     }

@@ -16,12 +16,15 @@ import type {
   DiffSession,
 } from "../panels/diffPanel";
 import { readDiskAs } from "./fileService";
+import { firstLine } from "../core/errors";
 
 export interface DiffServiceDeps {
   getActiveTab: () => Tab | null;
   showMessage: (text: string) => void;
   /** 采用差异块后重载当前标签（main.ts 的标签切换状态机） */
   onReloadActiveTab: () => Promise<void>;
+  /** Git 暂存状态变化后刷新源代码管理视图 */
+  onGitChanged?: () => void;
 }
 
 /**
@@ -91,10 +94,32 @@ export class DiffService {
         payload,
         session.actions,
         session.adopt() ?? undefined,
+        session.hunkAction?.() ?? undefined,
         hunkIndex,
       );
     } catch (e) {
-      this.deps.showMessage(`比较失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`比较失败：${firstLine(e)}`);
+    }
+  }
+
+  /** Git 差异块暂存 / 取消暂存：后端按 old/new 起始行生成单 hunk 补丁 */
+  private async stageHunk(path: string, fromIndex: boolean, hunkIndex: number): Promise<void> {
+    const payload = this.panel?.getPayload();
+    const hunk = payload?.hunks[hunkIndex];
+    if (!hunk) return;
+    try {
+      await invoke("git_stage_hunk", {
+        path,
+        oldStart: hunk.oldStart,
+        newStart: hunk.newStart,
+        fromIndex,
+      });
+      this.deps.showMessage(fromIndex ? "已取消暂存该差异块" : "已暂存该差异块");
+      this.deps.onGitChanged?.();
+      const session = this.session;
+      if (session) await this.open(session, hunkIndex);
+    } catch (e) {
+      this.deps.showMessage(`差异块操作失败：${firstLine(e)}`);
     }
   }
 
@@ -132,7 +157,7 @@ export class DiffService {
       const written = await invoke<string>("export_patch", { path: basePath, content: patch });
       this.deps.showMessage(`补丁已导出：${written}`);
     } catch (e) {
-      this.deps.showMessage(`导出失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`导出失败：${firstLine(e)}`);
     }
   }
 
@@ -223,6 +248,14 @@ export class DiffService {
       ],
       // 任意文件比较：不提供「采用差异块」（会改工作区文件，且标签未必打开）
       adopt: () => null,
+      hunkAction: () => ({
+        label: staged ? "取消暂存此块" : "暂存此块",
+        title: staged
+          ? "只把当前差异块从暂存区撤回（工作区内容不变）"
+          : "只把当前差异块加入暂存区（工作区内容不变）",
+        enabled: () => true,
+        run: (i) => void this.stageHunk(path, staged, i),
+      }),
       trailingFrom: "saved",
     });
   }
@@ -301,7 +334,7 @@ export class DiffService {
     try {
       available = await invoke<boolean>("git_available", { path });
     } catch (e) {
-      this.deps.showMessage(`Git 比较失败：${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`Git 比较失败：${firstLine(e)}`);
       return;
     }
     if (!available) {
@@ -333,6 +366,15 @@ export class DiffService {
               title: "采用左侧：把当前差异块还原为 Git 版本（需先保存当前标签的改动）",
               run: (i) => void this.adoptHunk(i),
             },
+      hunkAction: () => ({
+        label: scope === "index" ? "取消暂存此块" : "暂存此块",
+        title:
+          scope === "index"
+            ? "只把当前差异块从暂存区撤回（工作区内容不变）"
+            : "只把当前差异块加入暂存区（工作区内容不变）",
+        enabled: () => true,
+        run: (i) => void this.stageHunk(path, scope === "index", i),
+      }),
       trailingFrom: "saved",
     });
   }

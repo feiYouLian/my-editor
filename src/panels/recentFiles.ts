@@ -29,6 +29,17 @@ export function pushRecentFile(path: string): void {
   }
 }
 
+/** 移除一条（文件已被删除/移动）：避免每次点都走一遍"打开失败" */
+export function removeRecentFile(path: string): void {
+  const key = path.replace(/\\/g, "/").toLowerCase();
+  const list = loadRecentFiles().filter((item) => item.replace(/\\/g, "/").toLowerCase() !== key);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(list));
+  } catch {
+    // 忽略
+  }
+}
+
 export class RecentFilesDialog {
   private backdrop: HTMLElement | null = null;
 

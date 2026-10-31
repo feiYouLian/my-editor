@@ -7,9 +7,12 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { GitFileEntry, GitStatus, GitView } from "../panels/gitView";
+import type { GitCommit, GitFileEntry, GitStatus, GitView } from "../panels/gitView";
 import type { GitBranch } from "../panels/branchPicker";
+import type { BlameReport } from "../panels/gitBlame";
 import { addNotice } from "./noticeStore";
+import { firstLine } from "../core/errors";
+import { getConfig } from "../config/settings";
 
 export interface GitHostDeps {
   getRoot: () => string | null;
@@ -30,6 +33,18 @@ export class GitHost {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(private deps: GitHostDeps) {}
+
+  /** Git 只读模式：所有写操作先过这里（后端按 config.json 再校验一次） */
+  private writable(): boolean {
+    if (!getConfig().git.readOnly) return true;
+    this.deps.showMessage("Git 只读模式已开启：只能查看，不能暂存 / 提交 / 推送 / 放弃更改");
+    return false;
+  }
+
+  /** UI 据此禁用写入类按钮并提示 */
+  isReadOnly(): boolean {
+    return getConfig().git.readOnly;
+  }
 
   /** 防抖刷新：保存后 / 窗口聚焦 / 分区展开 */
   scheduleRefresh(): void {
@@ -57,12 +72,13 @@ export class GitHost {
         this.publishStatus(status);
       } catch (e) {
         if (id !== this.requestId) return;
-        this.deps.view.fail(`读取 Git 状态失败：${String(e).split("\n")[0]}`);
+        this.deps.view.fail(`读取 Git 状态失败：${firstLine(e)}`);
       }
     });
   }
 
   stage(entries: GitFileEntry[]): void {
+    if (!this.writable()) return;
     this.act("暂存", async () => {
       await invoke("git_stage", {
         root: this.requireRoot(),
@@ -72,6 +88,7 @@ export class GitHost {
   }
 
   unstage(entries: GitFileEntry[]): void {
+    if (!this.writable()) return;
     this.act("取消暂存", async () => {
       await invoke("git_unstage", {
         root: this.requireRoot(),
@@ -81,6 +98,7 @@ export class GitHost {
   }
 
   commit(message: string): void {
+    if (!this.writable()) return;
     this.act("提交", async () => {
       const hash = await invoke<string>("git_commit", {
         root: this.requireRoot(),
@@ -99,6 +117,7 @@ export class GitHost {
    * 确认交互由调用方（main.ts）负责，这里只管执行与刷新。
    */
   discard(entries: GitFileEntry[]): void {
+    if (!this.writable()) return;
     this.act("放弃更改", async () => {
       const outcome = await invoke<{
         count: number;
@@ -125,15 +144,55 @@ export class GitHost {
     return invoke<GitBranch[]>("git_branches", { root: this.requireRoot() });
   }
 
-  checkout(branch: string): void {
-    this.act(`切换到 ${branch}`, async () => {
+  checkout(branch: string): Promise<void> {
+    if (!this.writable()) return Promise.resolve();
+    return this.act(`切换到 ${branch}`, async () => {
       await invoke("git_checkout", { root: this.requireRoot(), branch });
       this.deps.showMessage(`已切换到 ${branch}`, 4000);
       this.deps.onWorkspaceChanged?.();
     });
   }
 
+  /** 提交历史（只读；最新在前） */
+  async listCommits(): Promise<GitCommit[]> {
+    return invoke<GitCommit[]>("git_log", { root: this.requireRoot(), limit: 100 });
+  }
+
+  /** 单个提交的 stat + patch 文本（Rust 侧截断） */
+  async showCommit(hash: string): Promise<string> {
+    return invoke<string>("git_show_commit", { root: this.requireRoot(), hash });
+  }
+
+  /** 当前文件的逐行 blame（基于磁盘版本） */
+  async blame(path: string): Promise<BlameReport> {
+    return invoke<BlameReport>("git_blame", { path });
+  }
+
+  /** 新建分支；checkout=true 会切换过去 */
+  createBranch(name: string, checkout: boolean): Promise<void> {
+    if (!this.writable()) return Promise.resolve();
+    return this.act("新建分支", async () => {
+      await invoke("git_create_branch", {
+        root: this.requireRoot(),
+        branch: name,
+        checkout,
+      });
+      this.deps.showMessage(checkout ? `已新建并切换到 ${name}` : `已新建分支 ${name}`, 4000);
+      if (checkout) this.deps.onWorkspaceChanged?.();
+    });
+  }
+
+  /** 删除本地分支（未合并时由 git 拒绝） */
+  deleteBranch(name: string, force = false): Promise<void> {
+    if (!this.writable()) return Promise.resolve();
+    return this.act("删除分支", async () => {
+      await invoke("git_delete_branch", { root: this.requireRoot(), branch: name, force });
+      this.deps.showMessage(`已删除分支 ${name}`, 4000);
+    });
+  }
+
   pull(): void {
+    if (!this.writable()) return;
     this.act("拉取", async () => {
       const summary = await invoke<string>("git_pull", { root: this.requireRoot() });
       this.deps.showMessage(`拉取完成：${summary}`, 4000);
@@ -142,6 +201,7 @@ export class GitHost {
   }
 
   push(): void {
+    if (!this.writable()) return;
     this.act("推送", async () => {
       const summary = await invoke<string>("git_push", { root: this.requireRoot() });
       this.deps.showMessage(`推送完成：${summary}`, 4000);
@@ -167,15 +227,15 @@ export class GitHost {
   }
 
   /** 串行执行一次写操作，完成后立即刷新（不走防抖，避免读回旧状态） */
-  private act(label: string, op: () => Promise<void>): void {
-    this.enqueue(async () => {
+  private act(label: string, op: () => Promise<void>): Promise<void> {
+    return this.enqueue(async () => {
       this.deps.view.setBusy(true);
       try {
         await op();
       } catch (e) {
         // git 的失败信息是多行 stderr：状态栏只放首行，完整内容进弹窗
         const detail = String(e).trim();
-        const first = detail.split("\n")[0];
+        const first = firstLine(detail);
         const title = `${label}失败`;
         console.warn(`[git] ${label}失败`, detail);
         this.deps.showMessage(`${title}：${first}`, 8000);
@@ -217,8 +277,9 @@ export class GitHost {
     this.deps.onStatus?.(map, status);
   }
 
-  private enqueue(task: () => Promise<void>): void {
+  private enqueue(task: () => Promise<void>): Promise<void> {
     this.queue = this.queue.then(task, task);
+    return this.queue;
   }
 }
 

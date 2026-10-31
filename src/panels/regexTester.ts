@@ -1,15 +1,36 @@
 /**
  * 正则测试器对话框（命令面板入口）：
- * 输入表达式与开关（g / i / m / s / u），在下方测试文本中实时列出匹配位置与捕获组，
- * 并可选做替换预览。纯前端 RegExp，无依赖。
+ * 表达式与替换预览统一走 Rust `regex`（与工作区搜索同引擎），
+ * 避免 JS RegExp 能测、搜索却报“正则无效”的双轨问题。
  */
 
+import { invoke } from "@tauri-apps/api/core";
+import { firstLine } from "../core/errors";
+
+interface RegexTestMatch {
+  start: number;
+  end: number;
+  text: string;
+  groups: (string | null)[];
+}
+
+interface RegexTestResult {
+  matches: RegexTestMatch[];
+  truncated: boolean;
+}
+
+interface RegexPreview {
+  text: string;
+  truncated: boolean;
+}
+
+
 const FLAGS: { key: string; label: string; title: string }[] = [
-  { key: "g", label: "g", title: "全局匹配（列出全部匹配）" },
+  { key: "g", label: "g", title: "列出全部匹配（最多 200 处）" },
   { key: "i", label: "i", title: "忽略大小写" },
   { key: "m", label: "m", title: "多行：^ $ 匹配每行首尾" },
   { key: "s", label: "s", title: "单行：. 匹配换行" },
-  { key: "u", label: "u", title: "Unicode 模式" },
+  { key: "u", label: "u", title: "Unicode（Rust regex 默认开启，此开关仅兼容展示）" },
 ];
 
 /** 匹配结果展示上限 */
@@ -25,6 +46,9 @@ export class RegexTesterPanel {
   private replaceOut!: HTMLElement;
   private flagButtons = new Map<string, HTMLButtonElement>();
   private flags = new Set<string>(["g"]);
+  /** 异步测试的代际号：输入变化后旧结果必须丢弃 */
+  private renderSeq = 0;
+  private renderTimer: number | null = null;
 
   get isOpen(): boolean {
     return this.backdrop !== null;
@@ -36,6 +60,11 @@ export class RegexTesterPanel {
   }
 
   close(): void {
+    this.renderSeq += 1;
+    if (this.renderTimer !== null) {
+      window.clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
     this.backdrop?.remove();
     this.backdrop = null;
   }
@@ -63,7 +92,7 @@ export class RegexTesterPanel {
     this.patternInput.className = "dialog-input";
     this.patternInput.spellcheck = false;
     this.patternInput.placeholder = "如 (\\w+)@(\\w+\\.\\w+)";
-    this.patternInput.addEventListener("input", () => this.render());
+    this.patternInput.addEventListener("input", () => this.scheduleRender());
     const flagRow = document.createElement("div");
     flagRow.className = "regex-flags";
     for (const flag of FLAGS) {
@@ -92,7 +121,7 @@ export class RegexTesterPanel {
     this.textArea.className = "dialog-input regex-text";
     this.textArea.spellcheck = false;
     this.textArea.placeholder = "粘贴要测试的文本…";
-    this.textArea.addEventListener("input", () => this.render());
+    this.textArea.addEventListener("input", () => this.scheduleRender());
     dialog.append(textLabel, this.textArea);
 
     // ---- 替换预览（可选） ----
@@ -103,8 +132,8 @@ export class RegexTesterPanel {
     this.replaceInput = document.createElement("input");
     this.replaceInput.className = "dialog-input";
     this.replaceInput.spellcheck = false;
-    this.replaceInput.placeholder = "替换文本（支持 $1 / $&）";
-    this.replaceInput.addEventListener("input", () => this.render());
+    this.replaceInput.placeholder = "替换文本（Rust：$1 / ${name} / $0）";
+    this.replaceInput.addEventListener("input", () => this.scheduleRender());
     replaceRow.append(replaceLabel, this.replaceInput);
     dialog.append(replaceRow);
 
@@ -141,82 +170,87 @@ export class RegexTesterPanel {
     this.patternInput.focus();
   }
 
-  private buildRegex(): { re: RegExp | null; error: string | null } {
-    const pattern = this.patternInput.value;
+  private scheduleRender(): void {
+    if (this.renderTimer !== null) window.clearTimeout(this.renderTimer);
+    // 输入防抖：避免每次按键都发一次 IPC（文本可能很大）
+    this.renderTimer = window.setTimeout(() => {
+      this.renderTimer = null;
+      void this.render();
+    }, 150);
+  }
+
+  private clearResults(): void {
     this.statusEl.textContent = "";
     this.listEl.innerHTML = "";
     this.replaceOut.textContent = "";
     this.replaceOut.classList.add("hidden");
-    if (pattern === "") {
-      this.statusEl.textContent = "请输入正则表达式";
-      return { re: null, error: null };
-    }
-    const flags = [...FLAGS.map((f) => f.key).filter((k) => this.flags.has(k))].join("");
-    try {
-      return { re: new RegExp(pattern, flags), error: null };
-    } catch (e) {
-      return { re: null, error: `正则无效：${String(e).split("\n")[0]}` };
-    }
   }
 
-  private render(): void {
-    const { re, error } = this.buildRegex();
-    if (error) {
-      this.statusEl.textContent = error;
+  private async render(): Promise<void> {
+    const pattern = this.patternInput.value;
+    this.clearResults();
+    if (pattern === "") {
+      this.statusEl.textContent = "请输入正则表达式";
       return;
     }
-    if (!re) return;
-
     const text = this.textArea.value;
-    // 列表需要全局迭代：未勾选 g 时内部临时补上
-    const iterRe = re.global ? re : new RegExp(re.source, `${re.flags}g`);
-    const matches: RegExpExecArray[] = [];
-    let truncated = false;
-    let m: RegExpExecArray | null;
-    while ((m = iterRe.exec(text)) !== null) {
-      matches.push(m);
-      if (matches.length >= MAX_MATCHES) {
-        truncated = true;
-        break;
-      }
-      if (m[0] === "") iterRe.lastIndex += 1; // 零宽匹配防死循环
+    if (text.trim() === "") {
+      this.statusEl.textContent = "请在下方粘贴测试文本";
+      return;
     }
 
-    const tail = truncated ? `（仅列出前 ${MAX_MATCHES} 处）` : "";
-    this.statusEl.textContent = text.trim() === ""
-      ? "请在下方粘贴测试文本"
-      : `匹配 ${matches.length} 处${tail}`;
+    const token = ++this.renderSeq;
+    const flags = [...FLAGS.map((f) => f.key).filter((k) => this.flags.has(k))].join("");
+    try {
+      const result = await invoke<RegexTestResult>("regex_test", {
+        pattern,
+        flags,
+        text,
+        maxMatches: MAX_MATCHES,
+      });
+      if (token !== this.renderSeq) return;
 
-    for (const match of matches) {
-      const row = document.createElement("div");
-      row.className = "regex-row";
-      const head = document.createElement("span");
-      head.className = "regex-index";
-      head.textContent = `${match.index}`;
-      const body = document.createElement("span");
-      body.textContent = match[0] === "" ? "（零宽匹配）" : match[0];
-      row.append(head, body);
-      // 捕获组
-      for (let i = 1; i < match.length; i += 1) {
-        if (match[i] === undefined) continue;
-        const group = document.createElement("span");
-        group.className = "regex-group";
-        group.textContent = `$${i}=${match[i]}`;
-        row.append(group);
+      const tail = result.truncated ? `（仅列出前 ${MAX_MATCHES} 处）` : "";
+      const engineHint = this.replaceInput.value.includes("$&")
+        ? "；$& 不是 Rust 语法，请用 $0 表示整个匹配"
+        : "";
+      this.statusEl.textContent = `匹配 ${result.matches.length} 处${tail}（Rust regex）${engineHint}`;
+
+      for (const match of result.matches) {
+        const row = document.createElement("div");
+        row.className = "regex-row";
+        const head = document.createElement("span");
+        head.className = "regex-index";
+        head.textContent = `${match.start}`;
+        const body = document.createElement("span");
+        body.textContent = match.text === "" ? "（零宽匹配）" : match.text;
+        row.append(head, body);
+        match.groups.forEach((value, index) => {
+          if (value === null) return;
+          const group = document.createElement("span");
+          group.className = "regex-group";
+          group.textContent = `$${index + 1}=${value}`;
+          row.append(group);
+        });
+        this.listEl.append(row);
       }
-      this.listEl.append(row);
-    }
 
-    // 替换预览
-    const replacement = this.replaceInput.value;
-    if (replacement !== "" && matches.length > 0) {
-      const preview = text.replace(
-        re.global ? re : new RegExp(re.source, `${re.flags}g`),
-        replacement,
-      );
-      const cut = preview.length > 2000 ? `${preview.slice(0, 2000)}…` : preview;
-      this.replaceOut.textContent = `替换预览（前 2000 字符）：\n${cut}`;
-      this.replaceOut.classList.remove("hidden");
+      const replacement = this.replaceInput.value;
+      if (replacement !== "" && result.matches.length > 0) {
+        const preview = await invoke<RegexPreview>("regex_replace_preview", {
+          pattern,
+          flags,
+          replacement,
+          text,
+          maxChars: 2000,
+        });
+        if (token !== this.renderSeq) return;
+        this.replaceOut.textContent = `替换预览（前 2000 字符）：\n${preview.text}${preview.truncated ? "…" : ""}`;
+        this.replaceOut.classList.remove("hidden");
+      }
+    } catch (e) {
+      if (token !== this.renderSeq) return;
+      this.statusEl.textContent = `正则无效：${firstLine(e)}`;
     }
   }
 }

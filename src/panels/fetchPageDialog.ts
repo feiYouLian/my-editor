@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { confirmAction } from "../ui/dialogs";
 import { basenameOf } from "../core/paths";
+import { firstLine } from "../core/errors";
 
 /** 文件名建议防抖 */
 const SUGGEST_DEBOUNCE_MS = 300;
@@ -245,7 +246,7 @@ export class FetchPageDialog {
       this.busy = false;
       this.close();
     } catch (e) {
-      this.setError(String(e).split("\n")[0] || "抓取失败");
+      this.setError(firstLine(e) || "抓取失败");
     } finally {
       this.setBusy(false);
     }

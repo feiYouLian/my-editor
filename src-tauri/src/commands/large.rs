@@ -103,6 +103,17 @@ pub struct FilterBatch {
     pub cancelled: bool,
 }
 
+/// 「跟随文件尾部」的一次刷新结果
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargeRefresh {
+    pub info: LargeFileInfo,
+    /// 是否读到了新内容（false = 文件没变 / 仍在校验）
+    pub grew: bool,
+    /// 文件被截断或替换：续扫不成立，前端应重新打开
+    pub reset_required: bool,
+}
+
 struct LargeFile {
     path: PathBuf,
     size: u64,
@@ -115,6 +126,14 @@ struct LargeFile {
     anchors: Vec<(u64, usize)>,
     /// 会话代号：同一路径二次打开时递增，后台索引线程只写回自己这一代
     session: u64,
+    /// 锚点间隔（续扫时要沿用同一间隔，否则新旧锚点密度不一致）
+    anchor_bytes: u64,
+    /// 已扫描到的行号计数（续扫的起点状态，不能从 total_lines 反推）
+    scan_line_no: usize,
+    /// 已扫描区间最后一个字节（判断末尾是否有未结束的行）
+    scan_last_byte: Option<u8>,
+    /// 后台索引线程是否仍在跑：此时禁止续扫，否则两处同时写 anchors
+    bg_indexing: bool,
 }
 
 /// 大文件会话注册表；Arc 以便后台索引线程共享
@@ -236,17 +255,31 @@ fn read_head(path: &Path, len: usize) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// 打开大文件：同步建首屏索引后立即返回，其余区间由后台线程补齐。
+/// 打开大文件：首屏索引放到 spawn_blocking，避免 8MB 扫描阻塞事件循环；
 /// 读取后自动登记该路径，供后续作用域校验使用。
 #[tauri::command]
-pub fn open_large_file(
+pub async fn open_large_file(
     app: tauri::AppHandle,
-    state: tauri::State<LargeState>,
-    guard: tauri::State<crate::commands::paths::PathGuard>,
+    state: tauri::State<'_, LargeState>,
+    guard: tauri::State<'_, crate::commands::paths::PathGuard>,
     path: String,
     anchor_bytes: Option<u64>,
 ) -> Result<LargeFileInfo, String> {
     guard.add_path(&path);
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        open_large_file_blocking(app, &shared, path, anchor_bytes)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
+}
+
+fn open_large_file_blocking(
+    app: tauri::AppHandle,
+    state: &LargeState,
+    path: String,
+    anchor_bytes: Option<u64>,
+) -> Result<LargeFileInfo, String> {
     let p = PathBuf::from(&path);
     let size = std::fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?.len();
     let head = read_head(&p, 64 * 1024)?;
@@ -288,11 +321,16 @@ pub fn open_large_file(
         complete: reached_eof,
         anchors: indexer.anchors.clone(),
         session,
+        anchor_bytes: indexer.anchor_bytes,
+        scan_line_no: indexer.line_no,
+        scan_last_byte: indexer.last_byte,
+        // 下方若启动后台索引线程会置 true
+        bg_indexing: !reached_eof,
     };
     let total_lines = entry.total_lines;
     let indexed_bytes = entry.indexed_bytes;
 
-    let shared = state.inner().clone();
+    let shared = state.clone();
     {
         let mut map = shared.files.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(path.clone(), entry);
@@ -351,6 +389,9 @@ pub fn open_large_file(
                     item.newline = newline.clone();
                     item.indexed_bytes = idx.pos;
                     item.complete = true;
+                    item.scan_line_no = idx.line_no;
+                    item.scan_last_byte = idx.last_byte;
+                    item.bg_indexing = false;
                 }
             }
             let _ = app_bg.emit(
@@ -394,7 +435,7 @@ pub fn read_large_lines(
     start: usize,
     count: usize,
 ) -> Result<LineWindow, String> {
-    let (path, encoding_name, anchors, complete, indexed_lines) = {
+    let (path, encoding_name, anchors, complete, total_lines) = {
         let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.get(&id).ok_or("大文件会话已关闭")?;
         (
@@ -402,10 +443,13 @@ pub fn read_large_lines(
             entry.encoding.clone(),
             entry.anchors.clone(),
             entry.complete,
-            entry.anchors.last().map(|a| a.1).unwrap_or(0),
+            entry.total_lines,
         )
     };
-    if !complete && start > indexed_lines {
+    // 行号上界用 total_lines 而不是"最后一个锚点的行号"：
+    // 跟随模式（tail -f）续扫时锚点会比已扫行数滞后一个间隔，
+    // 用锚点行号会让"读尾窗"误报"索引建立中"
+    if !complete && start > total_lines {
         return Err("索引建立中，请稍后再试".to_string());
     }
 
@@ -747,21 +791,14 @@ pub fn set_large_encoding(
     Ok(())
 }
 
-/// 查询会话当前状态（切换回标签时用，索引可能已由后台补齐）
-#[tauri::command]
-pub fn large_file_info(
-    state: tauri::State<LargeState>,
-    id: String,
-) -> Result<LargeFileInfo, String> {
-    let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
-    let entry = map.get(&id).ok_or("大文件会话已关闭")?;
+fn info_of(id: &str, entry: &LargeFile) -> LargeFileInfo {
     let name = entry
         .path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    Ok(LargeFileInfo {
-        id: id.clone(),
+    LargeFileInfo {
+        id: id.to_string(),
         path: entry.path.to_string_lossy().to_string(),
         name,
         size: entry.size,
@@ -770,6 +807,140 @@ pub fn large_file_info(
         total_lines: entry.total_lines,
         indexed_bytes: entry.indexed_bytes,
         complete: entry.complete,
+    }
+}
+
+/// 查询会话当前状态（切换回标签时用，索引可能已由后台补齐）
+#[tauri::command]
+pub fn large_file_info(
+    state: tauri::State<LargeState>,
+    id: String,
+) -> Result<LargeFileInfo, String> {
+    let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = map.get(&id).ok_or("大文件会话已关闭")?;
+    Ok(info_of(&id, entry))
+}
+
+/// 单次续扫上限：日志暴涨时不让一次轮询卡太久（剩余部分下一轮继续）
+const MAX_REFRESH_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 跟随文件尾部：把索引续扫到最新 EOF，返回最新状态。
+///
+/// - 文件被截断/轮转（变小）→ `resetRequired`，前端提示重新打开；
+/// - 后台索引仍在跑 → 本轮不续扫（避免两处同时写 anchors），前端下一轮再看；
+/// - 单次最多续扫 `MAX_REFRESH_BYTES`，未追平时 `complete=false`，下一轮继续。
+#[tauri::command]
+pub async fn refresh_large_file(
+    state: tauri::State<'_, LargeState>,
+    id: String,
+) -> Result<LargeRefresh, String> {
+    let files = state.files.clone();
+    tauri::async_runtime::spawn_blocking(move || refresh_large_blocking(&files, &id))
+        .await
+        .map_err(|e| format!("任务调度失败: {e}"))?
+}
+
+fn current_info(
+    files: &Arc<Mutex<HashMap<String, LargeFile>>>,
+    id: &str,
+) -> Result<LargeFileInfo, String> {
+    let map = files.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = map.get(id).ok_or("大文件会话已关闭")?;
+    Ok(info_of(id, entry))
+}
+
+fn refresh_large_blocking(
+    files: &Arc<Mutex<HashMap<String, LargeFile>>>,
+    id: &str,
+) -> Result<LargeRefresh, String> {
+    // 第一段快照只取"判断是否需要续扫"的字段：
+    // 每秒轮询一次，锚点表在大文件上有十几万项，不能每轮都克隆
+    let (path, prev_size, complete, bg_indexing) = {
+        let map = files.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.get(id).ok_or("大文件会话已关闭")?;
+        (
+            entry.path.clone(),
+            entry.size,
+            entry.complete,
+            entry.bg_indexing,
+        )
+    };
+
+    let new_size = std::fs::metadata(&path)
+        .map_err(|e| format!("读取文件信息失败: {e}"))?
+        .len();
+    if new_size < prev_size {
+        // 截断 / 轮转：旧锚点已失效，续扫会读出"错行"的内容
+        return Ok(LargeRefresh {
+            info: current_info(files, id)?,
+            grew: false,
+            reset_required: true,
+        });
+    }
+    if bg_indexing || (new_size == prev_size && complete) {
+        return Ok(LargeRefresh {
+            info: current_info(files, id)?,
+            grew: false,
+            reset_required: false,
+        });
+    }
+
+    // 确实要续扫：这一次才取锚点/行号快照，读盘期间不持锁
+    let (indexed, scan_line_no, scan_last_byte, anchors, anchor_bytes, session) = {
+        let map = files.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = map.get(id).ok_or("大文件会话已关闭")?;
+        (
+            entry.indexed_bytes,
+            entry.scan_line_no,
+            entry.scan_last_byte,
+            entry.anchors.clone(),
+            entry.anchor_bytes,
+            entry.session,
+        )
+    };
+
+    let target = new_size.min(indexed.saturating_add(MAX_REFRESH_BYTES));
+    let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
+    // step() 顺序读文件：续扫必须先把句柄定位到已索引位置
+    file.seek(SeekFrom::Start(indexed))
+        .map_err(|e| format!("定位失败: {e}"))?;
+    let mut idx = Indexer::new(file, anchor_bytes);
+    idx.anchors = anchors;
+    idx.last_anchor = idx.anchors.last().map(|a| a.0).unwrap_or(0);
+    idx.pos = indexed;
+    idx.line_no = scan_line_no;
+    idx.last_byte = scan_last_byte;
+    while idx.pos < target {
+        match idx.step()? {
+            true => {}
+            false => break,
+        }
+    }
+
+    let pos = idx.pos;
+    let total = idx.total_lines();
+    let caught_up = pos >= new_size;
+    let grew = pos > indexed;
+    let info = {
+        let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
+        let item = map.get_mut(id).ok_or("大文件会话已关闭")?;
+        if item.session != session {
+            return Err("大文件会话已被重新打开".to_string());
+        }
+        item.size = new_size;
+        item.anchors = idx.anchors;
+        item.total_lines = total;
+        item.indexed_bytes = pos;
+        item.complete = caught_up;
+        // 换行风格只在首次打开时判定：续扫只看得到新增片段，据此改判会来回抖
+        item.scan_line_no = idx.line_no;
+        item.scan_last_byte = idx.last_byte;
+        info_of(id, item)
+    };
+    Ok(LargeRefresh {
+        info,
+        grew,
+        reset_required: false,
     })
 }
 
@@ -859,6 +1030,52 @@ mod tests {
         for &(pos, _line) in idx.anchors.iter().skip(1) {
             assert_eq!(bytes[pos as usize - 1], b'\n');
         }
+    }
+
+    /// 从另一个文件的终态接着扫：模拟 refresh_large_file 的续扫（含句柄定位）
+    fn resume_with(full_path: &Path, first: &Indexer, anchor_bytes: u64) -> Indexer {
+        let mut file = File::open(full_path).unwrap();
+        file.seek(SeekFrom::Start(first.pos)).unwrap();
+        let mut idx = Indexer::new(file, anchor_bytes);
+        idx.anchors = first.anchors.clone();
+        idx.last_anchor = idx.anchors.last().map(|a| a.0).unwrap_or(0);
+        idx.pos = first.pos;
+        idx.line_no = first.line_no;
+        idx.last_byte = first.last_byte;
+        idx
+    }
+
+    /// 续扫（tail -f）：从首段的终态接着扫，行号/锚点必须与一次性整扫一致
+    #[test]
+    fn resumed_scan_matches_single_pass() {
+        let head_path = temp_file("resume_head", b"a\nb\nc\n");
+        let full_path = temp_file("resume_full", b"a\nb\nc\nd\ne\n");
+
+        let first = index_all(&head_path, 4096);
+        assert_eq!(first.total_lines(), 3);
+
+        let mut resumed = resume_with(&full_path, &first, 4096);
+        while resumed.step().unwrap() {}
+
+        let single = index_all(&full_path, 4096);
+        assert_eq!(resumed.total_lines(), single.total_lines());
+        assert_eq!(resumed.total_lines(), 5);
+        assert_eq!(resumed.anchors, single.anchors);
+    }
+
+    /// 续扫起点落在"未结束的行"上时，尾行不能被多算一行
+    #[test]
+    fn resumed_scan_handles_trailing_partial_line() {
+        let head_path = temp_file("resume_partial_head", b"a\nbb");
+        let full_path = temp_file("resume_partial_full", b"a\nbbcc\nd\n");
+
+        let first = index_all(&head_path, 4096);
+        assert_eq!(first.total_lines(), 2);
+
+        let mut resumed = resume_with(&full_path, &first, 4096);
+        while resumed.step().unwrap() {}
+
+        assert_eq!(resumed.total_lines(), 3);
     }
 
     #[test]

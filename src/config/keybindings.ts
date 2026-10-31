@@ -77,8 +77,8 @@ const RESERVED_KEYS = new Set([
   "Mod-/",
   "Mod-G",
   "Mod-Alt-G",
-  // 注意：Mod-Shift-L 不在此列——它被特意借用为「格式化文档」的备用键
-  // （中文 Windows 下 Alt+Shift 常被输入法吞掉），加入保留集会令其失效。
+  // 注意：Mod-Alt-Shift-F 不在此列——它是「格式化文档」的备用键
+  // （中文 Windows 下 Alt+Shift 常被输入法吞掉）；加入保留集会令其失效。
   "Alt-Up",
   "Alt-Down",
   "F3",

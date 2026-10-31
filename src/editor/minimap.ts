@@ -209,6 +209,8 @@ class MinimapPlugin implements PluginValue {
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
   private rebuildTimer: number | null = null;
+  /** 空闲回调句柄：重建被推迟到浏览器空闲时执行（见 scheduleRebuild） */
+  private idleHandle: number | null = null;
   private frame = 0;
   private dragFrame = 0;
   private dragY = 0;
@@ -268,6 +270,7 @@ class MinimapPlugin implements PluginValue {
   destroy(): void {
     this.disposed = true;
     if (this.rebuildTimer !== null) window.clearTimeout(this.rebuildTimer);
+    if (this.idleHandle !== null) window.cancelIdleCallback(this.idleHandle);
     if (this.frame) cancelAnimationFrame(this.frame);
     if (this.dragFrame) cancelAnimationFrame(this.dragFrame);
     this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
@@ -283,14 +286,33 @@ class MinimapPlugin implements PluginValue {
   // ---------------------------------------------------------------- 调度
 
   private scheduleRebuild(immediate = false): void {
-    if (this.rebuildTimer !== null) return;
-    this.rebuildTimer = window.setTimeout(
-      () => {
+    // 已有待执行的重建：文档变更会读到最新内容，不必再排一次
+    if (this.rebuildTimer !== null || this.idleHandle !== null) return;
+    if (immediate) {
+      this.rebuildTimer = window.setTimeout(() => {
         this.rebuildTimer = null;
         if (!this.disposed) this.rebuild();
-      },
-      immediate ? 0 : REBUILD_DELAY_MS,
-    );
+      }, 0);
+      return;
+    }
+    // 文档变更：先合并连续输入（150ms），再尽量在浏览器空闲时重建。
+    // 大文档的逐行分类代价随行数线性增长，与输入帧抢主线程会直接表现为打字掉帧。
+    this.rebuildTimer = window.setTimeout(() => {
+      this.rebuildTimer = null;
+      if (this.disposed) return;
+      if (typeof window.requestIdleCallback === "function") {
+        this.idleHandle = window.requestIdleCallback(
+          () => {
+            this.idleHandle = null;
+            if (!this.disposed) this.rebuild();
+          },
+          // 兜底：持续有交互时也不能让 minimap 永远停在旧内容
+          { timeout: 400 },
+        );
+      } else {
+        this.rebuild();
+      }
+    }, REBUILD_DELAY_MS);
   }
 
   private scheduleViewport(): void {

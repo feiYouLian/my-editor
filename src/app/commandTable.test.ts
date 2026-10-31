@@ -3,7 +3,17 @@ import { buildCommandTable, type CommandTableCtx } from "./commandTable";
 import { normalizeNotation, parseNotation } from "../core/keyNotation";
 
 /** 一级菜单 id（core/commands.ts 的 MENU_LABELS，未导出故在此固定） */
-const MENU_IDS = new Set(["file", "edit", "select", "go", "view", "compare", "tools", "settings"]);
+const MENU_IDS = new Set([
+  "file",
+  "edit",
+  "select",
+  "go",
+  "view",
+  "compare",
+  "tools",
+  "settings",
+  "help",
+]);
 
 /**
  * 桩上下文：`buildCommandTable` 只在定义期读属性、不执行 `run`，

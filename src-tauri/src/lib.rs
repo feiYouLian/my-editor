@@ -33,11 +33,17 @@ pub fn run() {
             let _ = app.emit("open-files", ());
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(commands::large::LargeState::default())
         .manage(commands::watch::WatchState::default())
+        .manage(commands::tree_watch::TreeWatchState::default())
         .manage(commands::run::RunState::default())
         .manage(commands::terminal::TerminalState::default())
         .manage(commands::paths::PathGuard::new())
+        .setup(|app| {
+            commands::logging::init(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::cli::take_pending_files,
             commands::file::open_text_file,
@@ -74,12 +80,20 @@ pub fn run() {
             commands::search::replace_in_files,
             commands::search::undo_replace,
             commands::search::cleanup_replace_history,
+            commands::regex::regex_test,
+            commands::regex::regex_replace_preview,
             commands::git::git_status,
             commands::git::git_stage,
             commands::git::git_unstage,
+            commands::git::git_stage_hunk,
             commands::git::git_commit,
             commands::git::git_branches,
             commands::git::git_checkout,
+            commands::git::git_log,
+            commands::git::git_show_commit,
+            commands::git::git_blame,
+            commands::git::git_create_branch,
+            commands::git::git_delete_branch,
             commands::git::git_pull,
             commands::git::git_discard,
             commands::git::git_push,
@@ -87,6 +101,8 @@ pub fn run() {
             commands::workspace::load_workspace,
             commands::workspace::save_workspace,
             commands::workspace::app_config_dir,
+            commands::workspace::load_workspace_overrides,
+            commands::workspace::save_workspace_overrides,
             commands::session::load_session,
             commands::session::save_session,
             commands::session::write_draft,
@@ -96,6 +112,10 @@ pub fn run() {
             commands::session::cleanup_drafts,
             commands::batch::batch_save_encoding,
             commands::watch::watch_files,
+            commands::tree_watch::watch_dirs,
+            commands::logging::log_event,
+            commands::logging::open_logs_dir,
+            commands::logging::export_diagnostics,
             commands::config::load_config,
             commands::config::save_config,
             commands::config::config_path,
@@ -118,6 +138,7 @@ pub fn run() {
             commands::large::cancel_large_task,
             commands::large::large_minimap,
             commands::large::set_large_encoding,
+            commands::large::refresh_large_file,
             commands::large::close_large_file,
         ])
         .run(tauri::generate_context!())

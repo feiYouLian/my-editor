@@ -69,6 +69,7 @@ const MENU_LABELS: Record<string, string> = {
   compare: "比较",
   tools: "工具",
   settings: "设置",
+  help: "帮助",
 };
 
 const registry = new Map<string, CommandDef>();

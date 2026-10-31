@@ -1,4 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  DEFAULT_MAX_OUTPUT_BYTES,
+  DEFAULT_TIMEOUT_SECS,
+  formatBytes,
+  loadRunConfig,
+  parseEnv,
+} from "./runConfig";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   classifyRunLine,
@@ -53,6 +60,9 @@ export class RunPanel {
 
   /** 当前运行的 runner（决定输出分类规则） */
   private runner = "";
+  /** 当前运行的超时/输出上限（用于结束状态文案） */
+  private timeoutSecs = DEFAULT_TIMEOUT_SECS;
+  private maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES;
   /** 运行目录：堆栈相对路径按此解析 */
   private cwd = "";
   /** 脚本文本模式（cURL 粘贴执行） */
@@ -66,6 +76,7 @@ export class RunPanel {
     private host: HTMLElement,
     private onChange?: () => void,
     private onOpenLocation?: (path: string, line: number) => void,
+    private onConfigure?: () => void,
   ) {}
 
   get isOpen(): boolean {
@@ -111,6 +122,16 @@ export class RunPanel {
     this.stopBtn.textContent = "■";
     this.stopBtn.title = "停止运行";
     this.stopBtn.addEventListener("click", () => this.stop());
+
+    if (this.onConfigure) {
+      const configBtn = document.createElement("button");
+      configBtn.type = "button";
+      configBtn.className = "gs-head-btn";
+      configBtn.textContent = "⚙";
+      configBtn.title = "运行配置（超时 / 输出上限 / 环境变量 / stdin）";
+      configBtn.addEventListener("click", () => this.onConfigure?.());
+      head.append(configBtn);
+    }
 
     const clearBtn = document.createElement("button");
     clearBtn.type = "button";
@@ -172,8 +193,18 @@ export class RunPanel {
   async start(path: string, runner: string, cwd = ""): Promise<void> {
     this.prepare(runner, cwd, false);
     this.open(this.runnerLabel());
+    const config = loadRunConfig();
+    this.timeoutSecs = config.timeoutSecs;
+    this.maxOutputBytes = config.maxOutputBytes;
     try {
-      await invoke("run_code", { path, runner });
+      await invoke("run_code", {
+        path,
+        runner,
+        stdin: config.stdin || undefined,
+        timeoutSecs: config.timeoutSecs,
+        maxOutputBytes: config.maxOutputBytes,
+        env: parseEnv(config.env),
+      });
     } catch (e) {
       this.fail(e);
     }
@@ -182,6 +213,8 @@ export class RunPanel {
   /** 执行一段脚本文本（cURL）：无需先保存为磁盘文件 */
   async startScript(runner: string, script: string, cwd = ""): Promise<void> {
     this.prepare(runner, cwd, true);
+    this.timeoutSecs = DEFAULT_TIMEOUT_SECS;
+    this.maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES;
     this.open("cURL 脚本");
     try {
       await invoke("run_curl", { script });
@@ -313,11 +346,11 @@ export class RunPanel {
 
     this.setRunning(false);
     const parts: string[] = [];
-    if (exit.timedOut) parts.push("已超时终止（30s）");
+    if (exit.timedOut) parts.push(`已超时终止（${this.timeoutSecs}s）`);
     else if (exit.stopped) parts.push("已停止");
     else parts.push(`退出码 ${exit.code ?? "未知"}`);
     parts.push(formatDuration(exit.durationMs));
-    if (exit.truncated) parts.push("输出超 1MB 已截断");
+    if (exit.truncated) parts.push(`输出超 ${formatBytes(this.maxOutputBytes)} 已截断`);
     this.setStatus(parts.join(" · "), exit.timedOut || (exit.code ?? 0) !== 0 ? "error" : "");
   }
 

@@ -6,9 +6,11 @@
 //! 支持一键撤销（参考 VS Code / JetBrains 的本地历史，不在源目录生成 `.bak`）。
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
@@ -63,7 +65,13 @@ pub struct SearchReport {
 }
 
 /// 构造尊重 .gitignore 且跳过 ignoreDirs 的遍历器。
-fn walker(root: &Path, ignore_dirs: &[String]) -> ignore::Walk {
+/// include/exclude 为 gitignore 语义的 glob：include 是白名单，exclude 用 `!pattern`。
+fn walker(
+    root: &Path,
+    ignore_dirs: &[String],
+    include_globs: &[String],
+    exclude_globs: &[String],
+) -> Result<ignore::Walk, String> {
     let ignores: Arc<Vec<String>> = Arc::new(
         ignore_dirs
             .iter()
@@ -71,12 +79,36 @@ fn walker(root: &Path, ignore_dirs: &[String]) -> ignore::Walk {
             .filter(|s| !s.is_empty())
             .collect(),
     );
-    WalkBuilder::new(root)
+    let mut overrides = ignore::overrides::OverrideBuilder::new(root);
+    for raw in include_globs {
+        let pat = raw.trim();
+        if pat.is_empty() {
+            continue;
+        }
+        overrides
+            .add(pat)
+            .map_err(|e| format!("包含 glob 无效（{pat}）: {e}"))?;
+    }
+    for raw in exclude_globs {
+        let pat = raw.trim();
+        if pat.is_empty() {
+            continue;
+        }
+        overrides
+            .add(&format!("!{pat}"))
+            .map_err(|e| format!("排除 glob 无效（{pat}）: {e}"))?;
+    }
+    let overrides = overrides
+        .build()
+        .map_err(|e| format!("glob 构建失败: {e}"))?;
+
+    Ok(WalkBuilder::new(root)
         // 允许点文件（.env / .gitignore 等也是常见编辑对象）
         .hidden(false)
         .git_ignore(true)
         .git_global(false)
         .git_exclude(true)
+        .overrides(overrides)
         .filter_entry(move |entry| {
             if entry.depth() == 0 {
                 return true;
@@ -88,7 +120,7 @@ fn walker(root: &Path, ignore_dirs: &[String]) -> ignore::Walk {
             let name = entry.file_name().to_string_lossy().to_lowercase();
             !ignores.iter().any(|d| d == &name)
         })
-        .build()
+        .build())
 }
 
 /// 去掉 Windows canonicalize 产生的 `\\?\` / `//?/` 前缀（仅用于显示）
@@ -169,6 +201,45 @@ fn mtime_ms(meta: &std::fs::Metadata) -> u64 {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 非 UTF-8 文件的编码探测缓存：key = 路径，value = (mtime_ms, size, 编码名)。
+/// 搜索是只读高频操作，同一文件不应每次都重新跑 chardetng。
+static ENCODING_CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, u64, String)>>> = OnceLock::new();
+const ENCODING_CACHE_MAX: usize = 10_000;
+
+fn is_utf16_bom(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF])
+}
+
+/// 搜索用解码：合法 UTF-8 直接借用（不复制）；其余按 BOM/chardetng 检测后宽松解码。
+/// 返回 None 表示无法按检测结果解码（极少见），调用方跳过该文件。
+fn decode_search_text<'a>(
+    path: &Path,
+    bytes: &'a [u8],
+    meta: &std::fs::Metadata,
+) -> Option<Cow<'a, str>> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Some(Cow::Borrowed(text));
+    }
+    let stamp = (mtime_ms(meta), meta.len());
+    let cache = ENCODING_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some((mtime, size, name)) = map.get(path) {
+            if (*mtime, *size) == stamp {
+                return encoding::decode(bytes, name).ok().map(Cow::Owned);
+            }
+        }
+    }
+    let guess = encoding::guess(bytes);
+    let text = encoding::decode(bytes, &guess.encoding).ok()?;
+    if let Ok(mut map) = cache.lock() {
+        if map.len() >= ENCODING_CACHE_MAX {
+            map.clear();
+        }
+        map.insert(path.to_path_buf(), (stamp.0, stamp.1, guess.encoding));
+    }
+    Some(Cow::Owned(text))
 }
 
 /// 把命中行切成「前 / 命中 / 后」三段（字符边界安全）。
@@ -253,7 +324,7 @@ fn list_files_blocking(
     }
     let limit = limit.max(1);
     let mut files: Vec<WorkspaceFile> = Vec::new();
-    for result in walker(&root_path, ignore_dirs) {
+    for result in walker(&root_path, ignore_dirs, &[], &[])? {
         let entry = match result {
             Ok(e) => e,
             // 单个条目不可读（权限 / 占用）不应中断整体扫描
@@ -288,6 +359,8 @@ pub async fn search_workspace(
     regex: bool,
     whole_word: bool,
     ignore_dirs: Vec<String>,
+    include_globs: Vec<String>,
+    exclude_globs: Vec<String>,
     max_files: usize,
     max_matches: usize,
 ) -> Result<SearchReport, String> {
@@ -301,6 +374,8 @@ pub async fn search_workspace(
             max_files.max(1),
             max_matches.max(1),
             whole_word,
+            &include_globs,
+            &exclude_globs,
         )
     })
     .await
@@ -329,6 +404,8 @@ fn search_blocking(
     max_files: usize,
     max_matches: usize,
     whole_word: bool,
+    include_globs: &[String],
+    exclude_globs: &[String],
 ) -> Result<SearchReport, String> {
     let root_path = PathBuf::from(root);
     if !root_path.is_dir() {
@@ -355,7 +432,11 @@ fn search_blocking(
         .build()
         .map_err(|e| format!("正则表达式无效: {e}"))?;
 
-    // 字面量 + 大小写敏感：整文件预筛（memmem 比逐行正则快一个量级）
+    // 字面量 + 大小写敏感：整文件字节预筛（memmem 比逐行正则快一个量级）。
+    // 预筛的适用条件在循环内按文件判断：UTF-8 文件任何查询都可预筛；
+    // 非 UTF-8 文件只有 ASCII 查询可预筛（ASCII 字节跨编码一致），
+    // 非 ASCII 查询的 UTF-8 字节在 GBK/Big5 文件中不存在，预筛会误杀。
+    let query_ascii = query.is_ascii();
     let prefilter: Option<Vec<u8>> = if !regex && case_sensitive {
         Some(query.as_bytes().to_vec())
     } else {
@@ -367,7 +448,7 @@ fn search_blocking(
     let mut truncated = false;
     let mut skipped_oversize = 0usize;
 
-    'files: for result in walker(&root_path, ignore_dirs) {
+    'files: for result in walker(&root_path, ignore_dirs, include_globs, exclude_globs)? {
         let entry = match result {
             Ok(e) => e,
             Err(_) => continue,
@@ -388,16 +469,24 @@ fn search_blocking(
             Ok(b) => b,
             Err(_) => continue,
         };
-        // 二进制嗅探：前 8KB 含 NUL 即跳过（避免把图片/压缩包当文本扫描）
-        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+        // 二进制嗅探：前 8KB 含 NUL 即跳过（避免把图片/压缩包当文本扫描）。
+        // UTF-16 BOM 文件天然带 NUL，必须放行，交给解码链路处理。
+        let utf16 = is_utf16_bom(&bytes);
+        if !utf16 && bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
             continue;
         }
-        if let Some(needle) = &prefilter {
-            if memchr::memmem::find(&bytes, needle).is_none() {
-                continue;
+        // 预筛只在“UTF-8 文件”或“ASCII 查询”下安全；UTF-16 的字符带 NUL 间隔，一律跳过
+        let utf8_valid = std::str::from_utf8(&bytes).is_ok();
+        if !utf16 && (utf8_valid || query_ascii) {
+            if let Some(needle) = &prefilter {
+                if memchr::memmem::find(&bytes, needle).is_none() {
+                    continue;
+                }
             }
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let Some(text) = decode_search_text(path, &bytes, &meta) else {
+            continue;
+        };
 
         let mut matches: Vec<SearchMatch> = Vec::new();
         let mut file_truncated = false;
@@ -952,7 +1041,7 @@ fn find_symbols_blocking(
     let mut refs: Vec<SymbolHit> = Vec::new();
     let ref_cap = max_hits.saturating_mul(2).max(20);
 
-    'files: for result in walker(&root_path, ignore_dirs) {
+    'files: for result in walker(&root_path, ignore_dirs, &[], &[])? {
         let Ok(entry) = result else { continue };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -967,13 +1056,18 @@ fn find_symbols_blocking(
         let Ok(bytes) = std::fs::read(path) else {
             continue;
         };
-        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
+        if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) && !is_utf16_bom(&bytes) {
             continue;
         }
-        if memchr::memmem::find(&bytes, needle).is_none() {
-            continue;
+        // ASCII 标识符才能直接按字节预筛；UTF-16 的字符带 NUL 间隔，不能预筛
+        if word.is_ascii() && !is_utf16_bom(&bytes) {
+            if memchr::memmem::find(&bytes, needle).is_none() {
+                continue;
+            }
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let Some(text) = decode_search_text(path, &bytes, &meta) else {
+            continue;
+        };
         for (idx, line) in text.lines().enumerate() {
             if !line.contains(word) {
                 continue;
@@ -1048,6 +1142,8 @@ mod tests {
             max_files,
             max_matches,
             false,
+            &[],
+            &[],
         )
         .unwrap()
     }
@@ -1062,6 +1158,8 @@ mod tests {
             10,
             100,
             true,
+            &[],
+            &[],
         )
         .unwrap()
     }
@@ -1140,6 +1238,48 @@ mod tests {
     }
 
     #[test]
+    fn include_and_exclude_globs_filter_files() {
+        let dir = temp_dir("globs");
+        std::fs::write(dir.join("a.ts"), "needle\n").unwrap();
+        std::fs::write(dir.join("b.js"), "needle\n").unwrap();
+        std::fs::write(dir.join("c.min.js"), "needle\n").unwrap();
+
+        let include = vec!["*.ts".to_string()];
+        let only_ts = search_blocking(
+            dir.to_str().unwrap(),
+            "needle",
+            true,
+            false,
+            &[],
+            10,
+            100,
+            false,
+            &include,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(only_ts.files.len(), 1);
+        assert_eq!(only_ts.files[0].relative, "a.ts");
+
+        let exclude = vec!["*.min.js".to_string()];
+        let without_min = search_blocking(
+            dir.to_str().unwrap(),
+            "needle",
+            true,
+            false,
+            &[],
+            10,
+            100,
+            false,
+            &[],
+            &exclude,
+        )
+        .unwrap();
+        assert_eq!(without_min.files.len(), 2);
+        assert!(without_min.files.iter().all(|f| !f.relative.ends_with(".min.js")));
+    }
+
+    #[test]
     fn binary_files_are_skipped() {
         let dir = temp_dir("binary");
         // 前 8KB 含 NUL → 判定为二进制，即使文本片段命中也不返回
@@ -1149,6 +1289,61 @@ mod tests {
 
         assert_eq!(report.total_matches, 0);
         assert!(report.files.is_empty());
+    }
+
+    #[test]
+    fn gbk_file_supports_chinese_and_ascii_queries() {
+        let dir = temp_dir("gbk_search");
+        let original = "这是一段较长的中文测试文本，用于确认编码检测的稳定性。foo 结尾。\n";
+        std::fs::write(
+            dir.join("gbk.txt"),
+            encoding::encode(original, "GBK", false).unwrap(),
+        )
+        .unwrap();
+
+        // 非 ASCII 查询不能走字节预筛（UTF-8 字节在 GBK 文件里不存在）
+        let chinese = search(&dir, "中文测试", true, false, &[], 10, 100);
+        assert_eq!(chinese.total_matches, 1);
+        assert_eq!(chinese.files[0].relative, "gbk.txt");
+
+        // ASCII 查询可以走字节预筛，但仍必须按真实编码解码
+        let ascii = search(&dir, "foo", true, false, &[], 10, 100);
+        assert_eq!(ascii.total_matches, 1);
+        assert_eq!(ascii.files[0].matches[0].line, 1);
+    }
+
+    #[test]
+    fn utf16_bom_file_is_searchable() {
+        let dir = temp_dir("utf16_search");
+        let text = "第一行\n中文测试\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(dir.join("utf16.txt"), bytes).unwrap();
+
+        let report = search(&dir, "中文测试", true, false, &[], 10, 100);
+
+        assert_eq!(report.total_matches, 1);
+        assert_eq!(report.files[0].relative, "utf16.txt");
+        assert_eq!(report.files[0].matches[0].line, 2);
+    }
+
+    #[test]
+    fn gbk_file_supports_symbol_lookup() {
+        let dir = temp_dir("symbols_gbk");
+        let text = "这是一段较长的中文说明。\nfn 中文测试() {}\n";
+        std::fs::write(
+            dir.join("gbk.rs"),
+            encoding::encode(text, "GBK", false).unwrap(),
+        )
+        .unwrap();
+
+        let hits = find_symbols_blocking(dir.to_str().unwrap(), "中文测试", &[], 50).unwrap();
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].relative, "gbk.rs");
+        assert_eq!(hits[0].line, 2);
     }
 
     #[test]

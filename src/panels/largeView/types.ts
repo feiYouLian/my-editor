@@ -47,3 +47,12 @@ export interface IndexReady {
   totalLines: number;
   newline: string;
 }
+
+/** `refresh_large_file` 的返回：跟随文件尾部时轮询用 */
+export interface LargeRefresh {
+  info: LargeFileInfo;
+  /** 是否读到了新内容 */
+  grew: boolean;
+  /** 文件被截断/轮转，需重新打开（续扫不成立） */
+  resetRequired: boolean;
+}

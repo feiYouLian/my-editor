@@ -166,6 +166,15 @@ export async function formatText(
   // 内置 JS 格式化器通道（SQL / XML，懒加载）
   const jsFormat = languageKey ? jsFormatters[languageKey] : undefined;
   if (jsFormat) {
+    // sql-formatter / xml-formatter 在主线程执行，超大文本会卡死 UI；
+    // 超过 2MB 直接拒绝，引导用户用 CLI 格式化器处理
+    if (text.length > 2 * 1024 * 1024) {
+      return {
+        ok: false,
+        message: "内容超过 2MB，内置 SQL/XML 格式化已跳过（请配置 CLI 格式化工具）",
+        changed: false,
+      };
+    }
     try {
       const output = await jsFormat(text);
       const changed = output !== text;

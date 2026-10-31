@@ -110,6 +110,7 @@ fn default_status_bar_fields() -> Vec<StatusBarFieldEntry> {
         "encoding",
         "newline",
         "language",
+        "indent",
         "whitespace",
         "wrap",
         "cursor",
@@ -195,6 +196,8 @@ impl Default for SessionSettings {
 pub struct WorkspaceSettings {
     pub remember_expanded: bool,
     pub last_directory: String,
+    /// 文件树是否监听外部增删改名（只监听已展开目录）
+    pub watch_tree: bool,
 }
 
 impl Default for WorkspaceSettings {
@@ -202,6 +205,7 @@ impl Default for WorkspaceSettings {
         Self {
             remember_expanded: true,
             last_directory: String::new(),
+            watch_tree: true,
         }
     }
 }
@@ -220,22 +224,6 @@ impl Default for LargeFileSettings {
             log_extensions: vec![".log".into()],
             sparse_index_anchor_bytes: 65536,
             viewport_padding_lines: 200,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(default, rename_all = "camelCase")]
-pub struct SearchSettings {
-    pub parallelism: String,
-    pub chunk_size_bytes: u64,
-}
-
-impl Default for SearchSettings {
-    fn default() -> Self {
-        Self {
-            parallelism: "auto".into(),
-            chunk_size_bytes: 4 * 1024 * 1024,
         }
     }
 }
@@ -272,6 +260,19 @@ impl Default for TerminalSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
+pub struct GitSettings {
+    /// 只读模式：禁止一切会改动仓库的 Git 命令（暂存 / 提交 / 放弃 / 推送 / 分支变更）
+    pub read_only: bool,
+}
+
+impl Default for GitSettings {
+    fn default() -> Self {
+        Self { read_only: false }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
 pub struct GlobalReplaceSettings {
     pub backup: bool,
 }
@@ -294,6 +295,8 @@ pub struct FileSettings {
     pub ensure_final_newline_on_save: bool,
     /// 按文件记忆编码（默认开：只在自动检测不可靠时生效）
     pub encode_memory: bool,
+    /// 保存成功后给一条轻提示（默认开）
+    pub notify_on_save: bool,
 }
 
 impl Default for FileSettings {
@@ -303,6 +306,7 @@ impl Default for FileSettings {
             trim_trailing_whitespace_on_save: false,
             ensure_final_newline_on_save: false,
             encode_memory: true,
+            notify_on_save: true,
         }
     }
 }
@@ -319,24 +323,6 @@ impl Default for FormatterEntry {
         Self {
             tool: String::new(),
             args: Vec::new(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(default, rename_all = "camelCase")]
-pub struct AiSettings {
-    pub provider: String,
-    pub model: String,
-    pub enabled: bool,
-}
-
-impl Default for AiSettings {
-    fn default() -> Self {
-        Self {
-            provider: "ollama".into(),
-            model: "qwen2.5-coder:7b".into(),
-            enabled: false,
         }
     }
 }
@@ -364,15 +350,15 @@ pub struct AppConfig {
     pub session: SessionSettings,
     pub workspace: WorkspaceSettings,
     pub large_file: LargeFileSettings,
-    pub search: SearchSettings,
     pub fetch: FetchSettings,
     pub terminal: TerminalSettings,
     pub global_replace: GlobalReplaceSettings,
     pub files: FileSettings,
+    /// Git 只读开关（设置页可切；后端按此拒绝所有写入类 Git 命令）
+    pub git: GitSettings,
     pub ignore_dirs: Vec<String>,
     pub file_encoding_memory: BTreeMap<String, String>,
     pub formatters: BTreeMap<String, FormatterEntry>,
-    pub ai: AiSettings,
 }
 
 impl Default for AppConfig {
@@ -395,15 +381,14 @@ impl Default for AppConfig {
             session: SessionSettings::default(),
             workspace: WorkspaceSettings::default(),
             large_file: LargeFileSettings::default(),
-            search: SearchSettings::default(),
             fetch: FetchSettings::default(),
             terminal: TerminalSettings::default(),
             global_replace: GlobalReplaceSettings::default(),
             files: FileSettings::default(),
+            git: GitSettings::default(),
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),
             formatters: default_formatters(),
-            ai: AiSettings::default(),
         }
     }
 }
@@ -698,6 +683,18 @@ fn migrate(cfg: &mut AppConfig) -> bool {
     false
 }
 
+/// 只读快照：供命令内部判断开关（如 Git 只读模式）用。
+/// 不写回、不触发迁移/备份——写盘逻辑只归 `load_config`，避免命令里顺手改配置。
+pub fn read_config_snapshot(app: &tauri::AppHandle) -> AppConfig {
+    let Ok(path) = config_file(app) else {
+        return AppConfig::default();
+    };
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<AppConfig>(&text).ok())
+        .unwrap_or_default()
+}
+
 /// 读取配置：缺失/损坏/旧版本时回退默认并写回（写回前备份）
 #[tauri::command]
 pub fn load_config(app: tauri::AppHandle) -> AppConfig {
@@ -744,6 +741,48 @@ pub fn config_path(app: tauri::AppHandle) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 与前端共用同一契约夹具：状态栏字段顺序 + 格式化工具键必须一致
+    #[test]
+    fn defaults_match_frontend_contract() {
+        let raw = include_str!("../../../src/config/fixtures/defaults-contract.json");
+        let fixture: serde_json::Value = serde_json::from_str(raw).expect("契约夹具应是合法 JSON");
+
+        let ids: Vec<String> = default_status_bar_fields()
+            .into_iter()
+            .map(|f| f.id)
+            .collect();
+        let expected_ids: Vec<String> = fixture["statusBarFields"]
+            .as_array()
+            .expect("statusBarFields 数组")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(ids, expected_ids);
+
+        let keys: Vec<String> = default_formatters().keys().cloned().collect();
+        let expected_keys: Vec<String> = fixture["formatterKeys"]
+            .as_array()
+            .expect("formatterKeys 数组")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(keys, expected_keys);
+
+        // 大文件视图编码 = 后端 CANDIDATES 去掉 UTF-16（字节级行扫描不支持）
+        let expected_enc: Vec<String> = crate::commands::encoding::CANDIDATES
+            .iter()
+            .filter(|name| !name.starts_with("UTF-16"))
+            .map(|name| (*name).to_string())
+            .collect();
+        let fixture_enc: Vec<String> = fixture["largeViewEncodings"]
+            .as_array()
+            .expect("largeViewEncodings 数组")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(expected_enc, fixture_enc);
+    }
 
     /// 旧配置缺少 layout.minimap（v2 之前的 config.json）：应取默认 true，且不影响同段其它字段
     #[test]

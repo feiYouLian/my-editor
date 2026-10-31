@@ -20,6 +20,11 @@ export interface LargeViewDom {
   regexBtn: HTMLButtonElement;
   /** 换行开关：长日志行不换行时只能靠横向滚动，二者互补 */
   wrapBtn: HTMLButtonElement;
+  /** 跟随文件尾部（日志追加时自动刷新；手动上滚暂停） */
+  followBtn: HTMLButtonElement;
+  gotoInput: HTMLInputElement;
+  gotoBtn: HTMLButtonElement;
+  copyBtn: HTMLButtonElement;
   encodingSelect: HTMLSelectElement;
   editorBtn: HTMLButtonElement;
 }
@@ -56,6 +61,23 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   const caseBtn = toggleBtn("Aa", "区分大小写");
   const regexBtn = toggleBtn(".*", "使用正则表达式");
   const wrapBtn = toggleBtn("↵", "自动换行（长行折行显示，不再横向滚动）");
+  // 跟随：日志被追加时自动贴底刷新；用户手动上滚即暂停
+  const followBtn = toggleBtn("跟随", "跟随文件尾部：日志追加时自动显示最新内容（手动上滚会暂停）");
+  const gotoInput = document.createElement("input");
+  gotoInput.className = "lv-filter lv-goto";
+  gotoInput.type = "number";
+  gotoInput.min = "1";
+  gotoInput.placeholder = "行号";
+  gotoInput.title = "跳到指定行（1 基）";
+  const gotoBtn = document.createElement("button");
+  gotoBtn.type = "button";
+  gotoBtn.className = "lv-btn";
+  gotoBtn.textContent = "跳转";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "lv-btn";
+  copyBtn.textContent = "复制行";
+  copyBtn.title = "复制当前选中行（先点击行）";
   const filterBtn = document.createElement("button");
   filterBtn.type = "button";
   filterBtn.className = "lv-btn";
@@ -90,8 +112,12 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     caseBtn,
     regexBtn,
     wrapBtn,
+    followBtn,
     filterBtn,
     clearBtn,
+    gotoInput,
+    gotoBtn,
+    copyBtn,
     encodingSelect,
     editorBtn,
     indexEl,
@@ -136,6 +162,10 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     caseBtn,
     regexBtn,
     wrapBtn,
+    followBtn,
+    gotoInput,
+    gotoBtn,
+    copyBtn,
     encodingSelect,
     editorBtn,
   };

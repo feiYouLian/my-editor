@@ -34,6 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 portable-pty = "0.9"
 # 删除走系统回收站：误删可从资源管理器还原，比「确认框 + 永久删除」多一道网
 trash = "5"
+tauri-plugin-updater = "2"
 
 # Windows 系统剪贴板里的文件列表（CF_HDROP）：让「复制出去 / 粘进来」与资源管理器互通。
 # windows crate 本来就在依赖图里（trash 拉进来的），这里只是显式声明 + 打开所需 feature，

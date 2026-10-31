@@ -2,11 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirmAction, promptText } from "../ui/dialogs";
 import { placeMenu } from "../ui/menu";
 import type { WorkspaceState } from "../services/workspace";
+import { basenameOf, dirnameOf, isSameOrInsidePath, topmostPaths } from "../core/paths";
 
 /**
  * 文件树：
  * 目录懒加载展开、单击打开文件、右键菜单（新建/重命名/删除/定位/刷新）。
  * 展开状态经 workspace 服务防抖持久化。
+ *
+ * 多选：Ctrl/Cmd 点选、Shift 连选，批量删除/复制/剪切/粘贴。
+ * 拖拽移动用 pointer 事件自绘（WebView2 下 HTML5 DnD 与原生「拖文件进窗口」互斥，
+ * 关闭原生拖放会让「拖入文件打开」失效，所以这里不走 HTML5 draggable）。
  */
 
 interface DirEntry {
@@ -18,6 +23,7 @@ interface DirEntry {
 /** 文件图标工厂已下沉 ui/icons.ts（面包屑下拉共用） */
 import { createEntryIcon } from "../ui/icons";
 import { bindOpenGesture } from "../ui/openGesture";
+import { firstLine } from "../core/errors";
 
 export interface FileTreeCallbacks {
   onOpenFile: (path: string) => void;
@@ -78,17 +84,28 @@ export class FileTree {
   /** 进行中的目录加载：revealPath 等它就绪，不再靠轮询猜时间 */
   private pendingLoads = new Map<string, Promise<void>>();
 
-  /** 文件剪贴板（应用内，不碰系统剪贴板；只记一个条目，与资源管理器的单文件复制一致） */
-  private clip: { path: string; name: string; cut: boolean } | null = null;
-  /** 当前选中的条目：右键菜单之外，键盘复制/剪切/粘贴的依据 */
-  private selectedEntry: DirEntry | null = null;
-
+  /**
+   * 文件剪贴板（应用内，不碰系统剪贴板）。
+   * 支持批量：复制会整批写进系统剪贴板，粘贴时按数组处理。
+   */
+  private clip: { paths: string[]; cut: boolean } | null = null;
+  /** 多选：路径 → 是否目录（键盘复制/剪切/粘贴与批量操作的作用对象） */
+  private selection = new Map<string, boolean>();
+  /** Shift 连选的起点 */
+  private anchorPath: string | null = null;
+  /** 拖拽/多选后短暂屏蔽 click：否则松手那一下会顺带打开文件或折叠目录 */
+  private suppressClickUntil = 0;
 
   constructor(
     private container: HTMLElement,
     private callbacks: FileTreeCallbacks,
   ) {
     this.buildShell();
+    // 无障碍：树容器 + 行上的 treeitem / aria-level / aria-expanded（读屏可感知层级与展开态）
+    this.bodyEl.setAttribute("role", "tree");
+    this.bodyEl.setAttribute("aria-label", "工作区文件树");
+    this.wireSelection();
+    this.wireDrag();
     // 初始即渲染：未打开工作区时显示空状态（打开目录入口）
     this.render();
   }
@@ -129,6 +146,265 @@ export class FileTree {
     });
   }
 
+  // ---- 多选 ----
+
+  /** 当前可见行（树 + 过滤结果），按视觉顺序 */
+  private visibleRows(): HTMLElement[] {
+    return [...this.container.querySelectorAll<HTMLElement>(".tree-row[data-path]")];
+  }
+
+  private rowInfo(row: HTMLElement): { path: string; isDir: boolean } | null {
+    const path = row.dataset.path;
+    if (!path) return null;
+    return { path, isDir: row.dataset.dir === "1" };
+  }
+
+  /** 已选条目：先按可见顺序，再补上折叠/过滤后不可见的项（不能静默丢操作） */
+  private selectedEntries(): { path: string; isDir: boolean }[] {
+    const out: { path: string; isDir: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const row of this.visibleRows()) {
+      const info = this.rowInfo(row);
+      if (!info || seen.has(info.path) || !this.selection.has(info.path)) continue;
+      seen.add(info.path);
+      out.push(info);
+    }
+    for (const [path, isDir] of this.selection) {
+      if (!seen.has(path)) out.push({ path, isDir });
+    }
+    return out;
+  }
+
+  private paintSelection(): void {
+    for (const row of this.visibleRows()) {
+      const path = row.dataset.path;
+      row.classList.toggle("selected", !!path && this.selection.has(path));
+    }
+  }
+
+  private setSelection(entries: { path: string; isDir: boolean }[], anchor?: string): void {
+    this.selection.clear();
+    for (const entry of entries) this.selection.set(entry.path, entry.isDir);
+    if (anchor !== undefined) this.anchorPath = anchor;
+    this.paintSelection();
+  }
+
+  private clearSelection(): void {
+    if (this.selection.size === 0) return;
+    this.selection.clear();
+    this.anchorPath = null;
+    this.paintSelection();
+  }
+
+  /**
+   * 选中逻辑走容器捕获阶段：
+   * 只有这样才能在「展开目录 / 打开文件」的监听器之前拦掉带修饰键的点击
+   * （行级监听器按注册顺序执行，无法阻止后注册的打开手势）。
+   */
+  private wireSelection(): void {
+    this.container.addEventListener(
+      "click",
+      (e) => {
+        // 拖拽结束后的那一次 click 要整体吞掉：否则落点在其它行时会顺带打开文件，
+        // 落点在空白处会把刚拖完的选中清掉
+        if (performance.now() < this.suppressClickUntil) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          return;
+        }
+        const target = e.target as HTMLElement | null;
+        const row = target?.closest<HTMLElement>(".tree-row[data-path]") ?? null;
+        if (!row) {
+          // 点空白处清空多选（点过滤框、侧栏其它区域不动选中）
+          if (target && this.bodyEl.contains(target)) this.clearSelection();
+          return;
+        }
+        const info = this.rowInfo(row);
+        if (!info) return;
+        const modified = e.ctrlKey || e.metaKey || e.shiftKey;
+        if (!modified) {
+          // 普通点击：收敛为单选（打开/展开继续由行自身的监听器处理）
+          this.setSelection([info], info.path);
+          row.focus({ preventScroll: true });
+          return;
+        }
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (e.shiftKey) {
+          this.extendSelection(info);
+        } else if (this.selection.has(info.path)) {
+          this.selection.delete(info.path);
+          this.paintSelection();
+        } else {
+          this.selection.set(info.path, info.isDir);
+          this.anchorPath = info.path;
+          this.paintSelection();
+        }
+        row.focus({ preventScroll: true });
+      },
+      true,
+    );
+  }
+
+  /** Shift 连选：以锚点为首尾，按当前可见顺序取区间（覆盖原有选区，与资源管理器一致） */
+  private extendSelection(target: { path: string; isDir: boolean }): void {
+    const rows = this.visibleRows();
+    const paths = rows.map((row) => row.dataset.path ?? "");
+    const targetIdx = paths.indexOf(target.path);
+    const anchorIdx = this.anchorPath ? paths.indexOf(this.anchorPath) : -1;
+    if (targetIdx < 0) return;
+    if (anchorIdx < 0) {
+      this.setSelection([target], target.path);
+      return;
+    }
+    const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+    this.selection.clear();
+    for (let i = lo; i <= hi; i++) {
+      const path = paths[i];
+      if (!path) continue;
+      this.selection.set(path, rows[i].dataset.dir === "1");
+    }
+    this.paintSelection();
+  }
+
+  // ---- 拖拽移动（pointer 自绘） ----
+
+  private dragState: {
+    items: { path: string; isDir: boolean }[];
+    startX: number;
+    startY: number;
+    pointerId: number;
+    active: boolean;
+  } | null = null;
+  /** 拖拽落点目录（null = 当前位置不可投放） */
+  private dropTargetDir: string | null = null;
+  /** 落点高亮元素（目录行或树体空白区） */
+  private dropTargetEl: HTMLElement | null = null;
+  private dragGhostEl: HTMLElement | null = null;
+
+  private wireDrag(): void {
+    this.bodyEl.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const row = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+        ".tree-row[data-path]",
+      );
+      const info = row ? this.rowInfo(row) : null;
+      if (!info) return;
+      // 按下时若该行在多选内：整批拖动；否则只拖这一行（并先收敛选中）
+      const inSelection = this.selection.has(info.path) && this.selection.size > 0;
+      const items = inSelection ? this.selectedEntries() : [info];
+      this.dragState = {
+        items,
+        startX: e.clientX,
+        startY: e.clientY,
+        pointerId: e.pointerId,
+        active: false,
+      };
+    });
+
+    window.addEventListener("pointermove", (e) => {
+      const state = this.dragState;
+      if (!state || e.pointerId !== state.pointerId) return;
+      if (!state.active) {
+        // 4px 阈值：低于它仍视为点击（与标签栏拖拽一致）
+        if (
+          Math.abs(e.clientX - state.startX) < 4 &&
+          Math.abs(e.clientY - state.startY) < 4
+        ) {
+          return;
+        }
+        state.active = true;
+        this.startDragVisual(state.items);
+      }
+      e.preventDefault();
+      this.updateDropTarget(e.clientX, e.clientY, state.items);
+      this.positionGhost(e.clientX, e.clientY);
+    });
+
+    window.addEventListener("pointerup", (e) => {
+      const state = this.dragState;
+      if (!state || e.pointerId !== state.pointerId) return;
+      const targetDir = this.dropTargetDir;
+      const active = state.active;
+      this.endDragVisual();
+      this.dragState = null;
+      if (!active) return;
+      // 松手后浏览器还会派发 click：屏蔽掉，避免顺手打开文件/折叠目录
+      this.suppressClickUntil = performance.now() + 200;
+      if (!targetDir) return;
+      void this.moveItems(state.items, targetDir);
+    });
+
+    window.addEventListener("pointercancel", () => {
+      this.endDragVisual();
+      this.dragState = null;
+    });
+  }
+
+  private startDragVisual(items: { path: string; isDir: boolean }[]): void {
+    document.body.classList.add("tree-dragging");
+    for (const item of items) {
+      this.rowOf(item.path)?.classList.add("dragging");
+    }
+    const ghost = document.createElement("div");
+    ghost.className = "tree-drag-ghost";
+    ghost.textContent = items.length > 1 ? `移动 ${items.length} 项` : `移动「${basenameOf(items[0].path)}」`;
+    document.body.append(ghost);
+    this.dragGhostEl = ghost;
+  }
+
+  private positionGhost(x: number, y: number): void {
+    if (!this.dragGhostEl) return;
+    this.dragGhostEl.style.left = `${x + 12}px`;
+    this.dragGhostEl.style.top = `${y + 12}px`;
+  }
+
+  /**
+   * 计算落点：目录行 → 该目录；文件行 → 其父目录；树体空白 → 工作区根。
+   * 目标落在被拖项自身或子目录里时视为无效（后端也会拒绝，这里先给视觉反馈）。
+   */
+  private updateDropTarget(
+    x: number,
+    y: number,
+    items: { path: string; isDir: boolean }[],
+  ): void {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const row = el?.closest<HTMLElement>(".tree-row[data-path]") ?? null;
+    let dir: string | null = null;
+    let highlight: HTMLElement | null = null;
+    if (row) {
+      const info = this.rowInfo(row);
+      if (info) {
+        dir = info.isDir ? info.path : dirnameOf(info.path);
+        // 拖到文件行上时高亮的其实是"它所在的目录"，避免误以为会覆盖该文件
+        highlight = info.isDir ? row : (this.rowOf(dir) ?? row);
+      }
+    } else if (el && this.bodyEl.contains(el) && this.root) {
+      dir = this.root;
+      highlight = this.bodyEl;
+    }
+    if (dir && items.some((item) => isSameOrInsidePath(dir as string, item.path))) {
+      dir = null;
+      highlight = null;
+    }
+    if (dir === this.dropTargetDir && highlight === this.dropTargetEl) return;
+    this.dropTargetEl?.classList.remove("drop-target");
+    this.dropTargetDir = dir;
+    this.dropTargetEl = highlight;
+    this.dropTargetEl?.classList.add("drop-target");
+  }
+
+  private endDragVisual(): void {
+    document.body.classList.remove("tree-dragging");
+    for (const path of this.selection.keys()) this.rowOf(path)?.classList.remove("dragging");
+    this.container.querySelectorAll(".tree-row.dragging").forEach((el) => el.classList.remove("dragging"));
+    this.dropTargetEl?.classList.remove("drop-target");
+    this.dropTargetEl = null;
+    this.dropTargetDir = null;
+    this.dragGhostEl?.remove();
+    this.dragGhostEl = null;
+  }
+
   /** 退出过滤视图，恢复树（展开状态不变） */
   private exitFilter(): void {
     if (!this.filtering) return;
@@ -164,7 +440,7 @@ export class FileTree {
       this.bodyEl.innerHTML = "";
       const err = document.createElement("div");
       err.className = "tree-empty";
-      err.textContent = `搜索失败：${String(e).split("\n")[0]}`;
+      err.textContent = `搜索失败：${firstLine(e)}`;
       this.bodyEl.append(err);
       return;
     }
@@ -183,6 +459,7 @@ export class FileTree {
     const frag = document.createDocumentFragment();
     for (const file of matched.slice(0, FILTER_MAX_ROWS)) frag.append(this.createFlatRow(file));
     this.bodyEl.append(frag);
+    this.paintSelection();
     if (matched.length > FILTER_MAX_ROWS) {
       const more = document.createElement("div");
       more.className = "tree-empty";
@@ -196,6 +473,9 @@ export class FileTree {
     const row = document.createElement("div");
     row.className = "tree-row tree-flat-row";
     row.title = file.path;
+    row.dataset.path = file.path;
+    row.dataset.dir = "0";
+    row.tabIndex = -1;
 
     const icon = document.createElement("span");
     icon.className = "tree-icon";
@@ -226,6 +506,9 @@ export class FileTree {
     // 换工作区时退出过滤视图，否则会看到上一个工作区的结果
     this.filtering = false;
     this.filterSeq++;
+    // 旧工作区的选中项在新工作区没有意义（批量删除会打到别的路径上）
+    this.selection.clear();
+    this.anchorPath = null;
     if (this.filterEl) this.filterEl.value = "";
     this.render();
     // 根目录变化也要通知宿主（侧栏标题、workspaceRoot 与持久化都依赖该回调）
@@ -234,6 +517,22 @@ export class FileTree {
 
   getRoot(): string | null {
     return this.root;
+  }
+
+  /** 当前展开目录（供目录监听同步） */
+  getExpandedDirs(): string[] {
+    return [...this.expanded];
+  }
+
+  /** 外部变化后只刷新某一层；过滤视图/未展开目录直接忽略 */
+  refreshDirectory(dir: string): void {
+    if (this.filtering || !this.root) return;
+    const target =
+      normPath(dir) === normPath(this.root)
+        ? this.root
+        : [...this.expanded].find((p) => normPath(p) === normPath(dir));
+    if (!target) return;
+    this.refreshDir(target);
   }
 
   /** 外部写盘（如批量替换生成 .bak）后重建当前树（保留展开状态） */
@@ -252,12 +551,12 @@ export class FileTree {
     // 目录状态：从每个文件向上推，取优先级最高的子项状态
     this.gitDirStatus = new Map();
     for (const [path, status] of this.gitFileStatus) {
-      let dir = this.parentOf(path);
+      let dir = dirnameOf(path);
       let guard = 0;
       while (dir && guard++ < 64) {
         const key = normPath(dir);
         this.gitDirStatus.set(key, pickStatus(this.gitDirStatus.get(key), status));
-        const next = this.parentOf(dir);
+        const next = dirnameOf(dir);
         if (next === dir) break;
         dir = next;
       }
@@ -380,15 +679,17 @@ export class FileTree {
       if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
       const err = document.createElement("div");
       err.className = "tree-error";
-      err.textContent = `读取失败: ${String(e).split("\n")[0]}`;
+      err.textContent = `读取失败: ${firstLine(e)}`;
       container.append(err);
       return;
     }
     // 过期结果直接丢弃：否则会与后一次加载的节点叠加成重复行
     if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
-    for (const entry of entries) {
-      container.append(this.createNode(entry, depth));
-    }
+    const frag = document.createDocumentFragment();
+    for (const entry of entries) frag.append(this.createNode(entry, depth));
+    container.append(frag);
+    // 多选状态跨重绘保留：新行建好后补一次选中态
+    this.paintSelection();
   }
 
   private createNode(entry: DirEntry, depth: number): HTMLElement {
@@ -398,11 +699,18 @@ export class FileTree {
 
     const row = document.createElement("div");
     row.className = "tree-row";
+    // 选中/拖拽/批量操作都按 row 自己的 data-path 取条目（与扁平结果行同一套约定）
+    row.dataset.path = entry.path;
+    row.dataset.dir = entry.is_dir ? "1" : "0";
+    if (this.selection.has(entry.path)) row.classList.add("selected");
     // 每级 12px、起点 8px：与 .tree-flat-row 的左内边距对齐（CSS 里那套基准值）
     row.style.paddingLeft = `${depth * 12 + 8}px`;
     // 可聚焦（-1）：Ctrl+C / Ctrl+X / Ctrl+V 只在文件树持有焦点时生效，
     // 不会把编辑器里的复制粘贴抢走
     row.tabIndex = -1;
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-level", String(depth + 1));
+    if (entry.is_dir) row.setAttribute("aria-expanded", String(this.expanded.has(entry.path)));
     // Git 状态：文件取自身，目录取子项推导值
     const gitStatus = this.statusFor(entry.path, entry.is_dir);
     if (gitStatus) row.dataset.gitStatus = gitStatus;
@@ -420,24 +728,11 @@ export class FileTree {
     wrapper.append(row);
 
     if (entry.is_dir) {
-      // 目录保持单击展开：双击设置只影响「打开文件」
-      row.addEventListener("click", () => {
-        this.toggleExpand(entry.path);
-        this.markSelected(row, entry);
-      });
+      // 目录保持单击展开：双击设置只影响「打开文件」；选中态由容器捕获阶段统一处理
+      row.addEventListener("click", () => this.toggleExpand(entry.path));
     } else {
       // 单击 / 双击打开由设置决定（config.files.openWithDoubleClick）
-      bindOpenGesture(row, {
-        onSelect: () => {
-          this.selectRow(entry.path);
-          this.markSelected(row, entry);
-        },
-        onOpen: () => {
-          this.selectRow(entry.path);
-          this.markSelected(row, entry);
-          this.callbacks.onOpenFile(entry.path);
-        },
-      });
+      bindOpenGesture(row, { onOpen: () => this.callbacks.onOpenFile(entry.path) });
     }
 
     row.addEventListener("contextmenu", (e) => {
@@ -483,6 +778,9 @@ export class FileTree {
       if (!path || !this.nodes.has(path)) return;
       const icon = node.querySelector<HTMLElement>(":scope > .tree-row > .tree-icon");
       if (icon) icon.replaceChildren(createEntryIcon("", true, this.expanded.has(path)));
+      // 展开态同步给读屏（图标只是视觉提示）
+      const row = node.querySelector<HTMLElement>(":scope > .tree-row");
+      row?.setAttribute("aria-expanded", String(this.expanded.has(path)));
     });
   }
 
@@ -503,34 +801,19 @@ export class FileTree {
     const path = this.pendingReveal;
     if (!path) return;
     const row = this.rowOf(path);
-    if (!row) return;
+    const info = row ? this.rowInfo(row) : null;
+    if (!row || !info) return;
     this.pendingReveal = null;
-    this.container
-      .querySelectorAll(".tree-row.selected")
-      .forEach((el) => el.classList.remove("selected"));
-    row.classList.add("selected");
+    // 定位即单选：多选状态会让「当前文件」不明确
+    this.setSelection([info], info.path);
     row.scrollIntoView({ block: "nearest" });
   }
 
-  /** 按路径取行元素（不存在返回 null） */
+  /** 按路径取行元素（树行与扁平结果行通用；不存在返回 null） */
   private rowOf(path: string): HTMLElement | null {
-    const node = this.container.querySelector<HTMLElement>(
-      `.tree-node[data-path="${CSS.escape(path)}"]`,
+    return this.container.querySelector<HTMLElement>(
+      `.tree-row[data-path="${CSS.escape(path)}"]`,
     );
-    return node?.querySelector<HTMLElement>(":scope > .tree-row") ?? null;
-  }
-
-  /**
-   * 标记选中并接管焦点：键盘复制 / 剪切 / 粘贴需要有"当前项"，
-   * 而浏览器窗口的 Ctrl+C 是否被我们接手，取决于焦点是否在树里。
-   */
-  private markSelected(row: HTMLElement, entry: DirEntry): void {
-    // 用户手动点了某一行：取消「待定位」目标，避免后续子目录加载完成时把选中抢回去
-    this.pendingReveal = null;
-    this.container.querySelectorAll(".tree-row.selected").forEach((el) => el.classList.remove("selected"));
-    row.classList.add("selected");
-    this.selectedEntry = entry;
-    row.focus({ preventScroll: true });
   }
 
   /** 该路径是否在当前工作区内（决定能否在树里定位；工作区外的文件没有对应节点） */
@@ -584,34 +867,47 @@ export class FileTree {
     const menu = document.createElement("div");
     menu.className = "context-menu";
 
-    const items: { label: string; action: () => void }[] = [];
-    if (entry.is_dir) {
-      items.push({ label: "新建文件", action: () => void this.createIn(entry.path, false) });
-      items.push({ label: "新建文件夹", action: () => void this.createIn(entry.path, true) });
-    } else {
-      const dir = entry.path.split(/[\\/]/).slice(0, -1).join("\\");
-      items.push({ label: "新建文件", action: () => void this.createIn(dir, false) });
-      items.push({ label: "新建文件夹", action: () => void this.createIn(dir, true) });
+    // 右键未选中行：先收敛为单选（与资源管理器一致）；右键已选中的一行则保留整批
+    if (!this.selection.has(entry.path)) {
+      this.setSelection([{ path: entry.path, isDir: entry.is_dir }], entry.path);
     }
+    const targets = this.selectedEntries();
+    const count = targets.length;
+    const batch = count > 1;
+    const targetDir = entry.is_dir ? entry.path : dirnameOf(entry.path);
+
+    const items: { label: string; action: () => void }[] = [];
+    items.push({ label: "新建文件", action: () => void this.createIn(targetDir, false) });
+    items.push({ label: "新建文件夹", action: () => void this.createIn(targetDir, true) });
     const compare = this.callbacks.onCompareFile;
     if (!entry.is_dir && compare) {
       items.push({ label: "与当前文件比较", action: () => compare(entry.path) });
     }
     const openTerminal = this.callbacks.onOpenTerminal;
     if (openTerminal) {
-      const dir = entry.is_dir ? entry.path : this.parentOf(entry.path);
-      items.push({ label: "在终端中打开", action: () => openTerminal(dir) });
+      items.push({ label: "在终端中打开", action: () => openTerminal(targetDir) });
     }
     items.push({ label: "复制文件路径", action: () => void this.copyPath(entry.path) });
-    items.push({ label: "复制", action: () => this.setClip(entry, false) });
-    items.push({ label: "剪切", action: () => this.setClip(entry, true) });
+    items.push({
+      label: batch ? `复制 ${count} 项` : "复制",
+      action: () => this.setClip(targets, false),
+    });
+    items.push({
+      label: batch ? `剪切 ${count} 项` : "剪切",
+      action: () => this.setClip(targets, true),
+    });
     // 始终显示「粘贴」：来源可能是系统剪贴板（资源管理器复制来的），此时应用内剪贴板是空的
     items.push({
-      label: this.clip ? `粘贴「${this.clip.name}」到这里` : "粘贴",
-      action: () => void this.pasteInto(entry.is_dir ? entry.path : this.parentOf(entry.path)),
+      label: this.clip ? `粘贴「${this.clipLabel()}」到这里` : "粘贴",
+      action: () => void this.pasteInto(targetDir),
     });
-    items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
-    items.push({ label: "删除", action: () => void this.deleteEntry(entry) });
+    if (!batch) {
+      items.push({ label: "重命名", action: () => void this.renameEntry(entry) });
+    }
+    items.push({
+      label: batch ? `删除 ${count} 项` : "删除",
+      action: () => void this.deleteEntries(targets),
+    });
     items.push({
       label: "在文件管理器中显示",
       action: () => void invoke("reveal_in_file_manager", { path: entry.path }),
@@ -644,27 +940,41 @@ export class FileTree {
       await navigator.clipboard.writeText(path);
       this.callbacks.onNotify?.("已复制文件路径");
     } catch (e) {
-      this.callbacks.onNotify?.(`复制地址失败: ${String(e).split("\n")[0]}`);
+      this.callbacks.onNotify?.(`复制地址失败: ${firstLine(e)}`);
     }
   }
 
   /**
-   * 记入剪贴板。
+   * 记入剪贴板（支持批量）。
    * 复制会同时写进**系统剪贴板**（CF_HDROP），所以可以直接粘到资源管理器；
    * 剪切只在应用内生效——跨应用"剪切"意味着删除工作区外的源文件，超出写入作用域。
    */
-  private setClip(entry: DirEntry, cut: boolean): void {
-    this.clip = { path: entry.path, name: entry.name, cut };
+  private setClip(items: { path: string; isDir: boolean }[], cut: boolean): void {
+    // 父目录已覆盖子项：批量操作前先去重，避免对同一子树重复执行
+    const paths = topmostPaths(items.map((item) => item.path));
+    if (paths.length === 0) return;
+    this.clip = { paths, cut };
     // 反馈统一走状态栏（3 秒自动消失，并进「最近消息」可回看），不另造提示区
-    this.callbacks.onNotify?.(cut ? `已剪切 ${entry.name}` : `已复制 ${entry.name}`);
+    this.callbacks.onNotify?.(
+      `${cut ? "已剪切" : "已复制"} ${this.formatNames(paths)}`,
+    );
     if (cut) return;
-    void invoke("clipboard_set_files", { paths: [entry.path] }).catch((e: unknown) => {
+    void invoke("clipboard_set_files", { paths }).catch((e: unknown) => {
       const reason = e instanceof Error ? e.message : String(e);
       // 系统剪贴板写不进去不影响应用内使用：说清"还能怎么用"，不要只说失败
       this.callbacks.onNotify?.(
-        `系统剪贴板不可用（${reason.split("\n")[0]}），仍可在本应用内粘贴`,
+        `系统剪贴板不可用（${firstLine(reason)}），仍可在本应用内粘贴`,
       );
     });
+  }
+
+  /** 提示文案里的名称：单项用文件名，多项用「N 项」 */
+  private formatNames(paths: string[]): string {
+    return paths.length === 1 ? `「${basenameOf(paths[0])}」` : `${paths.length} 项`;
+  }
+
+  private clipLabel(): string {
+    return this.clip ? this.formatNames(this.clip.paths) : "";
   }
 
   /** 清空剪贴板（silent = 粘贴成功后自动清，不需要再提示一次） */
@@ -697,10 +1007,14 @@ export class FileTree {
             destDir: dir,
             cut: false,
           });
-          this.afterPaste(dir, targets[0] ?? null);
+          this.afterTransfer(
+            dir,
+            targets.map((to) => ({ from: to, to })),
+            false,
+          );
           this.callbacks.onNotify?.(`已从系统剪贴板粘贴 ${targets.length} 项`);
         } catch (e) {
-          this.callbacks.onNotify?.(`粘贴失败：${String(e).split("\n")[0]}`);
+          this.callbacks.onNotify?.(`粘贴失败：${firstLine(e)}`);
         }
         return;
       }
@@ -712,50 +1026,123 @@ export class FileTree {
       );
       return;
     }
-    try {
-      const target = await invoke<string>("copy_path", {
-        from: clip.path,
-        destDir: dir,
-        cut: clip.cut,
-      });
-      if (clip.cut) {
-        // 移动完成：剪贴板已消费掉
-        this.clearClip(true);
-        // 标签还指着旧路径的话，保存会写回已不存在的位置
-        this.callbacks.onPathMoved?.(clip.path, target);
-        // 源目录那一层必须重建：否则被移走的条目还留在树里（点它会报"路径不存在"）
-        const srcParent = this.parentOf(clip.path);
-        this.forgetSubtree(clip.path);
-        // 只在源目录"当前可见"时重建：折叠中的目录重发 list_dir 会让子项在收起状态下冒出来
-        const srcVisible = srcParent === this.root || this.expanded.has(srcParent);
-        if (srcVisible && normPath(srcParent) !== normPath(dir)) this.refreshDir(srcParent);
-      }
-      this.afterPaste(dir, target);
-      this.callbacks.onNotify?.(
-        `${clip.cut ? "已移动" : "已复制"}到「${this.baseName(target)}」`,
-      );
-    } catch (e) {
-      const reason = String(e).split("\n")[0];
-      this.callbacks.onNotify?.(`${clip.cut ? "移动" : "复制"}失败: ${reason}`);
+    // 剪切到原目录等于没动：跳过这些源，避免"目标已存在同名项"的误导性错误
+    const destKey = normPath(dir);
+    const sources = clip.cut
+      ? clip.paths.filter((path) => normPath(dirnameOf(path)) !== destKey)
+      : clip.paths;
+    if (sources.length === 0) {
+      this.callbacks.onNotify?.("已经在目标目录里，无需移动");
+      return;
     }
+    const result = await this.transferPaths(sources, dir, clip.cut);
+    // 移动完成：剪贴板已消费掉（复制则保留，便于继续粘贴到别处）
+    if (clip.cut && result.moved.length > 0) this.clearClip(true);
+    this.afterTransfer(dir, result.moved, clip.cut, result.failed);
   }
 
-  /** 粘贴后的共同收尾：展开目标目录、只重建这一层、选中并闪一下新条目 */
-  private afterPaste(dir: string, select: string | null): void {
-    const wasExpanded = this.expanded.has(dir);
-    this.expanded.add(dir);
-    if (wasExpanded) this.refreshDir(dir);
+  /**
+   * 批量复制 / 移动：逐项调用 `copy_path`。
+   *
+   * 不用 `paste_files` 整批调用的原因：整批在中途失败时拿不到"哪些已成功"，
+   * 会留下指向旧路径的标签（移动后保存会写回已不存在的位置）。
+   * 逐项虽然多打几次 IPC，但能精确同步已成功的项，并给出失败清单。
+   */
+  private async transferPaths(
+    paths: string[],
+    destDir: string,
+    cut: boolean,
+  ): Promise<{ moved: { from: string; to: string }[]; failed: { path: string; reason: string }[] }> {
+    const moved: { from: string; to: string }[] = [];
+    const failed: { path: string; reason: string }[] = [];
+    for (const from of topmostPaths(paths)) {
+      try {
+        const to = await invoke<string>("copy_path", { from, destDir, cut });
+        moved.push({ from, to });
+      } catch (e) {
+        failed.push({ path: from, reason: firstLine(e) });
+      }
+    }
+    return { moved, failed };
+  }
+
+  /** 拖拽移动：整批移动进目标目录 */
+  private async moveItems(
+    items: { path: string; isDir: boolean }[],
+    destDir: string,
+  ): Promise<void> {
+    // 拖回原目录等于没动：不发起 IPC，也不弹"目标已存在同名项"这种误导性错误
+    const destKey = normPath(destDir);
+    const movable = items.filter((item) => normPath(dirnameOf(item.path)) !== destKey);
+    if (movable.length === 0) {
+      this.callbacks.onNotify?.("已经在目标目录里，无需移动");
+      return;
+    }
+    const result = await this.transferPaths(
+      movable.map((item) => item.path),
+      destDir,
+      true,
+    );
+    this.afterTransfer(destDir, result.moved, true, result.failed);
+  }
+
+  /**
+   * 复制 / 移动后的共同收尾：
+   * 同步标签路径、清掉已移走路径的展开缓存、只重建受影响的层、选中第一个新条目。
+   */
+  private afterTransfer(
+    destDir: string,
+    moved: { from: string; to: string }[],
+    cut: boolean,
+    failed: { path: string; reason: string }[] = [],
+  ): void {
+    if (moved.length === 0 && failed.length === 0) return;
+    if (cut) {
+      const destKey = normPath(destDir);
+      const sourceParents = new Set(moved.map((mv) => dirnameOf(mv.from)));
+      for (const mv of moved) {
+        // 标签还指着旧路径的话，保存会写回已不存在的位置
+        this.callbacks.onPathMoved?.(mv.from, mv.to);
+        // 被移走的路径及其子树的展开态 / 节点缓存全部失效
+        this.forgetSubtree(mv.from);
+      }
+      for (const parent of sourceParents) {
+        // 只在源目录"当前可见"时重建：折叠中的目录重发 list_dir 会让子项在收起状态下冒出来
+        const visible = parent === this.root || this.expanded.has(parent);
+        if (visible && normPath(parent) !== destKey) this.refreshDir(parent);
+      }
+    }
+
+    const wasExpanded = this.expanded.has(destDir);
+    this.expanded.add(destDir);
+    if (wasExpanded) this.refreshDir(destDir);
     else this.render();
-    if (!select) return;
-    const reveal = (): void => this.selectRow(select);
-    const pending = this.pendingLoads.get(dir);
-    if (pending) void pending.then(reveal);
-    else reveal();
-  }
 
-  private baseName(path: string): string {
-    const idx = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-    return idx >= 0 ? path.slice(idx + 1) : path;
+    const first = moved[0]?.to ?? null;
+    if (first) {
+      const reveal = (): void => this.selectRow(first);
+      const pending = this.pendingLoads.get(destDir);
+      if (pending) void pending.then(reveal);
+      else reveal();
+    }
+
+    // 结果汇总：失败要说清是哪一项，不能只报"操作失败"
+    const action = cut ? "移动" : "复制";
+    const failure = failed[0];
+    if (!failure) {
+      this.callbacks.onNotify?.(
+        moved.length > 1
+          ? `已${action} ${moved.length} 项到「${basenameOf(destDir)}」`
+          : `已${action}到「${basenameOf(moved[0]?.to ?? destDir)}」`,
+      );
+    } else if (moved.length === 0) {
+      this.callbacks.onNotify?.(`${action}失败：${basenameOf(failure.path)}（${failure.reason}）`);
+    } else {
+      this.callbacks.onNotify?.(
+        `已${action} ${moved.length} 项，失败 ${failed.length} 项：` +
+          `${basenameOf(failure.path)}（${failure.reason}）`,
+      );
+    }
   }
 
   /** 全局监听挂载点：应用启动时调用一次 */
@@ -764,31 +1151,51 @@ export class FileTree {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         this.closeContextMenu();
+        // 先退多选，再退剪贴板：Esc 逐层撤销当前视图状态
+        if (this.selection.size > 0) {
+          this.clearSelection();
+          return;
+        }
         if (this.clip && !isEditableTarget(e.target)) this.clearClip();
         return;
       }
-      // 焦点在编辑器 / 输入框里时，Ctrl+C/V 归它们（不能抢走"复制文本"）
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || isEditableTarget(e.target)) return;
-      const entry = this.selectedEntry;
-      if (!entry) return;
+      // 焦点在编辑器 / 输入框里时，快捷键归它们（不能抢走"复制文本"/删除字符）
+      if (isEditableTarget(e.target)) return;
+      const inTree = this.container.contains(document.activeElement);
+
+      if (e.key === "Delete" && inTree && this.selection.size > 0) {
+        e.preventDefault();
+        void this.deleteEntries(this.selectedEntries());
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
+      if (key === "a" && inTree) {
+        // 树内全选（过滤视图下即全选当前结果）
+        e.preventDefault();
+        const rows = this.visibleRows();
+        const entries = rows
+          .map((row) => this.rowInfo(row))
+          .filter((info): info is { path: string; isDir: boolean } => info !== null);
+        this.setSelection(entries, entries[0]?.path);
+        return;
+      }
+      const entries = this.selectedEntries();
+      if (entries.length === 0) return;
+      const primary = this.anchorPath ?? entries[0].path;
+      const primaryIsDir = this.selection.get(primary) ?? false;
       if (key === "c") {
         e.preventDefault();
-        this.setClip(entry, false);
+        this.setClip(entries, false);
       } else if (key === "x") {
         e.preventDefault();
-        this.setClip(entry, true);
+        this.setClip(entries, true);
       } else if (key === "v") {
         // 不要求应用内剪贴板非空：可能是刚从资源管理器复制的文件
         e.preventDefault();
-        void this.pasteInto(entry.is_dir ? entry.path : this.parentOf(entry.path));
+        void this.pasteInto(primaryIsDir ? primary : dirnameOf(primary));
       }
     });
-  }
-
-  private parentOf(path: string): string {
-    const idx = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-    return idx > 0 ? path.slice(0, idx) : path;
   }
 
   private async createIn(dir: string, isDir: boolean): Promise<void> {
@@ -806,14 +1213,14 @@ export class FileTree {
       // 新建文件后直接打开：省掉“建完还要在树里找一次”的多余操作
       if (!isDir) this.callbacks.onOpenFile(target);
     } catch (e) {
-      this.callbacks.onNotify?.(`创建失败: ${String(e).split("\n")[0]}`);
+      this.callbacks.onNotify?.(`创建失败: ${firstLine(e)}`);
     }
   }
 
   private async renameEntry(entry: DirEntry): Promise<void> {
     const name = await promptText("新名称:", entry.name);
     if (!name || name === entry.name) return;
-    const target = `${this.parentOf(entry.path)}${entry.path.includes("\\") ? "\\" : "/"}${name}`;
+    const target = `${dirnameOf(entry.path)}${entry.path.includes("\\") ? "\\" : "/"}${name}`;
     try {
       await invoke("rename_path", { from: entry.path, to: target });
       // 同步已打开的标签：否则标签还指着旧路径，保存会写回一个已不存在的文件
@@ -821,34 +1228,76 @@ export class FileTree {
       // 目录改名：旧路径下的展开态 / 子节点缓存全部失效
       if (entry.is_dir) this.forgetSubtree(entry.path);
       // 只重建父目录这一层，再等它加载完选中新名称（原来走 revealPath 会全树重建）
-      const parent = this.parentOf(target);
+      const parent = dirnameOf(target);
       this.refreshDir(parent);
       const pending = this.pendingLoads.get(parent);
       if (pending) void pending.then(() => this.selectRow(target));
       else this.selectRow(target);
     } catch (e) {
-      this.callbacks.onNotify?.(`重命名失败: ${String(e).split("\n")[0]}`);
+      this.callbacks.onNotify?.(`重命名失败: ${firstLine(e)}`);
     }
   }
 
-  private async deleteEntry(entry: DirEntry): Promise<void> {
+  /**
+   * 批量删除（走系统回收站）。
+   * 父目录与其子项同时选中时只处理父目录——子项随后已不存在，重复删会报「路径不存在」。
+   */
+  private async deleteEntries(items: { path: string; isDir: boolean }[]): Promise<void> {
+    const isDirOf = new Map(items.map((item) => [item.path, item.isDir]));
+    const targets = topmostPaths(items.map((item) => item.path)).map((path) => ({
+      path,
+      isDir: isDirOf.get(path) ?? false,
+    }));
+    if (targets.length === 0) return;
+    const hasDir = targets.some((target) => target.isDir);
+    const names = targets
+      .slice(0, 5)
+      .map((target) => `「${basenameOf(target.path)}」`)
+      .join("、");
+    const suffix = targets.length > 5 ? ` 等 ${targets.length} 项` : "";
     const ok = await confirmAction(
-      `确定删除${entry.is_dir ? "目录" : "文件"}「${entry.name}」？\n` +
-        (entry.is_dir
+      `确定删除 ${names}${suffix}？\n` +
+        (hasDir
           ? "目录下的全部内容会一起移入系统回收站，可从回收站还原。"
           : "将移入系统回收站，可从回收站还原。"),
     );
     if (!ok) return;
-    try {
-      await invoke("delete_path", { path: entry.path });
-      // 同步右侧主区：干净标签关掉，脏标签保留（内容还在内存里，否则一保存就"复活"文件）
-      this.callbacks.onPathDeleted?.(entry.path, entry.is_dir);
-      // 目录被删：它下面已展开的子目录缓存也要一并清掉
-      this.forgetSubtree(entry.path);
-      // 只重建父目录这一层：全树 render() 会让所有已展开目录重发 list_dir 并闪烁
-      this.refreshDir(this.parentOf(entry.path));
-    } catch (e) {
-      this.callbacks.onNotify?.(`删除失败: ${String(e).split("\n")[0]}`);
+
+    const parents = new Set<string>();
+    const failed: string[] = [];
+    const removedPaths: string[] = [];
+    for (const target of targets) {
+      try {
+        await invoke("delete_path", { path: target.path });
+        removedPaths.push(target.path);
+        parents.add(dirnameOf(target.path));
+        // 同步右侧主区：干净标签关掉，脏标签保留（内容还在内存里，否则一保存就"复活"文件）
+        this.callbacks.onPathDeleted?.(target.path, target.isDir);
+        // 目录被删：它下面已展开的子目录缓存也要一并清掉
+        this.forgetSubtree(target.path);
+      } catch (e) {
+        failed.push(`${basenameOf(target.path)}（${firstLine(e)}）`);
+      }
+    }
+    // 已删路径及其子路径一并退出选中（否则 Ctrl+C 会拿着不存在的路径）
+    for (const removedPath of removedPaths) {
+      for (const selected of [...this.selection.keys()]) {
+        if (isSameOrInsidePath(selected, removedPath)) this.selection.delete(selected);
+      }
+    }
+    this.anchorPath = null;
+    this.paintSelection();
+    // 只重建父目录这一层：全树 render() 会让所有已展开目录重发 list_dir 并闪烁
+    for (const parent of parents) this.refreshDir(parent);
+
+    if (failed.length === 0) {
+      this.callbacks.onNotify?.(`已删除 ${removedPaths.length} 项（可在回收站还原）`);
+    } else if (removedPaths.length === 0) {
+      this.callbacks.onNotify?.(`删除失败：${failed[0]}`);
+    } else {
+      this.callbacks.onNotify?.(
+        `已删除 ${removedPaths.length} 项，失败 ${failed.length} 项：${failed[0]}`,
+      );
     }
   }
 }

@@ -306,8 +306,15 @@ pub struct FileProbe {
 }
 
 #[tauri::command]
-pub fn probe_file(state: tauri::State<'_, PathGuard>, path: String) -> Result<FileProbe, String> {
-    state.add_path(&path);
+pub fn probe_file(
+    state: tauri::State<'_, PathGuard>,
+    path: String,
+    register: Option<bool>,
+) -> Result<FileProbe, String> {
+    // 预览内联图片只需要 stat，不应把每张图都登记进 PathGuard（否则作用域随预览增长）
+    if register.unwrap_or(true) {
+        state.add_path(&path);
+    }
     let p = PathBuf::from(&path);
     let meta = fs::metadata(&p).map_err(|e| format!("读取文件信息失败: {e}"))?;
     let extension = p

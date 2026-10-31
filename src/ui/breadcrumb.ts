@@ -11,6 +11,7 @@ import { dirnameOf, splitAbsolutePath, workspaceRelativeParts } from "../core/pa
 import type { Tab } from "../store/tabs";
 import { createEntryIcon } from "./icons";
 import { placeMenu } from "./menu";
+import { firstLine } from "../core/errors";
 
 export interface BreadcrumbDeps {
   /** 工作区根目录（null = 未打开目录） */
@@ -147,7 +148,7 @@ export class Breadcrumb {
     } catch (e) {
       const err = document.createElement("div");
       err.className = "bc-empty";
-      err.textContent = `读取失败：${String(e).split("\n")[0]}`;
+      err.textContent = `读取失败：${firstLine(e)}`;
       menu.append(err);
       place();
       return;

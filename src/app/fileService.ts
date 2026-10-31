@@ -13,6 +13,7 @@ import {
   loadSettings,
   setUserThemes,
   settings,
+  updateSettings,
   type AppConfig,
 } from "../config/settings";
 import { loadUserThemes, loadUserLanguages } from "../services/userAssets";
@@ -20,11 +21,12 @@ import { tabStore, type Tab } from "../store/tabs";
 import { pushRecentFile } from "../panels/recentFiles";
 import { showConfigReloaded } from "../ui/settingsHelp";
 import { confirmAction } from "../ui/dialogs";
-import { basenameOf } from "../core/paths";
+import { basenameOf, dirnameOf, joinVirtualPath } from "../core/paths";
 import { localStamps } from "../core/stamps";
 import { effectiveLanguage, setUserLanguages } from "../editor/languages";
 import type { LargeFileHost } from "./largeFileHost";
 import type { FileContent, SaveResult } from "../types/app";
+import { firstLine } from "../core/errors";
 
 export interface FileServiceDeps {
   getActiveTab: () => Tab | null;
@@ -46,7 +48,8 @@ export interface FileServiceDeps {
   pickEncoding: (
     encodings: string[],
     current: string,
-    onPick: (encoding: string) => void,
+    currentBom: boolean,
+    onPick: (encoding: string, hasBom: boolean) => void,
     note: string,
   ) => void;
   /** 大文件宿主（分流 / 虚拟视图） */
@@ -76,6 +79,9 @@ export const FALLBACK_ENCODINGS = [
   "UTF-16 BE",
   "Big5",
   "Windows-1252",
+  "Shift_JIS",
+  "EUC-KR",
+  "Windows-1251",
 ];
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"]);
@@ -177,7 +183,7 @@ export class FileService {
         showMessage(`已按 ${data.encoding} 解码（置信度低，可点击状态栏编码切换）`);
       }
     } catch (e) {
-      if (!opts.silent) showMessage(`打开失败: ${String(e).split("\n")[0]}`);
+      if (!opts.silent) showMessage(`打开失败: ${firstLine(e)}`);
     }
   }
 
@@ -186,10 +192,23 @@ export class FileService {
     const selected = await open({
       multiple: false,
       directory: false,
+      defaultPath: getConfig().workspace.lastDirectory || undefined,
       filters: [{ name: "所有文件", extensions: ["*"] }],
     });
     if (typeof selected !== "string") return;
+    this.rememberDirectory(selected);
     await this.openFilePath(selected);
+  }
+
+  /** 记住对话框最近目录（只写 config.json，不写用户仓库） */
+  private rememberDirectory(path: string): void {
+    const dir = dirnameOf(path);
+    if (!dir || dir === path) return;
+    const workspace = getConfig().workspace;
+    if (workspace.lastDirectory === dir) return;
+    void updateSettings({ workspace: { ...workspace, lastDirectory: dir } }).catch(() => {
+      // 配置写失败不影响本次打开/保存
+    });
   }
 
   async saveFile(): Promise<void> {
@@ -198,6 +217,17 @@ export class FileService {
     if (this.deps.blockIfReadonly()) return;
     if (!tab.path) {
       await this.saveFileAs();
+      return;
+    }
+    // 文件已被外部删除/移动：直接写回会把"删掉的文件"又建出来，先引导另存为
+    try {
+      await invoke("path_kind", { path: tab.path });
+    } catch {
+      const ok = await confirmAction(
+        `「${tab.name}」已不在磁盘上（可能被删除或移动）。\n改为另存为？`,
+        "另存为",
+      );
+      if (ok) await this.saveFileAs();
       return;
     }
     // 失败已由 writeTo 经 reportSaveError 提示；这里吞掉拒绝，避免 unhandledrejection
@@ -212,7 +242,8 @@ export class FileService {
     const tab = this.deps.getActiveTab();
     if (!tab) return;
     if (this.deps.blockIfReadonly()) return;
-    const target = await save({ defaultPath: tab.name });
+    const lastDir = getConfig().workspace.lastDirectory;
+    const target = await save({ defaultPath: joinVirtualPath(lastDir, tab.name) });
     if (typeof target !== "string") return;
     // 对话框期间用户可能已关闭/切换标签：必须重新校验，否则会把
     // 已放弃的标签内容写到磁盘上
@@ -223,6 +254,7 @@ export class FileService {
     }
     try {
       await this.writeTo(current, target);
+      this.rememberDirectory(target);
     } catch {
       /* 已由 reportSaveError 提示 */
     }
@@ -243,14 +275,16 @@ export class FileService {
     this.deps.pickEncoding(
       tab.encodingCandidates.length ? tab.encodingCandidates : FALLBACK_ENCODINGS,
       tab.encoding,
-      (encoding) => {
+      tab.has_bom,
+      (encoding, hasBom) => {
         void (async () => {
           const current = tabStore.findById(tab.id);
           if (!current) {
             this.deps.showMessage("标签已关闭，已取消另存为");
             return;
           }
-          const target = await save({ defaultPath: current.name });
+          const lastDir = getConfig().workspace.lastDirectory;
+          const target = await save({ defaultPath: joinVirtualPath(lastDir, current.name) });
           if (typeof target !== "string") return;
           // 保存对话框期间标签可能已被关闭
           if (!tabStore.findById(tab.id)) {
@@ -258,10 +292,13 @@ export class FileService {
             return;
           }
           try {
-            await this.writeTo(current, target, encoding);
-            this.deps.showMessage(`已按 ${encoding} 另存为：${basenameOf(target)}`);
+            await this.writeTo(current, target, encoding, hasBom);
+            this.rememberDirectory(target);
+            this.deps.showMessage(
+              `已按 ${encoding}${hasBom ? "（带 BOM）" : ""} 另存为：${basenameOf(target)}`,
+            );
           } catch (e) {
-            this.deps.showMessage(`另存为失败: ${String(e).split("\n")[0]}`);
+            this.deps.showMessage(`另存为失败: ${firstLine(e)}`);
           }
         })();
       },
@@ -301,7 +338,7 @@ export class FileService {
         }
       }
     } catch (e) {
-      showMessage(`读取剪贴板失败：${String(e).split("\n")[0]}`);
+      showMessage(`读取剪贴板失败：${firstLine(e)}`);
       return;
     }
     if (!blob) {
@@ -321,8 +358,15 @@ export class FileService {
       const bytes = await blobToBase64(blob);
       await invoke<number>("write_binary_file", { path: absolute, base64Data: bytes });
     } catch (e) {
-      showMessage(`图片写入失败：${String(e).split("\n")[0]}`);
+      showMessage(`图片写入失败：${firstLine(e)}`);
       return;
+    }
+
+    // 单文件模式下素材目录不在工作区内：登记后，后续覆盖/编辑才不会被作用域拒绝
+    try {
+      await invoke("register_paths", { paths: [`${dir}/${base}.assets`, absolute] });
+    } catch (e) {
+      showMessage(`图片已写入，但素材目录登记失败：${firstLine(e)}`);
     }
 
     this.deps.insertAtCursor(effectiveLanguage(tab) === "markdown" ? `![](${rel})` : rel);
@@ -330,13 +374,19 @@ export class FileService {
   }
 
   /** 调 Rust 保存命令：保留换行符与 BOM（原子替换在 Rust 侧） */
-  async writeTo(tab: Tab, path: string, encodingOverride?: string): Promise<void> {
+  async writeTo(
+    tab: Tab,
+    path: string,
+    encodingOverride?: string,
+    bomOverride?: boolean,
+  ): Promise<void> {
     // 保存前格式化（配置开启且是激活标签时）；失败不阻塞保存
     await this.deps.formatBeforeSave?.(tab);
     // 保存前清理：必须在 snapshotOf 之前，否则基线会与磁盘内容不一致
     this.deps.cleanupBeforeSave?.(tab);
     // 经 snapshotOf 取内容：激活标签会先把编辑器里的最新内容落回（惰性快照）
     const encoding = encodingOverride ?? tab.encoding;
+    const hasBom = bomOverride ?? tab.has_bom;
     const newline = tab.newline;
     // 这份文本就是最终落盘的内容：保存期间的新输入不能算进基线
     const written = tabStore.snapshotOf(tab);
@@ -346,7 +396,7 @@ export class FileService {
         path,
         content: written,
         newline,
-        hasBom: tab.has_bom,
+        hasBom,
         encoding,
       });
     } catch (e) {
@@ -362,6 +412,7 @@ export class FileService {
     const current = tabStore.findById(tab.id);
     if (current) {
       current.size = result.size;
+      if (encodingOverride) current.has_bom = hasBom;
     }
     tabStore.markSaved(tab.id, written, { encoding, newline });
     // 内容已落盘：草稿不再需要；但保存窗口内可能又输入了新内容，
@@ -373,7 +424,10 @@ export class FileService {
     this.deps.syncWatchedFiles();
     this.deps.refreshStatus();
     this.deps.onAfterSave?.();
-    // 注意：与原实现一致，保存成功不弹消息（脏标记经 refresh 消失）
+    // 轻提示（可关）：脏标记消失是隐式的，连续保存/日志场景需要明确的"已落盘"反馈
+    if (getConfig().files.notifyOnSave) {
+      this.deps.showMessage(`已保存 ${basenameOf(result.path)}`);
+    }
   }
 
   /** 未命名文档编号：取当前最小的空闲序号，保证同名标签可并存 */
@@ -437,7 +491,7 @@ export class FileService {
       const path = await invoke<string>("config_path");
       await this.openFilePath(path);
     } catch (e) {
-      this.deps.showMessage(`打开配置失败: ${String(e).split("\n")[0]}`);
+      this.deps.showMessage(`打开配置失败: ${firstLine(e)}`);
     }
   }
 
@@ -478,7 +532,7 @@ export class FileService {
       );
       showConfigReloaded(cfgPath ?? "（未能获取配置路径）", configSummary(cfg));
     } catch (e) {
-      showMessage(`重新加载配置失败: ${String(e).split("\n")[0]}`);
+      showMessage(`重新加载配置失败: ${firstLine(e)}`);
     }
   }
 }

@@ -23,8 +23,10 @@ import type {
   FilterResult,
   IndexReady,
   LargeFileInfo,
+  LargeRefresh,
   LineWindow,
 } from "./largeView/types";
+import { firstLine } from "../core/errors";
 
 export type { LargeFileInfo } from "./largeView/types";
 
@@ -52,6 +54,15 @@ export class LargeView {
   private loading = false;
   /** 自动换行：长日志行折行显示（关掉时靠横向滚动查看完整内容） */
   private wrapOn = false;
+  /** 跟随文件尾部：每秒查一次文件大小，增长时续扫索引并刷新尾窗 */
+  private followOn = false;
+  private followTimer: ReturnType<typeof setInterval> | null = null;
+  /** 上一轮续扫未返回时不再叠加请求 */
+  private followBusy = false;
+  /** 程序化贴底滚动期间忽略"离开底部"判定，避免刷新瞬间自己把自己暂停 */
+  private programmaticScroll = false;
+  /** 当前选中的原始行号（0 基），用于复制行 */
+  private selectedLine: number | null = null;
   /** 已见最长行字符数：决定横向滚动宽度，只增不减以避免滚动条抖动 */
   private maxLineChars = 0;
   /** 等宽字符宽度（px）：懒测量，用于算横向滚动宽度 */
@@ -80,7 +91,11 @@ export class LargeView {
     this.el = el;
 
     // ---- 事件 ----
-    el.scrollEl.addEventListener("scroll", () => this.scheduleLoad());
+    el.scrollEl.addEventListener("scroll", () => {
+      this.pauseFollowIfScrolledUp();
+      this.scheduleLoad();
+    });
+    el.followBtn.addEventListener("click", () => this.toggleFollow());
     el.filterBtn.addEventListener("click", () => void this.runFilter());
     el.clearBtn.addEventListener("click", () => void this.clearFilter());
     el.filterInput.addEventListener("keydown", (e) => {
@@ -90,6 +105,14 @@ export class LargeView {
       }
     });
     el.wrapBtn.addEventListener("click", () => this.toggleWrap());
+    el.gotoBtn.addEventListener("click", () => this.goToLine(Number(this.el.gotoInput.value)));
+    el.gotoInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.goToLine(Number(this.el.gotoInput.value));
+      }
+    });
+    el.copyBtn.addEventListener("click", () => this.copySelectedLine());
     el.encodingSelect.addEventListener("change", () => void this.changeEncoding());
     el.editorBtn.addEventListener("click", () => {
       if (this.info) this.deps.onOpenInEditor(this.info);
@@ -125,8 +148,30 @@ export class LargeView {
 
   // ---- 生命周期 ----
 
+  /** 重建编码下拉：只提供单字节候选；当前编码若不在列表（如 UTF-16）加一条禁用的展示项 */
+  private syncEncodingOptions(current: string): void {
+    const select = this.el.encodingSelect;
+    select.innerHTML = "";
+    for (const name of ENCODINGS) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      select.append(opt);
+    }
+    if (!ENCODINGS.includes(current)) {
+      const opt = document.createElement("option");
+      opt.value = current;
+      opt.textContent = `${current}（不支持切换）`;
+      opt.disabled = true;
+      select.append(opt);
+    }
+    select.value = current;
+  }
+
   async open(info: LargeFileInfo, paddingLines = DEFAULT_PADDING_LINES): Promise<void> {
     void this.cancel();
+    // 换文件时复位跟随：上一个日志的"正在跟随"不该带到新文件上
+    this.setFollow(false);
     this.info = info;
     this.filterRequestId++;
     this.filterFinishedId = -1;
@@ -137,7 +182,7 @@ export class LargeView {
     this.host.classList.remove("hidden");
     // 标题按文件类型区分：.log 显示“日志视图”，其余大文件统称“大文件视图”
     this.el.titleEl.textContent = /\.log$/i.test(info.path) ? "日志视图" : "大文件视图";
-    this.el.encodingSelect.value = ENCODINGS.includes(info.encoding) ? info.encoding : "UTF-8";
+    this.syncEncodingOptions(info.encoding);
     this.el.filterInput.value = "";
     // 换行开关是会话级偏好（跨文件保留），但"最长行"必须按新文件重算
     this.maxLineChars = 0;
@@ -146,6 +191,7 @@ export class LargeView {
     this.el.wrapBtn.classList.toggle("on", this.wrapOn);
     this.updateIndexHint();
     this.el.scrollEl.scrollTop = 0;
+    this.selectedLine = null;
 
     await this.ensureListeners();
     void this.loadDensity();
@@ -153,7 +199,9 @@ export class LargeView {
   }
 
   close(): void {
+    this.setFollow(false);
     this.info = null;
+    this.selectedLine = null;
     this.filterRequestId++;
     this.filterFinishedId = -1;
     this.matchBuf.reset();
@@ -296,6 +344,57 @@ export class LargeView {
     });
   }
 
+  /** 跳转到指定行（1 基）；过滤模式下跳到第一个命中行号 >= 目标的位置 */
+  private goToLine(line: number): void {
+    if (!this.info) return;
+    if (!Number.isFinite(line) || line < 1) {
+      this.deps.onMessage("请输入大于 0 的行号");
+      return;
+    }
+    let index = line - 1;
+    if (this.matchBuf.active) {
+      const matches = this.matchBuf.view();
+      if (!matches || matches.length === 0) {
+        this.deps.onMessage("当前过滤没有命中行");
+        return;
+      }
+      index = -1;
+      for (let i = 0; i < matches.length; i += 1) {
+        if (this.lineOf(i) + 1 >= line) {
+          index = i;
+          break;
+        }
+      }
+      if (index < 0) index = matches.length - 1;
+    } else if (line > this.virtualCount()) {
+      this.deps.onMessage(`行号超出范围（共 ${this.virtualCount()} 行）`);
+      return;
+    }
+    this.el.scrollEl.scrollTop = Math.max(
+      0,
+      index * LINE_HEIGHT - this.el.scrollEl.clientHeight / 2,
+    );
+    this.scheduleLoad();
+    this.el.gotoInput.value = "";
+  }
+
+  /** 复制选中行：行内容已在缓存（点击行时可见），无需再次读盘 */
+  private copySelectedLine(): void {
+    if (this.selectedLine === null) {
+      this.deps.onMessage("请先点击要复制的行");
+      return;
+    }
+    const text = this.cache.get(this.selectedLine) ?? "";
+    if (!text) {
+      this.deps.onMessage("该行内容尚未载入，请稍后再试");
+      return;
+    }
+    void navigator.clipboard.writeText(text).then(
+      () => this.deps.onMessage(`已复制第 ${this.selectedLine! + 1} 行`),
+      () => this.deps.onMessage("复制失败"),
+    );
+  }
+
   private async loadWindow(): Promise<void> {
     const info = this.info;
     if (!info || this.loading) return;
@@ -355,7 +454,7 @@ export class LargeView {
       this.cache.remember(win);
       this.noteClampedLine(win);
     } catch (e) {
-      this.el.statusEl.textContent = `读取失败：${String(e).split("\n")[0]}`;
+      this.el.statusEl.textContent = `读取失败：${firstLine(e)}`;
     }
   }
 
@@ -372,7 +471,7 @@ export class LargeView {
         this.noteClampedLine(win);
       }
     } catch (e) {
-      this.el.statusEl.textContent = `读取失败：${String(e).split("\n")[0]}`;
+      this.el.statusEl.textContent = `读取失败：${firstLine(e)}`;
     }
   }
 
@@ -383,6 +482,14 @@ export class LargeView {
       const text = this.cache.get(no) ?? "";
       const row = document.createElement("div");
       row.className = "lv-row";
+      if (this.selectedLine === no) row.classList.add("row-selected");
+      row.addEventListener("click", () => {
+        this.selectedLine = no;
+        this.el.rowsEl.querySelectorAll(".lv-row.row-selected").forEach((el) => {
+          el.classList.remove("row-selected");
+        });
+        row.classList.add("row-selected");
+      });
       const gutter = document.createElement("span");
       gutter.className = "lv-no";
       gutter.textContent = `${no + 1}`;
@@ -418,6 +525,106 @@ export class LargeView {
         ? "已开启自动换行：长行折行显示（横向滚动关闭）"
         : "已关闭自动换行：长行可横向滚动查看",
     );
+  }
+
+  // ---- 跟随文件尾部（tail -f） ----
+
+  /** 轮询间隔：日志追加通常秒级可见，1s 足够且不会明显吃 CPU */
+  private static readonly FOLLOW_POLL_MS = 1000;
+  /** 距底部多少像素内算"在底部"（留一行余量，避免像素取整误差） */
+  private static readonly FOLLOW_BOTTOM_SLACK = LINE_HEIGHT * 2;
+
+  private toggleFollow(): void {
+    if (this.followOn) {
+      this.setFollow(false);
+      this.deps.onMessage("已停止跟随");
+      return;
+    }
+    if (!this.info) return;
+    if (this.matchBuf.active) {
+      this.deps.onMessage("过滤模式下不支持跟随：请先点「清除」退出过滤");
+      return;
+    }
+    this.setFollow(true);
+    this.scrollToBottom();
+    void this.loadWindow();
+    this.deps.onMessage("已开启跟随：文件追加时自动显示最新内容（手动上滚会暂停）");
+  }
+
+  /** 开关跟随时同步按键状态与轮询计时器（任何路径都必须成对，避免计时器泄漏） */
+  private setFollow(on: boolean): void {
+    this.followOn = on;
+    this.el.followBtn.classList.toggle("active", on);
+    if (this.followTimer !== null) {
+      clearInterval(this.followTimer);
+      this.followTimer = null;
+    }
+    if (on) {
+      this.followTimer = setInterval(() => void this.followTick(), LargeView.FOLLOW_POLL_MS);
+    }
+  }
+
+  /** 贴底：让新内容立即进入视口（记录程序化滚动，避免被判成"用户上滚"） */
+  private scrollToBottom(): void {
+    const el = this.el.scrollEl;
+    this.programmaticScroll = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      this.programmaticScroll = false;
+    });
+  }
+
+  /** 用户手动上滚离开底部 → 暂停跟随（否则日志一更新就被拽回底部，翻不动） */
+  private pauseFollowIfScrolledUp(): void {
+    if (!this.followOn || this.programmaticScroll) return;
+    const el = this.el.scrollEl;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - LargeView.FOLLOW_BOTTOM_SLACK;
+    if (atBottom) return;
+    this.setFollow(false);
+    this.deps.onMessage("已暂停跟随（向上滚动离开底部），点「跟随」可继续");
+  }
+
+  /**
+   * 一轮跟随：
+   * 后端把索引续扫到最新 EOF（单次上限 32MB），有增长才重读尾窗。
+   * 文件被截断/轮转时停止跟随并提示重新打开。
+   */
+  private async followTick(): Promise<void> {
+    const info = this.info;
+    if (!this.followOn || !info || this.followBusy || this.loading) return;
+    // 标签切走 / 窗口最小化时不轮询（切回来下一轮自然会补齐）
+    if (document.hidden || this.host.classList.contains("hidden")) return;
+    this.followBusy = true;
+    try {
+      const res = await invoke<LargeRefresh>("refresh_large_file", { id: info.id });
+      if (!this.followOn || this.info !== info) return;
+      if (res.resetRequired) {
+        this.setFollow(false);
+        this.deps.onMessage("文件已被截断或替换，请重新打开以继续查看");
+        return;
+      }
+      if (!res.grew) return;
+      // 追加内容可能续写"最后一行"，缓存整体作废最省心（窗口很小，重读代价低）
+      this.cache.clear();
+      info.size = res.info.size;
+      info.totalLines = res.info.totalLines;
+      info.indexedBytes = res.info.indexedBytes;
+      info.complete = res.info.complete;
+      this.deps.onTotalLines?.(info.totalLines, info.newline);
+      this.updateIndexHint();
+      this.resizeSpacer();
+      this.scrollToBottom();
+      await this.loadWindow();
+      this.drawMinimap();
+    } catch (e) {
+      // 会话被释放（关标签/切文件）属正常路径，只提示其它错误
+      if (this.info !== info) return;
+      this.setFollow(false);
+      this.el.statusEl.textContent = `跟随失败：${firstLine(e)}`;
+    } finally {
+      this.followBusy = false;
+    }
   }
 
   /** 横向滚动宽度：按"已见最长行"算，只增不减，避免滚动条随窗口抖动 */
@@ -458,6 +665,8 @@ export class LargeView {
     const requestId = ++this.filterRequestId;
     this.filterFinishedId = -1;
     this.lastStreamRefresh = 0;
+    // 过滤模式按"命中行号"虚拟化，与跟随（按总行数贴底）语义冲突
+    this.setFollow(false);
     // 先切到空结果集：批次到达即可增量渲染，不用等整文件扫完
     this.matchBuf.begin();
     this.cache.clear();
@@ -490,7 +699,7 @@ export class LargeView {
       this.drawMinimap();
     } catch (e) {
       if (requestId !== this.filterRequestId) return;
-      this.el.statusEl.textContent = `过滤失败：${String(e).split("\n")[0]}`;
+      this.el.statusEl.textContent = `过滤失败：${firstLine(e)}`;
     }
   }
 
@@ -521,13 +730,15 @@ export class LargeView {
     const next = this.el.encodingSelect.value;
     if (next === info.encoding) return;
     try {
-      await invoke("set_large_encoding", { id: info.id, encoding: next });
+      await invoke("set_large_encoding", { id: info.id, encodingName: next });
       info.encoding = next;
       this.cache.clear();
       await this.loadWindow();
       this.deps.onMessage(`已按 ${next} 重新解释（只读视图，不写盘）`);
     } catch (e) {
-      this.el.statusEl.textContent = `切换编码失败：${String(e).split("\n")[0]}`;
+      // 失败时把下拉恢复到当前编码，避免 UI 停在一个并未生效的值
+      this.el.encodingSelect.value = info.encoding;
+      this.el.statusEl.textContent = `切换编码失败：${firstLine(e)}`;
     }
   }
 

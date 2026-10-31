@@ -5,11 +5,17 @@
  * 不重复编辑器显示与增强开关。
  */
 
-import { getConfig } from "../config/settings";
+import { getConfig, getWorkspaceOverrides } from "../config/settings";
+import { basenameOf } from "../core/paths";
 import { checkRow, numberRow, section, textRow } from "../ui/formControls";
-import { saveSettings, type SettingsTabContext } from "./shared";
+import {
+  saveExternal,
+  saveSettings,
+  workspaceOverrideHooks,
+  type SettingsTabContext,
+} from "./shared";
 
-export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
+export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
   const cfg = getConfig();
 
   const openSection = section(
@@ -27,8 +33,76 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
         saveSettings({ files: { ...getConfig().files, encodeMemory: value } });
       },
     ),
+    checkRow("记住文件树展开状态（关闭后重启只恢复根目录）", cfg.workspace.rememberExpanded, (value) => {
+      saveSettings({ workspace: { ...getConfig().workspace, rememberExpanded: value } });
+    }),
+    checkRow("文件树随外部变化自动刷新（仅监听已展开目录）", cfg.workspace.watchTree, (value) => {
+      saveSettings({ workspace: { ...getConfig().workspace, watchTree: value } });
+    }),
   );
   main.append(openSection.el);
+
+  // 工作区覆盖：只影响当前工作区，存于应用配置目录（不写进用户仓库）
+  const hooks = workspaceOverrideHooks();
+  const wsRoot = hooks?.getRoot() ?? null;
+  const overrides = getWorkspaceOverrides();
+  const wsSection = section(
+    "工作区覆盖（仅当前工作区）",
+    wsRoot
+      ? `只对「${basenameOf(wsRoot)}」生效，不与其它项目混用；留空 / 0 = 跟随全局` +
+        `（缩进 ${cfg.tabSize}，忽略目录 ${cfg.ignoreDirs.join(", ")}）。`
+      : "未打开工作区：先「打开目录」，再为该项目单独设置缩进与忽略目录（不影响全局）。",
+  );
+  if (wsRoot && hooks) {
+    wsSection.body.append(
+      numberRow("缩进宽度（0 = 跟随全局）", overrides.tabSize ?? 0, 0, 16, (value) => {
+        saveExternal(async () => {
+          await hooks.apply({ tabSize: value === 0 ? null : value });
+          ctx.rerender();
+        });
+      }),
+      textRow(
+        "忽略目录（逗号分隔，留空 = 跟随全局）",
+        (overrides.ignoreDirs ?? []).join(", "),
+        cfg.ignoreDirs.join(", "),
+        (value) => {
+          const list = value
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          saveExternal(async () => {
+            await hooks.apply({ ignoreDirs: list.length > 0 ? list : null });
+            ctx.rerender();
+          });
+        },
+      ),
+    );
+  }
+  main.append(wsSection.el);
+
+  const fetchSection = section(
+    "网页抓取",
+    "默认拒绝内网 / 本机地址；需要抓取公司内网文档站时再打开。",
+  );
+  fetchSection.body.append(
+    checkRow("允许访问内网 / 本机地址", cfg.fetch.allowPrivateNetwork, (value) => {
+      saveSettings({ fetch: { ...getConfig().fetch, allowPrivateNetwork: value } });
+    }),
+  );
+  main.append(fetchSection.el);
+
+  const gitSection = section(
+    "Git",
+    "只读模式只允许查看：状态、差异、历史、Blame、分支列表；暂存 / 提交 / 放弃 / 拉取 / 推送 / 切分支 / 建删分支都会被拒绝（前端拦一次，后端按 config.json 再拦一次）。",
+  );
+  gitSection.body.append(
+    checkRow("Git 只读模式（保护正在使用的仓库）", cfg.git.readOnly, (value) => {
+      saveSettings({ git: { ...getConfig().git, readOnly: value } });
+      // 面板在切换后由 GitHost 刷新时读取新配置（提交按钮据此禁用）
+      ctx.callbacks.onMessage(value ? "Git 已切换为只读：只能查看" : "Git 已恢复可写");
+    }),
+  );
+  main.append(gitSection.el);
 
   const saveSection = section(
     "保存时清理",
@@ -40,6 +114,9 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
     }),
     checkRow("补最终换行（文件末尾无换行时）", cfg.files.ensureFinalNewlineOnSave, (value) => {
       saveSettings({ files: { ...getConfig().files, ensureFinalNewlineOnSave: value } });
+    }),
+    checkRow("保存成功后给一条轻提示", cfg.files.notifyOnSave, (value) => {
+      saveSettings({ files: { ...getConfig().files, notifyOnSave: value } });
     }),
   );
   main.append(saveSection.el);
@@ -92,7 +169,10 @@ export function renderFiles(main: HTMLElement, _ctx: SettingsTabContext): void {
   );
   main.append(largeSection.el);
 
-  const searchSection = section("工作区搜索", "侧栏搜索与 Ctrl+P 快速打开都会跳过这些目录。");
+  const searchSection = section(
+    "工作区搜索",
+    "侧栏搜索、文件树过滤与 Ctrl+P 快速打开都会跳过这些目录；当前工作区若有覆盖，以覆盖项为准。",
+  );
   searchSection.body.append(
     textRow(
       "忽略目录（逗号分隔）",

@@ -15,12 +15,15 @@ pub mod format;
 pub mod fs;
 pub mod git;
 pub mod large;
+pub mod logging;
 pub mod paths;
+pub mod regex;
 pub mod run;
 pub mod search;
 pub mod session;
 pub mod startup;
 pub mod terminal;
+pub mod tree_watch;
 pub mod watch;
 pub mod workspace;
 

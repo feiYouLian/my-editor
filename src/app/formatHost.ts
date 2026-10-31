@@ -12,6 +12,7 @@ import { effectiveLanguage } from "../editor/languages";
 import { formatDocument, formatSelection, supportsFormatting } from "../editor/format";
 import { confirmAction, showErrorDialog } from "../ui/dialogs";
 import { addNotice } from "./noticeStore";
+import { firstLine } from "../core/errors";
 
 /** 超过此行数，格式化前弹确认（保存时自动格式化也用它做上限） */
 export const FORMAT_CONFIRM_LINES = 10000;
@@ -128,7 +129,7 @@ export class FormatHost {
     const result = await formatDocument(view, lang, tab.path);
     if (!result.ok) {
       this.deps.showMessage(
-        `${result.message.split("\n")[0] || "保存时格式化失败"}（已按原内容保存）`,
+        `${firstLine(result.message) || "保存时格式化失败"}（已按原内容保存）`,
         8000,
       );
       console.error("[format] on save:", result.message);

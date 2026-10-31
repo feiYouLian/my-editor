@@ -26,6 +26,7 @@ import { addNotice } from "./noticeStore";
 import { confirmAction } from "../ui/dialogs";
 import { openStatusMenu } from "../ui/statusMenu";
 import type { FileContent } from "../types/app";
+import { firstLine } from "../core/errors";
 
 export interface SessionHostDeps {
   getActiveTab: () => Tab | null;
@@ -178,15 +179,6 @@ export class SessionHost {
 
   // ---- 会话 ----
 
-  private currentSplitRatio(): number | null {
-    try {
-      const v = localStorage.getItem("my-editor.splitRatio");
-      return v ? Number(v) : null;
-    } catch {
-      return null;
-    }
-  }
-
   private buildSessionState(): SessionState {
     const active = this.deps.getActiveTab();
     const activeId = active?.id;
@@ -220,7 +212,8 @@ export class SessionHost {
       activeFile: active?.path ?? null,
       // 未命名标签不进 openFiles（没有路径）：单独记名字，草稿恢复后据此选中
       activeUntitledName: active && !active.path ? active.name : null,
-      splitRatio: this.currentSplitRatio(),
+      // 分栏比例已收敛到 config.json：会话不再保存/覆盖，旧字段保持 null 兼容旧 session
+      splitRatio: null,
     };
   }
 
@@ -601,7 +594,7 @@ export class SessionHost {
         if (close) this.deps.onCloseTab?.(tab.id);
         return;
       }
-      this.deps.showMessage(`重新载入失败：${raw.split("\n")[0]}`);
+      this.deps.showMessage(`重新载入失败：${firstLine(raw)}`);
     }
   }
 }
