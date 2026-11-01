@@ -101,6 +101,9 @@
       }
     ],
     "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],

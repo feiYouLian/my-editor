@@ -100,6 +100,7 @@
 
 ### 工程
 
+- **Windows 安装包语言与打包修复**：MSI（WiX）默认数据库代码页为 1252，无法容纳文件关联的中文描述，导致 `light.exe` 报 LGHT0311 打包失败；新增 `bundle.windows.wix.language: "zh-CN"`（代码页 936），MSI 产物名随之为 `*_x64_zh-CN.msi`，安装界面与 NSIS 的简体中文保持一致。
 - **CI 门禁**：新增 `.github/workflows/ci.yml`，push / PR 在 Windows 上跑 `npm run verify`、`npm test`、`cargo test --lib`，与本地验收基线一致。
 
 ### 质量与差异化（M4，进行中）
