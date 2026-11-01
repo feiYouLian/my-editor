@@ -23,7 +23,8 @@ export class EditorContextMenu {
 
   constructor(
     dom: HTMLElement,
-    private buildEntries: () => MenuEntry[],
+    /** 坐标交给构建器：据此区分"行号区右键"与"内容区右键"（条目不同） */
+    private buildEntries: (x: number, y: number) => MenuEntry[],
   ) {
     dom.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -147,7 +148,7 @@ export class EditorContextMenu {
     menu.addEventListener("mouseleave", () => {
       if (this.submenu) this.scheduleSubmenuClose();
     });
-    this.appendEntries(menu, this.buildEntries());
+    this.appendEntries(menu, this.buildEntries(x, y));
     document.body.append(menu);
     placeMenu(menu, x, y);
     this.menu = menu;

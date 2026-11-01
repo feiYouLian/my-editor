@@ -7,7 +7,15 @@
  */
 
 import type { EditorView } from "@codemirror/view";
-import { redo, undo } from "@codemirror/commands";
+import {
+  copyLineDown,
+  copyLineUp,
+  deleteLine,
+  moveLineDown,
+  moveLineUp,
+  redo,
+  undo,
+} from "@codemirror/commands";
 import { foldAll, unfoldAll } from "@codemirror/language";
 import { selectNextOccurrence, selectSelectionMatches } from "@codemirror/search";
 import { applyLineOp, type LineOp } from "../editor/lineOps";
@@ -68,10 +76,16 @@ export interface EditorMenuDeps {
   runHost: MenuRunHost;
 }
 
-export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
+export function buildEditorMenu(
+  deps: EditorMenuDeps,
+  at?: { x: number; y: number },
+): MenuEntry[] {
   const view = deps.getView();
   const readonly = view.state.readOnly;
   const tab = deps.getActiveTab();
+  // 行号区（含折叠标记列）右键：行 / 书签 / 折叠相关的精简菜单；
+  // 内容区右键才是编辑菜单。分开后两边都不再堆十几项。
+  if (at && isGutterPoint(at)) return buildGutterMenu(deps, view, readonly, tab);
   const lang = tab ? effectiveLanguage(tab) : null;
   const hasSelection = !view.state.selection.main.empty;
   const canFormat = supportsFormatting(lang);
@@ -207,27 +221,8 @@ export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
     top.push({ label: "格式转换", submenu: convertItems });
   }
 
-  // 行操作：按"整行"语义，不需要用户先精确选中整行
-  if (!readonly && tab && tab.kind === "text" && !tab.virtual) {
-    const runLine = (op: LineOp): void => {
-      deps.showMessage(applyLineOp(view, op, getConfig().tabSize).message);
-    };
-    top.push({
-      label: "行操作",
-      submenu: [
-        { label: "按升序排序", run: () => runLine({ kind: "sort", options: {} }) },
-        { label: "按降序排序", run: () => runLine({ kind: "sort", options: { desc: true } }) },
-        { label: "按数字升序排序", run: () => runLine({ kind: "sort", options: { numeric: true } }) },
-        { label: "去除重复行", run: () => runLine({ kind: "dedupe" }) },
-        { label: "反转行序", run: () => runLine({ kind: "reverse" }) },
-        { label: "删除空行", run: () => runLine({ kind: "removeEmpty" }) },
-        { separator: true },
-        { label: "删除行尾空白", run: () => runLine({ kind: "trimTrailing" }) },
-        { label: "缩进：Tab 转空格", run: () => runLine({ kind: "indent", toSpaces: true }) },
-        { label: "缩进：空格转 Tab", run: () => runLine({ kind: "indent", toSpaces: false }) },
-      ],
-    });
-  }
+  // 「行操作」不再放内容区菜单：移到行号区右键（见 buildGutterMenu），
+  // 内容区只保留"对文本/文档做的事"，条目数回到一屏以内。
 
   // 文本转换（子菜单，需选中文本）
   if (!readonly && hasSelection) {
@@ -263,4 +258,71 @@ export function buildEditorMenu(deps: EditorMenuDeps): MenuEntry[] {
     top.push({ label: "与磁盘内容比较（未保存改动）", run: () => deps.diffUnsaved() });
   }
   return top;
+}
+
+/** 右键点在行号 / 折叠标记列上（而不是正文里） */
+function isGutterPoint(at: { x: number; y: number }): boolean {
+  return document.elementFromPoint(at.x, at.y)?.closest(".cm-gutter") != null;
+}
+
+/** 行操作子菜单：按"整行"语义，不需要用户先精确选中整行 */
+function lineOpSubmenu(view: EditorView, showMessage: (text: string) => void): MenuEntry[] {
+  const runLine = (op: LineOp): void => {
+    showMessage(applyLineOp(view, op, getConfig().tabSize).message);
+  };
+  return [
+    { label: "按升序排序", run: () => runLine({ kind: "sort", options: {} }) },
+    { label: "按降序排序", run: () => runLine({ kind: "sort", options: { desc: true } }) },
+    { label: "按数字升序排序", run: () => runLine({ kind: "sort", options: { numeric: true } }) },
+    { label: "去除重复行", run: () => runLine({ kind: "dedupe" }) },
+    { label: "反转行序", run: () => runLine({ kind: "reverse" }) },
+    { label: "删除空行", run: () => runLine({ kind: "removeEmpty" }) },
+    { separator: true },
+    { label: "删除行尾空白", run: () => runLine({ kind: "trimTrailing" }) },
+    { label: "缩进：Tab 转空格", run: () => runLine({ kind: "indent", toSpaces: true }) },
+    { label: "缩进：空格转 Tab", run: () => runLine({ kind: "indent", toSpaces: false }) },
+  ];
+}
+
+/**
+ * 行号区右键菜单：只放"对行本身做的事"（行 / 书签 / 折叠）。
+ * 编辑类命令（剪切复制粘贴、格式化、转换……）留在内容区菜单——参考 IDEA 的分工。
+ */
+function buildGutterMenu(
+  deps: EditorMenuDeps,
+  view: EditorView,
+  readonly: boolean,
+  tab: Tab | null,
+): MenuEntry[] {
+  const copyLine = (): void => {
+    // 先选中当前行再复制：视觉上明确"复制的是哪一行"
+    const line = view.state.doc.lineAt(view.state.selection.main.head);
+    view.dispatch({ selection: { anchor: line.from, head: line.to } });
+    void copyFromEditor(view, false, deps.showMessage);
+  };
+  const items: MenuEntry[] = [{ label: "复制当前行", run: copyLine }];
+  if (!readonly) {
+    items.push({ label: "在上方复制一行", shortcut: "Ctrl+Alt+↑", run: () => copyLineUp(view) });
+    items.push({ label: "在下方复制一行", shortcut: "Ctrl+Alt+↓", run: () => copyLineDown(view) });
+    items.push({ label: "上移一行", shortcut: "Alt+↑", run: () => moveLineUp(view) });
+    items.push({ label: "下移一行", shortcut: "Alt+↓", run: () => moveLineDown(view) });
+    items.push({ label: "删除当前行", shortcut: "Ctrl+D", run: () => deleteLine(view) });
+  }
+  items.push({ separator: true });
+  items.push({ label: "切换书签", shortcut: "Ctrl+F2", run: () => toggleBookmark(view) });
+  items.push({ label: "下一个书签", shortcut: "F2", run: () => gotoBookmark(view, 1) });
+  items.push({ separator: true });
+  items.push({ label: "折叠全部", shortcut: "Ctrl+Alt+[", run: () => { foldAll(view); } });
+  items.push({ label: "展开全部", shortcut: "Ctrl+Alt+]", run: () => { unfoldAll(view); } });
+  if (!readonly && tab && tab.kind === "text" && !tab.virtual) {
+    items.push({ separator: true });
+    items.push({ label: "行操作", submenu: lineOpSubmenu(view, deps.showMessage) });
+  }
+  items.push({ separator: true });
+  items.push({
+    label: "全选",
+    shortcut: "Ctrl+A",
+    run: () => view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } }),
+  });
+  return items;
 }

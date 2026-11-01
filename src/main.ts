@@ -311,6 +311,8 @@ let welcomeView: WelcomePanel | null = null;
 let workspaceRoot: string | null = null;
 /** 已加载覆盖项的工作区键；重复 setRoot（展开/折叠）不再打 IPC */
 let workspaceConfigFor: string | null = null;
+/** 上一次的 Git 只读状态：变化时才刷新 SCM 面板（避免每次配置变更都打 git status） */
+let lastGitReadOnly: boolean | null = null;
 /** 最近一次展开目录（目录监听的同步依据） */
 let lastExpandedDirs: string[] = [];
 let treeWatcher: TreeWatcher | null = null;
@@ -394,8 +396,8 @@ async function closeTab(id: string): Promise<void> {
       closingTabs.delete(id);
     }
   }
-  // 关闭前把未保存内容落草稿，避免静默丢弃（已保存则顺带清除草稿）
-  if (tab.dirty) await sessionHost.persistDraft(id);
+  // 主动关闭 = 明确不要这份未保存内容：草稿由 onTabClosed 统一删除，
+  // 下次启动不再冒出来。（崩溃 / 被杀进程不会走到关闭流程，草稿保留，供"没关闭的标签"恢复）
   // 编辑器状态缓存 / 光标 / 草稿键 / 大文件会话的清理统一走关闭订阅
   tabStore.close(id);
 }
@@ -405,6 +407,9 @@ tabStore.onTabClosed((tab) => {
   rememberClosedTab(tab);
   editorHandle.forgetDocument(tab.id);
   preview.forget(tab.id);
+  // 主动关闭 = 连草稿一起删除：下次启动不恢复"已经关掉的标签"；
+  // 崩溃 / 被杀进程走不到这里，草稿保留（这是唯一会自动恢复的情形）
+  void sessionHost.discardDraft(tab.id);
   sessionHost.forgetDraft(tab.id);
   void largeHost.release(tab);
 });
@@ -486,15 +491,11 @@ async function reloadCurrentFile(): Promise<void> {
 }
 
 /**
- * 批量关闭（关闭左侧/右侧/其他/全部）：先把脏标签的未保存内容落草稿，
- * 再执行批量关闭。用户取消确认时草稿内容与当前内容一致，无害；
- * 确认关闭后内容不丢失，下次启动会自动恢复。
+ * 批量关闭（关闭左侧/右侧/其他/全部）：直接执行关闭。
+ * 草稿的删除由 onTabClosed 统一处理——用户主动关闭的标签不再保留草稿，
+ * 下次启动不会冒出来；只有崩溃 / 被杀进程留下的草稿才会恢复。
  */
 async function closeTabsBulk(fn: () => Promise<void>): Promise<void> {
-  const dirty = tabStore.list().filter((t) => t.dirty);
-  for (const tab of dirty) {
-    await sessionHost.persistDraft(tab.id);
-  }
   await fn();
 }
 
@@ -797,8 +798,17 @@ const branchPicker = new BranchPicker({
   onPick: (name) => gitHost.checkout(name),
   onCreate: (name) => gitHost.createBranch(name, true),
   onDelete: (name) => gitHost.deleteBranch(name, false),
+  // 分支与历史同属"仓库元信息"：面板底部顺手给一个历史入口
+  onOpenHistory: () => openGitHistory(),
   showMessage: statusBar.showMessage,
 });
+
+/** 打开底部提交历史面板（面板/右键/命令面板共用一个入口，行为一致） */
+function openGitHistory(): void {
+  terminalHost.hide();
+  runHost.hideOutputPanel();
+  gitHistoryPanel.open();
+}
 const gitStatusItem = new GitStatusItem(
   $("status-git"),
   $("status-git-branch"),
@@ -824,11 +834,7 @@ const gitView: GitView = new GitView($("sidebar-git"), {
   onUnstage: (entries) => gitHost.unstage(entries),
   onDiscard: (entries, staged) => void confirmDiscardGitChanges(entries, staged),
   onCommit: (message) => gitHost.commit(message),
-  onOpenHistory: () => {
-    terminalHost.hide();
-    runHost.hideOutputPanel();
-    gitHistoryPanel.open();
-  },
+  onOpenHistory: () => openGitHistory(),
   onResolveConflicts: (entries) =>
     conflictGuideDialog.open(
       workspaceRoot ?? "",
@@ -1166,6 +1172,13 @@ tabStore.setContentProvider({
 subscribeSettings(() => {
   statusBar.applyTheme(getConfig());
   statusBar.applyFields(getConfig().layout.statusBarFields);
+  // Git 只读开关变化要立即反映到 SCM 面板与状态栏（设置页改配置不会走 toggleGitReadOnly）
+  const gitReadOnly = getConfig().git.readOnly;
+  if (gitReadOnly !== lastGitReadOnly) {
+    lastGitReadOnly = gitReadOnly;
+    syncGitReadOnlyUi();
+    gitHost.refresh();
+  }
   editorHandle.applySettings();
   // 列编辑器键位可能刚被改绑：保留集必须同步，否则旧键永久占用、新键可能被全局命令抢
   setExtraReservedKeys([getConfig().editorEnhancements.columnEditorKey]);
@@ -1443,9 +1456,10 @@ const windowChrome = new WindowChrome({
     if (isModalOpen()) return false;
     const dirty = tabStore.list().filter((t) => t.dirty && t.kind === "text" && !t.virtual);
     if (dirty.length === 0) return true;
-    // 关闭提示默认关：直接落草稿退出，下次启动自动恢复（Sublime 式退出）
+    // 关闭提示默认关：直接退出。主动退出 = 不保留草稿（与关闭标签一致），
+    // 只有崩溃 / 被杀进程留下的草稿才会在下次启动恢复
     if (!getConfig().session.confirmOnClose) {
-      for (const tab of dirty) await sessionHost.persistDraft(tab.id);
+      for (const tab of dirty) await sessionHost.discardDraft(tab.id);
       return true;
     }
     const choice = await confirmExitDirty(dirty.map((t) => t.name));
@@ -1458,8 +1472,8 @@ const windowChrome = new WindowChrome({
         .filter((t) => t.dirty && t.kind === "text" && !t.virtual);
       return stillDirty.length === 0;
     }
-    // 不保存退出：先落草稿，下次启动仍可恢复
-    for (const tab of dirty) await sessionHost.persistDraft(tab.id);
+    // 不保存退出：连草稿一起丢弃（主动退出不保留），下次启动不再恢复这些标签
+    for (const tab of dirty) await sessionHost.discardDraft(tab.id);
     return true;
   },
   onBeforeExit: async () => {
@@ -1606,8 +1620,9 @@ function openReplaceInDoc(): void {
 // ---- 编辑器右键菜单内容：见 app/menuContent.ts ----
 
 /** 每次右键时构建条目（可见性依赖只读 / 选区 / 语言等实时状态） */
-function editorMenuEntryPoint(): MenuEntry[] {
-  return buildEditorMenu({
+function editorMenuEntryPoint(x: number, y: number): MenuEntry[] {
+  return buildEditorMenu(
+    {
     getView: () => editorHandle.view,
     getActiveTab: activeTab,
     showMessage: statusBar.showMessage,
@@ -1619,8 +1634,10 @@ function editorMenuEntryPoint(): MenuEntry[] {
     formatSelection: () => void formatHost.formatSelectionCurrent(),
     insertClipboardImage: () => void fileService.insertClipboardImage(),
     diffUnsaved: () => void diffService.diffUnsaved(),
-    runHost,
-  });
+      runHost,
+    },
+    { x, y },
+  );
 }
 
 // ---- 外部修改检测（Rust 侧监听，前端仅提示、不自动重载）：见 app/sessionHost.ts ----
@@ -1747,6 +1764,7 @@ registerCommands(
     showStructuredView: (mode) => structuredView.open(mode),
     gitPickBranch: () => branchPicker.open(),
     gitToggleReadOnly: () => void toggleGitReadOnly(),
+    gitOpenHistory: () => openGitHistory(),
     gitPull: () => gitHost.pull(),
     gitPush: () => gitHost.push(),
     gitToggleInlineBlame: () => toggleInlineBlame(),
@@ -1806,6 +1824,7 @@ async function toggleGitReadOnly(): Promise<void> {
   try {
     await updateSettings({ git: { ...getConfig().git, readOnly: next } });
     gitHost.refresh();
+    syncGitReadOnlyUi();
     statusBar.showMessage(
       next
         ? "Git 已切换为只读：只能查看状态 / 差异 / 历史，暂存与提交等写入操作会被拒绝"
@@ -1815,6 +1834,18 @@ async function toggleGitReadOnly(): Promise<void> {
   } catch (e) {
     statusBar.showMessage(`切换 Git 只读模式失败：${firstLine(e)}`);
   }
+}
+
+/**
+ * 同步左下角 Git 同步按钮的显隐：只读时隐藏（拉取/推送属于写入）。
+ * 提交按钮与各处写入入口在各自视图内按同一开关隐藏，避免"点了被拒"。
+ */
+function syncGitReadOnlyUi(): void {
+  const syncBtn = document.getElementById("status-git-sync");
+  if (!syncBtn) return;
+  const readOnly = getConfig().git.readOnly;
+  syncBtn.classList.toggle("hidden", readOnly);
+  syncBtn.title = readOnly ? "Git 只读模式已开启：拉取 / 推送已禁用" : "同步（先拉取后推送）";
 }
 
 // ---- per-workspace 设置覆盖（缩进 / 忽略目录）+ 最近工作区 ----
@@ -2043,6 +2074,8 @@ async function bootstrap(): Promise<void> {
   sidebarRestored = true;
   // 书签分区若在配置里是展开的，先渲染一次空态（会话恢复载入文档后会再刷）
   sidebarBookmarks.refresh();
+  // Git 只读模式的按钮显隐（状态栏同步按钮等）
+  syncGitReadOnlyUi();
   // 3) 分栏比例：config.json 是唯一真源（会话不再覆盖）
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集

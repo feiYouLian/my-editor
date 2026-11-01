@@ -17,6 +17,7 @@ import type {
 } from "../panels/diffPanel";
 import { readDiskAs } from "./fileService";
 import { firstLine } from "../core/errors";
+import { getConfig } from "../config/settings";
 
 export interface DiffServiceDeps {
   getActiveTab: () => Tab | null;
@@ -248,14 +249,18 @@ export class DiffService {
       ],
       // 任意文件比较：不提供「采用差异块」（会改工作区文件，且标签未必打开）
       adopt: () => null,
-      hunkAction: () => ({
-        label: staged ? "取消暂存此块" : "暂存此块",
-        title: staged
-          ? "只把当前差异块从暂存区撤回（工作区内容不变）"
-          : "只把当前差异块加入暂存区（工作区内容不变）",
-        enabled: () => true,
-        run: (i) => void this.stageHunk(path, staged, i),
-      }),
+      // 只读模式：不提供「暂存此块 / 取消暂存此块」（纯 Git 写入）
+      hunkAction: () =>
+        getConfig().git.readOnly
+          ? null
+          : {
+              label: staged ? "取消暂存此块" : "暂存此块",
+              title: staged
+                ? "只把当前差异块从暂存区撤回（工作区内容不变）"
+                : "只把当前差异块加入暂存区（工作区内容不变）",
+              enabled: () => true,
+              run: (i) => void this.stageHunk(path, staged, i),
+            },
       trailingFrom: "saved",
     });
   }
@@ -366,15 +371,19 @@ export class DiffService {
               title: "采用左侧：把当前差异块还原为 Git 版本（需先保存当前标签的改动）",
               run: (i) => void this.adoptHunk(i),
             },
-      hunkAction: () => ({
-        label: scope === "index" ? "取消暂存此块" : "暂存此块",
-        title:
-          scope === "index"
-            ? "只把当前差异块从暂存区撤回（工作区内容不变）"
-            : "只把当前差异块加入暂存区（工作区内容不变）",
-        enabled: () => true,
-        run: (i) => void this.stageHunk(path, scope === "index", i),
-      }),
+      // 只读模式：不提供「暂存此块 / 取消暂存此块」（纯 Git 写入）
+      hunkAction: () =>
+        getConfig().git.readOnly
+          ? null
+          : {
+              label: scope === "index" ? "取消暂存此块" : "暂存此块",
+              title:
+                scope === "index"
+                  ? "只把当前差异块从暂存区撤回（工作区内容不变）"
+                  : "只把当前差异块加入暂存区（工作区内容不变）",
+              enabled: () => true,
+              run: (i) => void this.stageHunk(path, scope === "index", i),
+            },
       trailingFrom: "saved",
     });
   }

@@ -60,13 +60,17 @@ export interface CommandDef {
 }
 
 /** 一级菜单标签与顺序（对象键序即菜单栏顺序） */
+/**
+ * 一级菜单（顺序即显示顺序）：按功能分组，参考 VS Code / Sublime Text。
+ * 「比较」不再作为顶级菜单——文件级比较归「文件」，Git 比较归「Git」。
+ */
 const MENU_LABELS: Record<string, string> = {
   file: "文件",
   edit: "编辑",
   select: "选择",
   go: "转到",
   view: "视图",
-  compare: "比较",
+  git: "Git",
   tools: "工具",
   settings: "设置",
   help: "帮助",

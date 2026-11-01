@@ -753,13 +753,28 @@ export class FileTree {
   }
 
   private toggleExpand(dir: string): void {
+    const container = this.nodes.get(dir);
     if (this.expanded.has(dir)) {
       this.expanded.delete(dir);
-      this.nodes.get(dir)?.replaceChildren();
+      if (container) {
+        // 收起：先淡出再清空（同步清空没有过渡）
+        container.classList.add("tree-children-exit");
+        setTimeout(() => {
+          container.classList.remove("tree-children-exit");
+          container.replaceChildren();
+        }, 120);
+      }
     } else {
       this.expanded.add(dir);
-      const container = this.nodes.get(dir);
-      if (container) void this.loadChildren(dir, container, this.depthOf(dir));
+      if (container) {
+        container.classList.add("tree-children-enter");
+        container.addEventListener(
+          "animationend",
+          () => container.classList.remove("tree-children-enter"),
+          { once: true },
+        );
+        void this.loadChildren(dir, container, this.depthOf(dir));
+      }
     }
     this.refreshIcons();
     this.persist();

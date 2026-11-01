@@ -160,23 +160,17 @@ export class GitView {
     this.commitBtn.disabled = true;
     this.commitBtn.addEventListener("click", () => this.submitCommit());
     commit.append(this.messageEl, this.commitBtn);
-    // 只读模式：提交区整体隐藏（不能提交，留着只会误导）
-    if (this.readOnly) commit.classList.add("hidden");
+    // 只读模式：提交区整体不参与布局（不能提交，留着只会误导）。
+    // 注意 `.hidden` 是 visibility:hidden（只隐藏不占位）——这里必须 display:none，
+    // 否则提交区的位置会留出一块空白。
+    if (this.readOnly) commit.style.display = "none";
 
     this.bodyEl = document.createElement("div");
     this.bodyEl.className = "git-body";
 
-    const actions = document.createElement("div");
-    actions.className = "git-actions";
-    const historyBtn = document.createElement("button");
-    historyBtn.type = "button";
-    historyBtn.className = "git-action-btn";
-    historyBtn.textContent = "历史";
-    historyBtn.title = "在底部面板查看提交历史与补丁";
-    historyBtn.addEventListener("click", () => this.deps.onOpenHistory());
-    actions.append(historyBtn);
-
-    host.append(actions, commit, this.bodyEl);
+    // 「查看提交历史」不占独立一行：一个文字按钮孤悬在提交框上方很突兀。
+    // 历史是"查看类元信息"，入口收敛到组头右键 / 文件行右键 / 分支面板 / 命令面板。
+    host.append(commit, this.bodyEl);
   }
 
   private submitCommit(): void {
@@ -194,8 +188,12 @@ export class GitView {
     const staged = this.status?.staged.length ?? 0;
     const conflicts = this.conflictEntries().length;
     const emptyMessage = this.messageEl.value.trim() === "";
-    // Git 只读模式：整块写入入口都关掉（后端同样会拒绝）
+    // Git 只读模式：整块写入入口都关掉（后端同样会拒绝）；
+    // 提交区（输入框 + 提交按钮）整体隐藏——不能提交，留着只会误导
     const readOnly = getConfig().git.readOnly;
+    // 提交区（输入框 + 提交按钮）整体退出布局——`.hidden` 只是 visibility:hidden 会留白，必须 display:none
+    const commitEl = this.commitBtn.parentElement;
+    if (commitEl) commitEl.style.display = readOnly ? "none" : "flex";
     this.commitBtn.disabled =
       readOnly || this.busy || staged === 0 || emptyMessage || conflicts > 0;
     // 灰掉的按钮必须说明原因，否则用户只能猜
@@ -537,6 +535,11 @@ export class GitView {
         label: staged ? "查看暂存的更改" : "查看更改",
         run: () => this.deps.onOpenDiff(entry.path, staged),
       },
+      // 历史入口之一：从具体文件进入历史（底部面板，查看类，只读模式也允许）
+      {
+        label: "查看提交历史",
+        run: () => this.deps.onOpenHistory(),
+      },
       // 只读模式不提供任何写入项（避免"点了被拒"的体验）
       ...(this.readOnly
         ? []
@@ -590,6 +593,8 @@ export class GitView {
                 },
             { separator: true } as MenuEntry,
           ]),
+      // 历史入口之一：组头右键（仓库级查看动作，与「刷新状态」并列）
+      { label: "查看提交历史", run: () => this.deps.onOpenHistory() },
       { label: "刷新状态", run: () => this.deps.onRefresh() },
     ];
     this.showMenu(x, y, items);

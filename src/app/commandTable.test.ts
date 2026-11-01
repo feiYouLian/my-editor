@@ -9,7 +9,7 @@ const MENU_IDS = new Set([
   "select",
   "go",
   "view",
-  "compare",
+  "git",
   "tools",
   "settings",
   "help",

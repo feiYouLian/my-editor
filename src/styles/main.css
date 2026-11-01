@@ -1488,13 +1488,6 @@ button:disabled:hover {
 }
 
 /* 源代码管理顶部工具入口：历史 / 分支 */
-.git-actions {
-  display: flex;
-  gap: 4px;
-  padding: 0 8px 4px;
-  flex: none;
-}
-
 .git-action-btn {
   flex: none;
   border: 1px solid var(--border);
@@ -3276,10 +3269,33 @@ body.tree-dragging {
 
 /* 快速打开底部统计 / 空态提示 */
 .palette-hint {
-  padding: 6px 14px 10px;
+  padding: 6px 14px 4px;
   font-size: 11px;
   color: var(--text-secondary);
   border-top: 1px solid var(--border);
+}
+
+/* 面板底部次级入口（分支面板的「查看提交历史」等）：弱化为链接，不与分支列表抢焦点 */
+.palette-foot {
+  display: flex;
+  gap: 12px;
+  padding: 0 14px 10px;
+}
+
+.palette-foot-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.palette-foot-link:hover {
+  color: var(--accent);
 }
 
 .palette-item.selected {
@@ -5714,10 +5730,17 @@ input[type="radio"] {
   margin-left: 1.5em;
   padding: 0 6px;
   max-width: 52vw;
+  /* 固定高度：widget 出现在哪一行，哪一行都不能被撑高 */
+  height: 1.3em;
+  line-height: 1.3em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: baseline;
+  /*
+   * overflow:hidden 的 inline-block 基线会落到盒底，用 baseline 对齐会整块"浮高"：
+   * 改为对齐行盒文字底部，视觉上与代码同一行。
+   */
+  vertical-align: text-bottom;
   color: var(--text-secondary);
   font-size: 11px;
   font-style: italic;
@@ -6093,4 +6116,80 @@ input[type="radio"] {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* ---- 动效：弹框 / 标签 / 文件树展开收起 ----
+   全部很短（100–180ms）：只做"出现感"，不做长动画拖慢操作。 */
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ui-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 弹框（对话框 / 帮助 / 结构化视图 / 命令面板 / 差异）：遮罩淡入 + 面板轻弹入 */
+.dialog-backdrop,
+.settings-backdrop,
+.sv-backdrop,
+.diff-backdrop,
+.palette-overlay {
+  animation: ui-fade-in 0.12s ease-out;
+}
+
+.dialog,
+.sv-panel,
+.palette-box,
+.diff-panel {
+  animation: ui-pop-in 0.16s ease-out;
+}
+
+/* 新建 / 切换标签：轻微上浮淡入（关闭不做动画：元素直接移除，延迟移除会挡住布局） */
+.tab {
+  animation: ui-tab-in 0.14s ease-out;
+}
+
+/* 文件树展开 / 收起：淡入淡出（收起由 JS 延迟清空以留出淡出时间） */
+.tree-children-enter {
+  animation: ui-fade-in 0.14s ease-out;
+}
+
+.tree-children-exit {
+  animation: ui-fade-out 0.12s ease-in forwards;
 }

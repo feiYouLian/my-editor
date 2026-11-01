@@ -8,6 +8,7 @@
 
 import { fuzzyScore } from "../core/fuzzy";
 import { firstLine } from "../core/errors";
+import { getConfig } from "../config/settings";
 
 export interface GitBranch {
   name: string;
@@ -23,6 +24,8 @@ export interface BranchPickerDeps {
   onCreate: (name: string) => Promise<void>;
   /** 删除本地分支（未合并时由 git 拒绝） */
   onDelete: (name: string) => Promise<void>;
+  /** 查看提交历史（分支与历史同属"仓库元信息"，入口放一起） */
+  onOpenHistory?: () => void;
   showMessage: (text: string) => void;
 }
 
@@ -77,6 +80,8 @@ export class BranchPicker {
     createBtn.textContent = "＋ 新建分支";
     createBtn.title = "新建并切换到新分支";
     createBtn.addEventListener("click", () => this.startCreate());
+    // 只读模式：不提供新建分支入口（后端同样会拒绝写入类命令）
+    if (getConfig().git.readOnly) createBtn.classList.add("hidden");
 
     const list = document.createElement("div");
     list.className = "palette-list";
@@ -84,7 +89,20 @@ export class BranchPicker {
     const hint = document.createElement("div");
     hint.className = "palette-hint";
 
-    box.append(input, createBtn, list, hint);
+    // 底部次级入口：分支与提交历史同属"仓库元信息"，放在一起好找
+    // （历史是查看类操作，只读模式也保留）
+    const foot = document.createElement("div");
+    foot.className = "palette-foot";
+    if (this.deps.onOpenHistory) {
+      const historyLink = document.createElement("button");
+      historyLink.type = "button";
+      historyLink.className = "palette-foot-link";
+      historyLink.textContent = "查看提交历史…";
+      historyLink.addEventListener("click", () => this.deps.onOpenHistory?.());
+      foot.append(historyLink);
+    }
+
+    box.append(input, createBtn, list, hint, foot);
     overlay.append(box);
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) this.close();
@@ -95,6 +113,10 @@ export class BranchPicker {
     this.input = input;
     this.listEl = list;
     this.hintEl = hint;
+    // 只读模式：面板顶部直接说明"只能看"，避免用户点行被拒后一头雾水
+    if (getConfig().git.readOnly) {
+      hint.textContent = "Git 只读模式已开启：只能查看分支（切换 / 新建 / 删除已禁用）";
+    }
     this.branches = [];
     this.visible = [];
     this.selected = 0;
@@ -304,7 +326,8 @@ export class BranchPicker {
       tag.textContent = parts.join(" ");
 
       item.append(name, tag);
-      if (!branch.current) {
+      // 只读模式：不渲染删除按钮（切分支属于"查看"之外的写入，由 GitHost 拦截）
+      if (!branch.current && !getConfig().git.readOnly) {
         const del = document.createElement("button");
         del.type = "button";
         del.className = "palette-branch-delete";
