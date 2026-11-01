@@ -1,0 +1,889 @@
+/* ---------------------------------------------------------------------------
+   模块：搜索视图、大纲、文件树、右键菜单、标签、面包屑、命令面板
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ---------- 文件树 Git 状态（文件与上级目录） ---------- */
+/* 状态只用颜色表达，不加字重：混排时半粗的行会让整列文字看起来「忽粗忽细」。 */
+
+.tree-row[data-git-status="M"] .tree-label {
+  color: var(--warning);
+}
+
+.tree-row[data-git-status="A"] .tree-label {
+  color: var(--success);
+}
+
+.tree-row[data-git-status="D"] .tree-label {
+  color: var(--danger);
+}
+
+.tree-row[data-git-status="R"] .tree-label,
+.tree-row[data-git-status="C"] .tree-label {
+  color: var(--accent);
+}
+
+.tree-row[data-git-status="U"] .tree-label {
+  color: var(--danger);
+}
+
+.tree-row[data-git-status="?"] .tree-label {
+  color: var(--text-secondary);
+}
+
+.sv-count {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.sv-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 8px;
+}
+
+.sv-empty {
+  padding: 10px 8px;
+  /* 与列表正文同字号：空态提示比内容小一号会显得像「脚注」 */
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.sv-file {
+  border-bottom: 1px solid var(--border);
+}
+
+.sv-file-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+}
+
+.sv-file-head:hover {
+  background: var(--bg-hover);
+}
+
+.sv-file-head input[type="checkbox"] {
+  flex: none;
+  margin: 0;
+  cursor: pointer;
+}
+
+.sv-file-toggle {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sv-file.collapsed .sv-matches {
+  display: none;
+}
+
+.sv-match {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px 3px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sv-match:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sv-line {
+  flex: none;
+  width: 34px;
+  text-align: right;
+  font-family: var(--font-mono);
+  opacity: 0.8;
+}
+
+.sv-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+/* 替换预览：命中 = 红色删除线；替换后 = 绿色高亮 */
+.sv-match .sv-hit {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+.sv-match .sv-repl {
+  color: var(--success);
+  background: var(--success-soft);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* 大纲 */
+.outline-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+/* 光标所在符号（大纲跟随光标，见 panels/outlineView.ts） */
+.outline-item.current {
+  background: var(--bg-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.outline-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.outline-item:hover {
+  background: var(--bg-hover);
+}
+
+.outline-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline-line {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.tree-empty {
+  padding: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tree-empty button {
+  margin-top: 8px;
+}
+
+/* ---------- 文件树过滤（扁平匹配模式） ---------- */
+.tree-filter {
+  flex: none;
+  /* 4px 上下：展开文件分区后，标题行与过滤框之间不再多出一截空白 */
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tree-filter-input {
+  width: 100%;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  /* 原来 fallback 到 transparent：输入框与列表底色糊在一起，看不出是输入框 */
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.tree-filter-input:focus {
+  border-color: var(--accent-line);
+}
+
+.tree-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 横向永不出现滚动条：超长/深层文件名由 .tree-label 的省略号处理 */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+
+
+/* 扁平结果行：文件名主色 + 目录淡色（与源代码管理同一套约定） */
+.tree-flat-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 与树内行同一基准左内边距（树行由 JS 按层级写 padding-left，起点同为 8px） */
+  padding-left: 8px;
+}
+
+.tree-flat-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.tree-flat-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  /* 用整数 px：半像素字号在 Windows 上会被缩放得发虚 */
+  font-size: 11px;
+}
+
+.tree-label {
+  /* flex 子项的 min-width 默认是 auto（= min-content），长文件名会把整行撑宽，
+     进而让容器出现横向滚动条；显式 0 才能让省略号生效 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding-right: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* 悬停与选中必须是两种视觉：
+   悬停是淡色浮层，选中是实底 + 左侧竖条（此前两者同为 --bg-elevated，看不出选中的是哪行） */
+.tree-row:hover {
+  background: var(--bg-hover);
+}
+
+/* 行可聚焦（键盘复制/剪切/粘贴的落点）：鼠标点击不画焦点框，键盘导航才画 */
+.tree-row:focus {
+  outline: none;
+}
+
+.tree-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* 线条图标：统一 14px、单色。
+   原先按文件类别上彩色（蓝/琥珀/紫/红），一屏几十行时颜色互相打架，
+   层级反而看不出来；现在只靠缩进 + 图标形状区分，悬停/选中跟随文字提亮。 */
+.tree-svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+.tree-row:hover .tree-svg,
+.tree-row.selected .tree-svg {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+/* 当前打开文件在树中的高亮（与标签页联动）；多选的行同样用这套视觉 */
+.tree-row.selected {
+  background: var(--bg-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 拖拽落点：目录行（或树体空白 = 工作区根）用虚线框标出 */
+.tree-row.drop-target,
+.tree-body.drop-target {
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* 被拖拽的行降透明度，表示"正在移动" */
+.tree-row.dragging {
+  opacity: 0.5;
+}
+
+/* 拖拽跟随提示（pointer 自绘，不依赖 HTML5 DnD） */
+.tree-drag-ghost {
+  position: fixed;
+  z-index: 320;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 12px;
+  pointer-events: none;
+  box-shadow: var(--shadow-md);
+}
+
+/* 拖拽期间禁止选中文本（否则会顺带把文件名选蓝） */
+body.tree-dragging {
+  user-select: none;
+}
+
+.tree-error {
+  padding: 8px 12px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* 双击打开模式：首次点击的选中反馈（文件树 / 搜索结果 / 大纲 / Git / 打开的文件） */
+.row-selected {
+  background: var(--bg-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ---------- 右键菜单 ---------- */
+.context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 168px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  /* 条目多了要能滚到末项（"行操作"加入后右键菜单可达 10+ 项）。
+     placeMenu 的翻转计算读的是 offsetHeight，这里先夹住高度才能算对。 */
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 禁用项：不可点也不应像可点的样子（部分菜单会给 item 加 disabled 类） */
+.context-menu-item.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.context-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* 不可用项：只展示不响应（如已删除文件的「打开文件」） */
+.context-menu-item.disabled {
+  color: var(--text-secondary);
+  opacity: 0.55;
+  cursor: default;
+}
+
+.context-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* 破坏性操作（放弃更改等）：常态红字，悬停红底白字 */
+.context-menu-item.danger {
+  color: var(--danger);
+}
+
+.context-menu-item.danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 带子菜单的条目：右侧箭头 */
+.context-menu-item.has-submenu .arrow {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.context-menu-item.has-submenu:hover .arrow {
+  color: var(--accent);
+}
+
+/* 子菜单：与主菜单同一观感，悬停展开 */
+.context-menu.editor-submenu {
+  min-width: 180px;
+}
+
+.context-menu-item .shortcut {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.context-menu-item:hover .shortcut {
+  color: var(--accent);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 5px 8px;
+}
+
+/* ---------- 标签栏 ---------- */
+.tabsbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 6px 8px 0;
+  /* 预留横向滚动条高度（6px），避免出现滚动条时把标签压扁 / 裁切 */
+  height: 38px;
+}
+
+/* 标签容器（右侧是预览模式切换按钮） */
+.tabs-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  flex: 1;
+}
+
+/* 标签栏横向滚动条：沿用全局配色 / 圆角 / 内边距（见上方滚动条段），仅按 32px 标签行收窄高度。
+   注意：这里不能设 scrollbar-width —— Chromium 一旦启用标准属性会停用下面的 ::-webkit-* 自定义样式，
+   于是回退成系统默认滚动条，造成与其它位置不一致。 */
+.tabs-tabs::-webkit-scrollbar {
+  height: 6px;
+}
+
+.tabs-tabs::-webkit-scrollbar-thumb {
+  border-width: 1px;
+  border-radius: 3px;
+}
+
+.tabsbar.hidden {
+  display: none;
+}
+
+/* ---------- 路径面包屑（标签栏下方） ---------- */
+.breadcrumb {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+}
+
+.breadcrumb.hidden {
+  display: none;
+}
+
+.breadcrumb-item {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.breadcrumb-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 当前文件：无下拉，突出显示 */
+.breadcrumb-item.current {
+  color: var(--text-primary);
+  cursor: default;
+}
+
+.breadcrumb-item.current:hover {
+  background: transparent;
+}
+
+/* 当前文件段也可点：列出它所在目录（同级文件），便于快速切换 */
+.breadcrumb-item.current.clickable {
+  cursor: pointer;
+}
+
+.breadcrumb-item.current.clickable:hover {
+  background: var(--bg-hover);
+}
+
+.breadcrumb-sep {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* 面包屑下拉：目录内容预览 + 快速打开 */
+.breadcrumb-menu {
+  min-width: 220px;
+  max-width: 440px;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.bc-title {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bc-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.bc-entry:hover {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+/* 当前层级中被选中的那一项（点面包屑后定位到自己所在层级） */
+.bc-entry.current {
+  background: var(--bg-selected);
+  font-weight: 600;
+}
+
+.bc-entry.current::after {
+  content: "当前";
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.65;
+}
+
+/* 下拉首行：返回上级目录 */
+.bc-entry.bc-up {
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.bc-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+/* 悬停行反色时图标跟随文字变白 */
+.bc-entry:hover .tree-svg {
+  color: inherit;
+}
+
+.bc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bc-empty {
+  padding: 8px 12px;
+  color: var(--text-secondary);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  /* 标签过多时保持原始宽度并横向溢出，交给容器滚动，不压缩 */
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 11px;
+  /* 未激活标签融进标签栏底色，只留文字；激活标签才浮起来 */
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 按下标签时轻微下沉，与按钮的按压反馈保持一致 */
+.tab:active {
+  transform: translateY(1px);
+}
+
+/* 激活标签：与编辑器底色接近的浮起面 + 顶部强调线（box-shadow 不额外占高度） */
+.tab.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+  border-bottom-color: transparent;
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-xs);
+  padding: 0;
+  color: var(--text-secondary);
+  /* 未悬停时不占视觉重量：hover 或激活标签才显示 */
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 外部修改标记：后台标签也能看见（状态栏只反映激活标签） */
+.tab-external {
+  flex: none;
+  margin-right: 2px;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* ---------- 命令面板 ---------- */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 300;
+}
+
+.palette-box {
+  width: 540px;
+  max-width: 90vw;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.palette-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 15px;
+  padding: 14px 16px;
+  outline: none;
+}
+
+.palette-input::placeholder {
+  color: var(--text-muted);
+}
+
+.palette-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.palette-item:hover {
+  background: var(--bg-hover);
+}
+
+/* 命令面板右侧快捷键（改键位后即时反映，见 panels/commandPalette.ts） */
+.palette-shortcut {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.palette-create {
+  margin: 0 0 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette-create:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.palette-branch-delete {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.palette-branch-delete:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* 命中字符：只提亮字色，不加底色，避免整行花掉 */
+.palette-item mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 快速打开底部统计 / 空态提示 */
+.palette-hint {
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 面板底部次级入口（分支面板的「查看提交历史」等）：弱化为链接，不与分支列表抢焦点 */
+.palette-foot {
+  display: flex;
+  gap: 12px;
+  padding: 0 14px 10px;
+}
+
+.palette-foot-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.palette-foot-link:hover {
+  color: var(--accent);
+}
+
+/* 选中项用淡强调底 + 左侧竖条：比整行反白更克制，长列表也不刺眼 */
+.palette-item.selected {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.palette-item.selected .palette-shortcut {
+  color: var(--accent);
+}
+
+.palette-empty {
+  padding: 16px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+

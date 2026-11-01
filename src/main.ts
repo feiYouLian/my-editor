@@ -87,6 +87,7 @@ import { openStatusMenu } from "./ui/statusMenu";
 import { initBusy, withBusy } from "./ui/busy";
 import { NoticePanel } from "./panels/noticePanel";
 import { addNotice, listNotices, subscribeNotices } from "./app/noticeStore";
+import { listMessages, subscribeMessages } from "./core/messageLog";
 import type { IndentStyle } from "./core/indentDetect";
 import {
   matchKeyCommand,
@@ -143,6 +144,7 @@ const statusIndent = $<HTMLSpanElement>("status-indent");
 const statusError = $<HTMLSpanElement>("status-error");
 const statusBusy = $<HTMLSpanElement>("status-busy");
 const statusNotice = $<HTMLSpanElement>("status-notice");
+const statusHistory = $<HTMLSpanElement>("status-history");
 const statusMessage = $<HTMLSpanElement>("status-message");
 const statusWhitespace = $<HTMLSpanElement>("status-whitespace");
 const statusWrap = $<HTMLSpanElement>("status-wrap");
@@ -198,16 +200,33 @@ initBusy({ show: statusBar.showBusy, hide: statusBar.hideBusy });
 
 // ---- 通知中心（H9）：失败与待处理提示的聚合入口 ----
 const noticePanel = new NoticePanel(statusNotice, { onMessage: statusBar.showMessage });
-statusNotice.addEventListener("click", (e) => {
+
+/** ⚠ 角标与消息历史图标共用同一个打开动作 */
+const toggleNoticePanel = (e: Event): void => {
   e.stopPropagation();
   noticePanel.toggle();
+};
+statusNotice.addEventListener("click", toggleNoticePanel);
+statusHistory.addEventListener("click", toggleNoticePanel);
+statusHistory.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault();
+  noticePanel.toggle();
 });
+
 subscribeNotices(() => {
   const count = listNotices().length;
   statusNotice.classList.toggle("hidden", count === 0);
   statusNotice.textContent = count > 0 ? `⚠ ${count}` : "";
   statusNotice.title = count > 0 ? `${count} 条待处理提示（点击查看）` : "";
 });
+
+// 瞬时消息 3 秒后消失；有历史消息时保留一个常驻入口，避免错过后再也点不到
+const syncMessageHistoryEntry = (): void => {
+  statusHistory.classList.toggle("hidden", listMessages().length === 0);
+};
+subscribeMessages(syncMessageHistoryEntry);
+syncMessageHistoryEntry();
 
 // 缩进字段：点击切换当前文档的缩进（会话级）；「设为全局默认」才写 config.json
 statusIndent.addEventListener("click", (e) => {

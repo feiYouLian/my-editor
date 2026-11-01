@@ -1,0 +1,48 @@
+/* ---------------------------------------------------------------------------
+   模块：重置、选区与键盘焦点
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* 用 100vh 而非 100%：WebView 下百分比高度链易断裂，视口单位最稳 */
+#app {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: 40px 1fr 24px;
+}
+
+/* 编辑器外的手动选区也跟随强调色，避免系统高亮色在深色底上突兀 */
+::selection {
+  background: var(--accent-soft);
+}
+
+/* 键盘聚焦统一画一圈柔和强调色（鼠标点击不打扰） */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent-line);
+}
+

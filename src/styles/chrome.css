@@ -1,0 +1,250 @@
+/* ---------------------------------------------------------------------------
+   模块：标题栏、菜单栏、搜索框、编辑区列
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ---------- 自定义标题栏（按钮左上，窗口控制右上） ---------- */
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 14px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
+  user-select: none;
+  position: relative;
+  z-index: 30;
+}
+
+.titlebar-spacer {
+  flex: 1;
+  min-width: 4px;
+  height: 100%;
+}
+
+.window-controls {
+  display: flex;
+  height: 100%;
+  margin-left: 4px;
+}
+
+.win-btn {
+  width: 46px;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.win-btn:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+.win-btn-close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+/* ---------- 菜单栏（参考布局：无框文字菜单） ---------- */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 100%;
+}
+
+.menu-title {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  height: 24px;
+  line-height: 1;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.menu-title:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+/* 打开态用淡强调底，和「悬停」区分：一眼看出当前展开的是哪个菜单 */
+.menu-title.open {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.menu-dropdown {
+  position: fixed;
+  z-index: 250;
+  min-width: 232px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+/* 菜单项悬停用淡强调底而不是整条反白：长时间操作时眼睛更舒服 */
+.menu-item:hover,
+.menu-item:focus {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.menu-item:focus .shortcut {
+  color: var(--accent);
+}
+
+/* 勾选列（开关类菜单项）：空占位保证同菜单内标签对齐 */
+.menu-item .menu-check {
+  flex: none;
+  width: 13px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.menu-item .menu-label {
+  flex: 1;
+}
+
+.menu-item .shortcut {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.menu-item:hover .shortcut {
+  color: var(--accent);
+}
+
+.menu-item.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.menu-item.disabled:hover {
+  background: transparent;
+  color: inherit;
+}
+
+.menu-separator {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 5px 8px;
+}
+
+/* ---------- 标题栏中部：导航箭头 + 搜索框 ---------- */
+.titlebar-center {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 252px;
+  min-width: 140px;
+  max-width: 252px;
+  height: 26px;
+  padding: 0 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-inset);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-base) var(--ease-out),
+    background-color var(--dur-base) var(--ease-out);
+}
+
+.search-box:hover {
+  border-color: var(--accent-line);
+  background: var(--bg-elevated);
+}
+
+.search-box-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.search-box-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 侧栏隐藏态（Ctrl+B / 标题栏开关） ---------- */
+.main.no-sidebar {
+  grid-template-columns: 0 0 1fr;
+}
+
+.main.no-sidebar .sidebar-resizer {
+  visibility: hidden;
+}
+
+.main.no-sidebar .sidebar {
+  visibility: hidden;
+}
+
+/* ---------- 编辑区列（侧栏右侧：tabs + 编辑器） ---------- */
+.editor-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* tabs 行高固定：绝不被 flex 收缩（editor-area 的内容高度可达数千 px，
+   不锁死会把 tabs 按比例压成 0） */
+.tabsbar {
+  flex-shrink: 0;
+}
+
+/* 编辑器区占据剩余空间并允许收缩（CM6 的 height:100% 需要确定高度） */
+.editor-area {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  min-width: 0;
+  /* 欢迎页（#welcome）用绝对定位覆盖编辑区 */
+  position: relative;
+}
+

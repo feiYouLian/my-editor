@@ -1,0 +1,236 @@
+/* ---------------------------------------------------------------------------
+   模块：动效体系（keyframes、进场、退场、列表过渡、reduced-motion）
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ==========================================================================
+   动效体系
+   - 时长 / 曲线统一取 :root 的 --dur-* / --ease-*，组件里不再写死毫秒数
+   - 只动 opacity / transform，不参与布局，不拖慢输入与滚动
+   - 进场用 animation：节点插入、或 display 由 none 变可见时自动重放
+   - 退场只在对话框做（JS 加 .motion-leave 后延迟移除，见 ui/dialogs.ts）
+   此前文件中有两套浮层动画（overlay-* 与 ui-*）作用于同一批选择器，
+   后者覆盖前者导致调参失效，已合并到本节。
+   ========================================================================== */
+
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ui-fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+/* 面板从下方轻弹入：命令面板 / 对话框 / 设置 / 差异 / 结构化视图 */
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 菜单从锚点方向展开：顶栏菜单、右键菜单、通知面板 */
+@keyframes ui-pop-down-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ui-tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 底部面板 / 侧栏分区：从下方滑入 */
+@keyframes ui-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 欢迎页逐项进场 */
+@keyframes ui-welcome-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 遮罩：淡入 */
+.dialog-backdrop,
+.settings-backdrop,
+.sv-backdrop,
+.diff-backdrop,
+.palette-overlay {
+  animation: ui-fade-in var(--dur-base) var(--ease-out);
+}
+
+/* 浮层面板：轻弹入 */
+.dialog,
+.settings-dialog,
+.sv-panel,
+.palette-box,
+.diff-dialog {
+  animation: ui-pop-in var(--dur-slow) var(--ease-out);
+}
+
+/* 菜单：从左上锚点展开 */
+.menu-dropdown,
+.context-menu {
+  transform-origin: top left;
+  animation: ui-pop-down-in var(--dur-fast) var(--ease-out);
+}
+
+/* 标签：新建 / 切换时轻微上浮（关闭不做动画：元素直接移除） */
+.tab {
+  animation: ui-tab-in var(--dur-base) var(--ease-out);
+}
+
+/* 底部面板显隐（终端 / 运行输出 / 搜索 / Git 历史） */
+.run-panel:not(.hidden),
+.terminal-panel:not(.hidden),
+.git-history-panel:not(.hidden),
+#search-results:not(.hidden) {
+  animation: ui-panel-in var(--dur-base) var(--ease-out);
+}
+
+/* 侧栏分区展开：.hidden 移除后 display 由 none 变为 flex，动画自然重放 */
+.sidebar-section-body:not(.hidden) {
+  animation: ui-panel-in var(--dur-base) var(--ease-out);
+}
+
+/* 欢迎页：标题 → 副标题 → 动作区 → 提示，错峰进场 */
+.welcome-title {
+  animation: ui-welcome-in var(--dur-slow) var(--ease-out) both;
+}
+
+.welcome-subtitle {
+  animation: ui-welcome-in var(--dur-slow) var(--ease-out) 60ms both;
+}
+
+.welcome-actions {
+  animation: ui-welcome-in var(--dur-slow) var(--ease-out) 110ms both;
+}
+
+.welcome-tips {
+  animation: ui-welcome-in var(--dur-slow) var(--ease-out) 170ms both;
+}
+
+.welcome-recent,
+.welcome-links {
+  animation: ui-welcome-in var(--dur-slow) var(--ease-out) 220ms both;
+}
+
+/* 文件树展开 / 收起：淡入淡出（收起由 JS 延迟清空以留出淡出时间） */
+.tree-children-enter {
+  animation: ui-fade-in var(--dur-fast) var(--ease-out);
+}
+
+.tree-children-exit {
+  animation: ui-fade-out var(--dur-fast) var(--ease-in-out) forwards;
+}
+
+/* 对话框退场：JS 先加 .motion-leave，120ms 后移除节点（见 ui/dialogs.ts dismiss） */
+.dialog-backdrop {
+  transition: opacity 120ms var(--ease-out);
+}
+
+.dialog-backdrop .dialog {
+  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.dialog-backdrop.motion-leave {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dialog-backdrop.motion-leave .dialog {
+  opacity: 0;
+  transform: scale(0.98);
+}
+
+/* 列表行反馈：悬停、选中竖条、拖拽降透明度都用同一条过渡，
+   避免每个组件各写一遍 transition */
+.tree-row,
+.open-editor,
+.outline-item,
+.bookmark-row,
+.git-row,
+.git-log-item,
+.git-history-panel-item,
+.git-history-item,
+.recent-row,
+.sv-file-head,
+.sv-match,
+.search-results-item {
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+/* 行按下反馈：点击导航类列表时给一个短暂的选中底色，明确「点到了」 */
+.tree-row:active,
+.open-editor:active,
+.outline-item:active,
+.bookmark-row:active,
+.git-row:active,
+.git-log-item:active,
+.git-history-panel-item:active,
+.git-history-item:active,
+.recent-row:active,
+.sv-file-head:active,
+.sv-match:active,
+.search-results-item:active {
+  background-color: var(--bg-selected);
+}
+
+/* 统一的减弱动效：动画只保留最终帧，过渡时长压到不可感知 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

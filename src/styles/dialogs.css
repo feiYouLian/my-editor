@@ -1,0 +1,692 @@
+/* ---------------------------------------------------------------------------
+   模块：设置中心、格式转换、网页抓取、代码折叠、标签新建
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ---------- 设置中心 ---------- */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+}
+
+.settings-dialog {
+  width: min(880px, 94vw);
+  height: min(620px, 88vh);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* 设置搜索：跨分类过滤（见 panels/settingsPanel.ts） */
+.settings-search {
+  flex: 1;
+  max-width: 320px;
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-search:focus {
+  border-color: var(--accent-line);
+}
+
+.settings-search-group {
+  margin: 12px 0 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-search-empty {
+  padding: 16px 4px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+
+.settings-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font-size: 16px;
+  padding: 0;
+  color: var(--text-secondary);
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.settings-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.settings-nav {
+  width: 136px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-subtle);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-panel);
+}
+
+.settings-nav-item {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px 20px;
+}
+
+.settings-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* 每个设置分组做成卡片：长表单里靠卡片边界分组，比纯缩进更易扫读 */
+.settings-section {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.settings-section-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.settings-row-label {
+  width: 180px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-row-check {
+  cursor: pointer;
+}
+
+.settings-row-check input {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  /* 深色主题下原生勾选框对比度低，用强调色填充勾选态 */
+  accent-color: var(--accent);
+}
+
+.settings-row-check span {
+  font-size: 12px;
+}
+
+.settings-radios {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.settings-radio {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.settings-radio.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.settings-number {
+  width: 72px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-number:focus {
+  border-color: var(--accent-line);
+}
+
+/* 文本行（shell / 逗号分隔列表） */
+.settings-text {
+  width: 260px;
+  max-width: 60%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-text:focus {
+  border-color: var(--accent-line);
+}
+
+.settings-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.settings-select:focus {
+  border-color: var(--accent-line);
+}
+
+.settings-slider {
+  flex: 1;
+  max-width: 220px;
+}
+
+.settings-slider-value {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 40px;
+  text-align: right;
+}
+
+.settings-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  padding: 6px 0;
+}
+
+/* 设置项里的次级动作（打开目录 / 重新读取等） */
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+
+.settings-action-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.settings-action-btn:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 快捷键页 */
+.settings-kb-head {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.settings-kb-filter {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-kb-filter:focus {
+  border-color: var(--accent-line);
+}
+
+.settings-kb-group {
+  margin-bottom: 14px;
+}
+
+.settings-kb-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.settings-kb-row {
+  display: grid;
+  grid-template-columns: 1fr 150px 88px;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 0;
+}
+
+.settings-kb-name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-kb-key {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+button.settings-kb-key:hover {
+  border-color: var(--accent-line);
+}
+
+.settings-kb-key.recording {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+  animation: settings-kb-pulse 1s ease-in-out infinite;
+}
+
+@keyframes settings-kb-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.settings-kb-badge {
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 0 4px;
+}
+
+.settings-kb-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-kb-reset {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.settings-kb-default-hint {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.settings-kb-empty {
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 状态栏字段排序 */
+.settings-status-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-status-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+}
+
+.settings-status-field input {
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+.settings-status-field:hover {
+  background: var(--bg-hover);
+}
+
+/* 全站勾选 / 单选统一用强调色填充：深色主题下原生勾选态几乎看不见 */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.settings-status-move {
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-status-move:disabled {
+  opacity: 0.35;
+}
+
+/* ---------- 格式转换面板 ---------- */
+.dialog.dialog-convert {
+  width: min(920px, 92vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.convert-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.convert-scope {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-controls {
+  margin-top: 8px;
+}
+
+.convert-detect {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-options:empty {
+  display: none;
+}
+
+.convert-hint {
+  min-height: 14px;
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.convert-pane {
+  min-width: 0;
+}
+
+.convert-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.convert-pre {
+  height: 240px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.convert-pre.convert-out {
+  border-color: var(--accent-line);
+}
+
+.dialog-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+.dialog-error.hidden {
+  display: none;
+}
+
+/* ---------- 网页抓取对话框 ---------- */
+.fetch-dialog {
+  width: min(560px, 92vw);
+}
+
+.fetch-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ---------- 代码折叠（foldGutter 自绘标记） ---------- */
+.cm-fold-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.cm-fold-marker:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.cm-fold-marker.closed {
+  color: var(--accent);
+}
+
+/* ---------- 标签栏「新建」按钮 ---------- */
+.tab-add {
+  flex: none;
+  margin-bottom: 4px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* 标签溢出下拉入口（只在标签看不全时出现） */
+.tab-overflow {
+  flex: none;
+  margin-bottom: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.tab-overflow[hidden] {
+  display: none;
+}
+
+/* 侧栏空态提示（书签等分区共用） */
+.sidebar-hint {
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 书签分区：行号 + 内容摘要 + 删除 */
+.bookmark-list {
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.bookmark-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bookmark-row:hover {
+  background: var(--bg-hover);
+}
+
+.bookmark-row:focus {
+  background: var(--bg-selected);
+  outline: none;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.bookmark-no {
+  flex: none;
+  min-width: 32px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.bookmark-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-del {
+  flex: none;
+  color: var(--text-secondary);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.bookmark-row:hover .bookmark-del,
+.bookmark-row:focus .bookmark-del {
+  opacity: 0.8;
+}
+
+.bookmark-del:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+

@@ -1,0 +1,556 @@
+/* ---------------------------------------------------------------------------
+   模块：预览面板、Minimap、Markdown 排版、图片查看器、查找条
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ---------- 预览面板 ---------- */
+#editor {
+  flex: 0 1 var(--split-ratio, 50%);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* Minimap 与编辑器并排（见 editor/minimap.ts）：minimap 是固定宽度的 flex 兄弟节点，
+     不做覆盖层，避免横向滚动时长行钻到缩略图下面 */
+  display: flex;
+}
+
+#editor > .cm-editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---------- Minimap 缩略图 ---------- */
+.cm-minimap {
+  flex: 0 0 80px;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle);
+  cursor: pointer;
+  /* 拖拽跳转时不触发文本选择 / 触摸滚动 */
+  touch-action: none;
+  user-select: none;
+}
+
+.cm-minimap canvas {
+  display: block;
+}
+
+.cm-minimap-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* 先给不依赖 color-mix 的兜底，再由 color-mix 跟随主题 accent（WebView2 / Chromium 111+） */
+  background: rgba(76, 141, 255, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-top: 1px solid rgba(76, 141, 255, 0.6);
+  border-bottom: 1px solid rgba(76, 141, 255, 0.6);
+  border-top-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  pointer-events: none;
+}
+
+.cm-minimap:hover .cm-minimap-viewport {
+  background: rgba(76, 141, 255, 0.3);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 编辑区过窄（split 拖到极端）时整列隐藏 */
+.cm-minimap.cm-minimap-hidden {
+  display: none;
+}
+
+#preview-pane {
+  display: none;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #fafbfc;
+  color: #1f2328;
+  /* 预览始终是浅色文档：让原生滚动条/表单控件也走浅色 */
+  color-scheme: light;
+}
+
+/* 可拖动分割线（仅双栏显示） */
+.split-resizer {
+  display: none;
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--border-subtle);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.split-resizer:hover,
+.split-resizer.dragging {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 拖动中：禁文本选择 + 全局拖动光标（防止 mousemove 短暂离开分割线时闪烁） */
+body.dragging-split {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* 侧栏分区高度拖拽中：同上，光标为上下调整 */
+body.dragging-row {
+  user-select: none;
+  cursor: row-resize;
+}
+.editor-area.mode-split .split-resizer {
+  display: block;
+}
+
+.editor-area.mode-preview #editor,
+.editor-area.mode-image #editor {
+  display: none;
+}
+
+/* 编辑模式：占满整行（预览面板隐藏时分割线/比例变量不生效） */
+.editor-area.mode-edit #editor {
+  flex: 1 1 100%;
+}
+
+.editor-area.mode-preview #preview-pane,
+.editor-area.mode-split #preview-pane,
+.editor-area.mode-image #preview-pane {
+  display: flex;
+}
+
+.editor-area.mode-image #preview-pane {
+  flex: 1 1 100%;
+  border-left: none;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+}
+
+.preview-content {
+  flex: 1;
+  overflow: auto;
+  padding: 24px clamp(20px, 4vw, 48px) 48px;
+  position: relative;
+  font-size: 14px;
+  line-height: 1.75;
+  overflow-wrap: break-word;
+}
+
+/* Markdown 正文限制阅读行长；图片查看器 / HTML 预览不受影响 */
+.preview-content.md-doc > * {
+  width: 100%;
+  max-width: 980px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ---------- Markdown 文档排版（GitHub Markdown 风格，浅色文档底） ---------- */
+.preview-content > :first-child {
+  margin-top: 0 !important;
+}
+
+.preview-content > :last-child {
+  margin-bottom: 0 !important;
+}
+
+.preview-content p {
+  margin: 0 0 1em;
+}
+
+.preview-content h1,
+.preview-content h2,
+.preview-content h3,
+.preview-content h4,
+.preview-content h5,
+.preview-content h6 {
+  margin: 1.6em 0 0.65em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #1f2328;
+  scroll-margin-top: 12px;
+}
+
+.preview-content h1 {
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid #d8dee4;
+  font-size: 2em;
+  letter-spacing: -0.02em;
+}
+
+.preview-content h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #eaeef2;
+  font-size: 1.5em;
+  letter-spacing: -0.01em;
+}
+
+.preview-content h3 {
+  font-size: 1.25em;
+}
+
+.preview-content h4 {
+  font-size: 1.05em;
+}
+
+.preview-content h5 {
+  font-size: 0.95em;
+}
+
+.preview-content h6 {
+  font-size: 0.9em;
+  color: #57606a;
+}
+
+.preview-content strong {
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.preview-content del {
+  color: #6e7781;
+}
+
+.preview-content a {
+  color: #0969da;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(9, 105, 218, 0.28);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.preview-content a:hover {
+  border-bottom-color: #0969da;
+  background: rgba(9, 105, 218, 0.06);
+}
+
+.preview-content ul,
+.preview-content ol {
+  margin: 0 0 1em;
+  padding-left: 1.9em;
+}
+
+.preview-content li {
+  margin: 0.25em 0;
+}
+
+.preview-content li > p {
+  margin: 0.35em 0;
+}
+
+.preview-content li::marker {
+  color: #8c959f;
+}
+
+.preview-content ul ul {
+  list-style: circle;
+}
+
+.preview-content ul ul ul {
+  list-style: square;
+}
+
+.preview-content blockquote {
+  margin: 0 0 1.1em;
+  padding: 10px 16px;
+  color: #57606a;
+  background: #f6f8fa;
+  border-left: 4px solid #d0d7de;
+  border-radius: 0 6px 6px 0;
+}
+
+.preview-content blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.preview-content blockquote blockquote {
+  margin-top: 0.8em;
+  background: #eef1f4;
+}
+
+.preview-content hr {
+  height: 1px;
+  margin: 28px 0;
+  border: 0;
+  background: linear-gradient(90deg, transparent, #d0d7de 15%, #d0d7de 85%, transparent);
+}
+
+.preview-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+/* 独占一段的图片：居中并加轻阴影；行内小图标保持行内 */
+.preview-content p > img:only-child,
+.preview-content p > a:only-child > img {
+  display: block;
+  margin: 0 auto 0.2em;
+  box-shadow: 0 4px 18px rgba(31, 35, 40, 0.1);
+}
+
+/* 图片链接不画下划线 / 悬停底色 */
+.preview-content p > a:only-child {
+  border-bottom: none;
+  background: none;
+}
+
+.preview-content .md-table-wrap {
+  margin: 0 auto 1.15em;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.preview-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.preview-content th,
+.preview-content td {
+  padding: 8px 14px;
+  border-bottom: 1px solid #eaeef2;
+  text-align: left;
+  vertical-align: top;
+}
+
+.preview-content th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+
+.preview-content tr:last-child td {
+  border-bottom: none;
+}
+
+.preview-content tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
+.preview-content tbody tr:hover {
+  background: #f3f7fb;
+}
+
+.preview-content code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: rgba(175, 184, 193, 0.22);
+  border-radius: 5px;
+  padding: 0.15em 0.4em;
+}
+
+.preview-content pre {
+  margin: 0 0 1.15em;
+  padding: 13px 16px;
+  overflow: auto;
+  background: #f6f8fa;
+  border: 1px solid #eaeef2;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 4;
+}
+
+.preview-content pre code,
+.preview-content pre code.hljs {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.preview-content ::selection {
+  background: #b6d7ff;
+}
+
+.preview-note {
+  color: #57606a;
+  padding: 12px;
+}
+.preview-iframe {
+  flex: 1;
+  border: none;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+}
+
+/* ---------- 图片查看器 ---------- */
+/* 图片模式：内容区铺满且不滚动，滚动交给舞台（缩放后才有滚动条） */
+.editor-area.mode-image .preview-content {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+.image-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  color-scheme: var(--image-scheme, light);
+  /* 棋盘格走主题变量：浅色浅灰、暗色深灰、高对比度近黑 */
+  background: repeating-conic-gradient(
+      var(--image-checker-a) 0% 25%,
+      var(--image-checker-b) 0% 50%
+    )
+    50% / 16px 16px;
+}
+/* margin:auto 居中；放大后图片超出舞台时 auto 边距自动归零，四端都滚得到。
+   max-width:none / flex:none：覆盖 .preview-content img 的宽度限制与 flex 收缩，
+   否则放大、1:1 都会被压回容器宽度 */
+.image-stage img {
+  display: block;
+  margin: auto;
+  max-width: none;
+  flex: none;
+}
+.image-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* ---------- 预览内查找条（preview/findBar.ts） ---------- */
+.preview-findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+.preview-findbar.hidden {
+  display: none;
+}
+
+.preview-find-input {
+  flex: 1;
+  min-width: 120px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 3px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.preview-find-input:focus {
+  border-color: var(--accent-line);
+}
+
+.preview-find-count {
+  min-width: 48px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.preview-find-btn {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+
+.preview-find-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+/* 命中高亮：Markdown 预览（HTML 预览的规则注入到 iframe 文档内，见 findBar.ts） */
+::highlight(preview-find) {
+  background-color: rgba(76, 141, 255, 0.3);
+}
+
+::highlight(preview-find-current) {
+  background-color: rgba(255, 176, 46, 0.9);
+  color: #1b1d23;
+}
+
+/* ---------- 预览模式切换（tabs 栏右侧） ---------- */
+.preview-modes {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.preview-modes.hidden {
+  display: none;
+}
+.preview-modes button {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.preview-modes button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: transparent;
+}
+.preview-modes button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+/* 标题栏运行按钮（Code Run）：绿色强调；运行中切换为「停止」用警示色 */
+.run-btn {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 12px;
+  border: 1px solid var(--success);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--success);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.run-btn:hover:not(:disabled) {
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+
+/* 运行中变成「停止」：悬停也必须保持警示色，不能被通用按钮悬停改回蓝色 */
+.run-btn.running:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.run-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+.run-btn.running {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+

@@ -62,6 +62,19 @@ function mergeHunk(
 }
 
 /**
+ * 比较失败的展示文案。
+ * 动态 import 失败通常是开发服务器重启导致的临时状态：原文是英文的
+ * "Failed to fetch dynamically imported module"，直接甩给用户无法指导操作。
+ */
+function compareFailureText(e: unknown): string {
+  const text = firstLine(e);
+  if (/dynamic|module script|importing a module/i.test(text)) {
+    return "比较失败：面板模块加载失败，请稍后重试或刷新界面";
+  }
+  return `比较失败：${text}`;
+}
+
+/**
  * 比较两段文本前的磁盘基线：磁盘内容不再常驻内存，仅在主动比较/还原时读一次。
  * 未命名文档（path 为空）没有磁盘基线，按空内容处理。
  */
@@ -79,10 +92,17 @@ export class DiffService {
 
   private ensurePanel(): Promise<DiffPanel> {
     if (!this.panelPromise) {
-      this.panelPromise = import("../panels/diffPanel").then(({ DiffPanel }) => {
-        this.panel = new DiffPanel();
-        return this.panel;
-      });
+      this.panelPromise = import("../panels/diffPanel")
+        .then(({ DiffPanel }) => {
+          this.panel = new DiffPanel();
+          return this.panel;
+        })
+        .catch((e) => {
+          // 加载失败不缓存：开发服务器重启 / 网络抖动恢复后，下一次比较可以直接重试，
+          // 否则被拒绝的 Promise 会一直复用，只能重启整个界面
+          this.panelPromise = null;
+          throw e;
+        });
     }
     return this.panelPromise;
   }
@@ -99,7 +119,7 @@ export class DiffService {
         hunkIndex,
       );
     } catch (e) {
-      this.deps.showMessage(`比较失败：${firstLine(e)}`);
+      this.deps.showMessage(compareFailureText(e));
     }
   }
 

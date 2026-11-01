@@ -360,7 +360,8 @@ export class GitView {
     const syncCollapsed = (): void => {
       const folded = this.collapsed.has(key);
       group.classList.toggle("collapsed", folded);
-      chevron.textContent = folded ? "›" : "⌄";
+      // 字符固定为 ›，展开方向由 CSS 的 rotate(90deg) 表达（切换时有旋转过渡）
+      chevron.textContent = "›";
       head.setAttribute("aria-expanded", String(!folded));
       head.title = folded ? "展开该组" : "折叠该组";
     };

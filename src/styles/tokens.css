@@ -1,0 +1,272 @@
+/* ---------------------------------------------------------------------------
+   模块：设计令牌与三套主题变量
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+:root {
+  /* ---------- 表面与边框 ---------- */
+  --bg-app: #16181f;
+  --bg-panel: #1e2129;
+  --bg-elevated: #272b35;
+  /* 输入框/凹陷面：比面板更深一档，焦点内阴影才看得出层次 */
+  --bg-input: #15171d;
+  /* 行悬停底色：必须与「选中」(--bg-selected) 区分开，
+     否则鼠标划过时看不出哪一行才是当前选中项 */
+  --bg-hover: rgba(255, 255, 255, 0.055);
+  /* 选中态：悬停浮层之上再叠一点强调色，扫一眼就能定位当前项 */
+  --bg-selected: rgba(106, 166, 255, 0.14);
+  --border: #333845;
+  /* 细分隔线：用于面板内部/控件勾勒，避免整屏都是硬 1px 线 */
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: #454c5d;
+
+  /* ---------- 文字 ---------- */
+  --text-primary: #e7eaf2;
+  --text-secondary: #a3abba;
+  --text-muted: #8790a2;
+
+  /* ---------- 强调与语义色 ---------- */
+  /* 强调色作为"文字"使用：需在 bg-app / bg-elevated 上都满足 4.5:1（#6aa6ff 为 6.6 / 4.9） */
+  --accent: #6aa6ff;
+  /* 强调色作为"背景"时的前景色：白字在亮蓝上只有 ~2.6:1，改用深墨色 */
+  --accent-ink: #0a1120;
+  --accent-hover: #9dc4ff;
+  --accent-soft: rgba(106, 166, 255, 0.13);
+  --accent-line: rgba(106, 166, 255, 0.45);
+  --success: #3fb950;
+  --success-soft: rgba(63, 185, 80, 0.16);
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.16);
+  --warning: #e0b25c;
+  --warning-soft: rgba(224, 178, 92, 0.16);
+
+  /* 差异视图（新增 / 删除 / 空位） */
+  --diff-add: #6cc07a;
+  --diff-del: #d9736b;
+  --diff-add-soft: rgba(108, 192, 122, 0.16);
+  --diff-del-soft: rgba(217, 115, 107, 0.16);
+  --diff-ghost: rgba(255, 255, 255, 0.03);
+
+  /* JSON 只读树配色（跟随主题，浅色下不再沿用 VS Code 深色值） */
+  --json-key: #9cdcfe;
+  --json-string: #ce9178;
+  --json-number: #b5cea8;
+  --json-boolean: #569cd6;
+
+  /* ---------- 浮层与阴影 ---------- */
+  --overlay: rgba(8, 10, 14, 0.56);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.38), 0 1px 3px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+
+  /* ---------- 圆角 ---------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---------- 动效 ---------- */
+  --dur-fast: 110ms;
+  --dur-base: 170ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+
+  /* ---------- 滚动条 ---------- */
+  --scroll-thumb: rgba(160, 170, 190, 0.22);
+  --scroll-thumb-hover: rgba(160, 170, 190, 0.42);
+  --scroll-thumb-active: rgba(160, 170, 190, 0.62);
+
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 顺序对齐 VSCode 的默认值：Windows 命中 Consolas（屏幕阅读 hinting 好），
+     macOS 命中 Menlo。Cascadia Code 放在后面——它在小字号深色底上偏细，发虚。
+     中文显式回退：等宽字体不含 CJK 字形，不指定时会落到宋体，笔画更虚。 */
+  --font-mono: Consolas, Menlo, Monaco, "Cascadia Code", "JetBrains Mono",
+    "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Courier New", monospace;
+  /* 侧栏分区标题行高度：**同时**决定收起态分区高度（.sidebar-section 的 min-height），
+     两处必须同源，否则收起的分区会多出一段空白，还会把总高撑出滚动条。
+     改这一个值即可，JS 侧不再写死常量（sidebar.ts 直接量 DOM）。
+     24px：与文件树行（22px）同一个量级，5 个分区的标题区总高比 26px 少 10px。 */
+  --section-head-h: 24px;
+  /* 彩虹括号色板：6 色相 60° 均分 + 暖冷交替排序，相邻层级色相差 ≥90°
+     （红→青→琥珀→蓝→绿→紫；配 one-dark 编辑器底色，亮度一致） */
+  --rb-0: #ff7b72; /* 红 */
+  --rb-1: #56d4dd; /* 青 */
+  --rb-2: #f2be5c; /* 琥珀 */
+  --rb-3: #6cb6ff; /* 蓝 */
+  --rb-4: #7ee787; /* 绿 */
+  --rb-5: #b48ef7; /* 紫 */
+  /* Minimap 启发式着色（普通行用 --text-primary；其余为缩略图专用色，
+     比正文语法色更灰一档，避免 80px 宽色带喧宾夺主） */
+  --mm-comment: #7d8799;
+  --mm-string: #98c379;
+  --mm-keyword: #c678dd;
+  --mm-number: #d19a66;
+  /* 图片查看器棋盘底：深色主题用深灰格，透明图边界可辨且不刺眼 */
+  --image-checker-a: #2b303a;
+  --image-checker-b: #23272f;
+  /* 图片舞台的滚动条/原生控件配色跟随主题（#preview-pane 固定为浅色文档） */
+  --image-scheme: dark;
+}
+
+/* ---------- 浅色主题 ---------- */
+:root[data-theme="light"] {
+  --bg-app: #f1f3f6;
+  --bg-panel: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #f6f8fa;
+  --bg-hover: rgba(15, 23, 42, 0.055);
+  --bg-selected: rgba(9, 105, 218, 0.1);
+  --border: #d6dde5;
+  --border-subtle: rgba(15, 23, 42, 0.08);
+  --border-strong: #bcc7d4;
+  --text-primary: #1f2328;
+  --text-secondary: #5b6472;
+  --text-muted: #6e7781;
+  --accent: #0969da;
+  /* 浅色主题的深蓝底上用近白字（4.55:1） */
+  --accent-ink: #ffffff;
+  --accent-hover: #0550ae;
+  --accent-soft: rgba(9, 105, 218, 0.09);
+  --accent-line: rgba(9, 105, 218, 0.38);
+  --success: #1a7f37;
+  --success-soft: rgba(26, 127, 55, 0.1);
+  --danger: #cf222e;
+  --danger-soft: rgba(207, 34, 46, 0.09);
+  --warning: #9a6700;
+  --warning-soft: rgba(154, 103, 0, 0.1);
+  --diff-add: #1a7f37;
+  --diff-del: #cf222e;
+  --diff-add-soft: rgba(26, 127, 55, 0.12);
+  --diff-del-soft: rgba(207, 34, 46, 0.1);
+  --diff-ghost: rgba(15, 23, 42, 0.02);
+  --json-key: #0550ae;
+  --json-string: #0a3069;
+  --json-number: #116329;
+  --json-boolean: #953800;
+  --overlay: rgba(15, 23, 42, 0.34);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 10px 28px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-inset: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+  --scroll-thumb: rgba(90, 105, 125, 0.26);
+  --scroll-thumb-hover: rgba(90, 105, 125, 0.42);
+  --scroll-thumb-active: rgba(90, 105, 125, 0.56);
+  /* 彩虹括号色板（浅色纸底：加深保对比度，同样暖冷交替排序） */
+  --rb-0: #cf222e; /* 红 */
+  --rb-1: #0e7490; /* 青 */
+  --rb-2: #9a6700; /* 琥珀 */
+  --rb-3: #0969da; /* 蓝 */
+  --rb-4: #1a7f37; /* 绿 */
+  --rb-5: #6f42c1; /* 紫 */
+  /* Minimap 启发式着色（浅色纸底：加深保对比） */
+  --mm-comment: #6e7781;
+  --mm-string: #1a7f37;
+  --mm-keyword: #8250df;
+  --mm-number: #953800;
+  /* 图片查看器棋盘底：浅色主题用浅灰格 */
+  --image-checker-a: #f2f4f6;
+  --image-checker-b: #e4e7eb;
+  --image-scheme: light;
+}
+
+/* ---------- 高对比度主题（黑底白字 + 强边框） ---------- */
+:root[data-theme="high-contrast"] {
+  --bg-app: #000000;
+  --bg-panel: #000000;
+  --bg-elevated: #101010;
+  --bg-input: #000000;
+  --bg-hover: rgba(255, 255, 255, 0.16);
+  --bg-selected: rgba(255, 214, 10, 0.2);
+  --border: #ffffff;
+  --border-subtle: #ffffff;
+  --border-strong: #ffffff;
+  --text-primary: #ffffff;
+  --text-secondary: #e8e8e8;
+  --text-muted: #d0d0d0;
+  --accent: #ffd60a;
+  /* 黄底配纯黑字（21:1） */
+  --accent-ink: #000000;
+  --accent-hover: #ffe666;
+  --accent-soft: rgba(255, 214, 10, 0.18);
+  --accent-line: #ffd60a;
+  --success: #00ff88;
+  --success-soft: rgba(0, 255, 136, 0.18);
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.18);
+  --warning: #ffab2e;
+  --warning-soft: rgba(255, 171, 46, 0.18);
+  --diff-add: #5fe07a;
+  --diff-del: #ff5f56;
+  --diff-add-soft: rgba(95, 224, 122, 0.2);
+  --diff-del-soft: rgba(255, 95, 86, 0.2);
+  --diff-ghost: rgba(255, 255, 255, 0.08);
+  --json-key: #7dd3fc;
+  --json-string: #fbbf24;
+  --json-number: #7ee787;
+  --json-boolean: #4da3ff;
+  /* 高对比度禁用柔和阴影：任何模糊都会削弱黑白边界 */
+  --overlay: rgba(0, 0, 0, 0.9);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-inset: none;
+  --scroll-thumb: rgba(255, 255, 255, 0.4);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.7);
+  --scroll-thumb-active: #ffffff;
+  /* 彩虹括号色板（高饱和，黑底上保证辨识；同暖冷交替排序） */
+  --rb-0: #ff5f56; /* 红 */
+  --rb-1: #2ee6e6; /* 青 */
+  --rb-2: #ffab2e; /* 琥珀 */
+  --rb-3: #4da3ff; /* 蓝 */
+  --rb-4: #5fe07a; /* 绿 */
+  --rb-5: #c77dff; /* 紫 */
+  /* Minimap 启发式着色（高饱和，黑底可辨） */
+  --mm-comment: #b9b9b9;
+  --mm-string: #7ee787;
+  --mm-keyword: #ffd60a;
+  --mm-number: #ff9e64;
+  /* 图片查看器棋盘底：高对比度主题贴近纯黑，避免大块灰底削弱对比 */
+  --image-checker-a: #1a1a1a;
+  --image-checker-b: #000000;
+  --image-scheme: dark;
+}
+
+:root[data-theme="high-contrast"] .tab.active {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+:root[data-theme="high-contrast"] .menu-item:hover .shortcut,
+:root[data-theme="high-contrast"] .context-menu-item:hover .shortcut {
+  color: #000;
+}
+
+:root[data-theme="high-contrast"] .menu-item:hover,
+:root[data-theme="high-contrast"] .context-menu-item:hover {
+  background: var(--accent);
+  color: #000;
+}
+
+:root[data-theme="high-contrast"] .palette-item.selected {
+  background: var(--accent);
+  color: #000;
+}
+
+/* 黄底上的快捷键与命中字必须回到黑色，否则与底色同色不可见 */
+:root[data-theme="high-contrast"] .palette-item.selected .palette-shortcut,
+:root[data-theme="high-contrast"] .palette-item.selected mark {
+  color: #000;
+}
+
+/* 高对比度下关闭遮罩模糊：任何模糊都会削弱黑白边界 */
+:root[data-theme="high-contrast"] .dialog-backdrop,
+:root[data-theme="high-contrast"] .settings-backdrop,
+:root[data-theme="high-contrast"] .sv-backdrop,
+:root[data-theme="high-contrast"] .diff-backdrop,
+:root[data-theme="high-contrast"] .palette-overlay {
+  backdrop-filter: none;
+}
+

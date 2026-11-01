@@ -1,0 +1,408 @@
+/* ---------------------------------------------------------------------------
+   模块：主区域、侧栏、滚动条、文件树、分区、打开文件
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* ---------- 主区域 ---------- */
+/* grid-template-rows: 100% 必须显式给出：否则内部行为 auto，
+   与 CM6 的 height:100% 形成循环尺寸依赖，导致状态栏被挤出视口 */
+.main {
+  display: grid;
+  grid-template-columns: var(--sidebar-width, 240px) 5px 1fr;
+  grid-template-rows: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-subtle);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 侧栏宽度拖拽条（hover / 拖动时高亮） */
+.sidebar-resizer {
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
+}
+
+/* ---------- 滚动条（细、圆角、悬停加亮） ---------- */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--scroll-thumb-active);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ---------- 侧栏头部（Sublime 工作区标题栏） ---------- */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* 头部右侧动作区：打开目录 / 隐藏侧栏 */
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 侧栏收起后出现在标签栏左端的「展开侧栏」按钮 */
+.sidebar-show-btn {
+  flex-shrink: 0;
+}
+
+.sidebar-header .sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+/* 图标按钮内的 SVG 与光标对齐 */
+.icon-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.icon-btn:hover svg {
+  color: var(--text-primary);
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+}
+
+/* ---------- 文件树（3.10） ---------- */
+/* 统一基准：正文 12px / 行高 22px / 图标 14px / 每级缩进 12px。
+   任何一项内部再写别的值都会破坏对齐，新增规则请复用这些数值。 */
+.file-tree {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  user-select: none;
+}
+
+/* ---------- 侧栏分区（VS Code 折叠列表） ---------- */
+/* 双段式布局（详见 src/ui/sidebar.ts）：
+   以「最后一个展开的分区」为锚点，锚点及其上方贴顶、其后整体沉底；
+   展开区各自内部滚动，收起区只占标题行高度（--section-head-h）。
+   每个分区的高度由 sidebar.ts 用内联 flex 逐个设定（锁定区固定 / 填充区吸收），
+   这里只给默认值，不参与分配决策。overflow 仅作极端窗口高度下的兜底。 */
+.sidebar-sections {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  /* 纵向 auto 仅作极端窗口高度的兜底（正常由 sidebar.ts 精确分配高度）；
+     横向一律隐藏：标题行内容再长也不该让整列长出横向滚动条 */
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  /* 收起态高度 = 标题行高度；与标题行同源，否则收起后会多出一段空白 */
+  min-height: var(--section-head-h);
+}
+
+/* 沉底段的起始位置吸收上方全部剩余空间，其后分区自然跟随贴底。
+   挂点优先是沉底段之前的那根分隔线（线随段一起下沉，不会孤零零留在中间），
+   没有线的极端情况才回退到分区本身。
+   若填充区（文件）已吃满剩余空间，auto margin 归零，效果同样是贴底。 */
+.sidebar-sash.is-sunk-first,
+.sidebar-section.is-sunk-first {
+  margin-top: auto;
+}
+
+/* 分区之间的分隔线：可上下拖拽调整相邻分区高度（VS Code 的 sash），双击复位。
+   视觉高度只留 2px（此前 4px，5 个分区叠出 16px 的纯间距，收起时看着全是空档）；
+   1px 的线由 ::after 画在中间；可拖时 ::before 把命中区向上下各扩 6px，
+   视觉间距不变但抓手从 2px 变成 14px（对鼠标足够） */
+.sidebar-sash {
+  position: relative;
+  flex: none;
+  height: 2px;
+}
+
+.sidebar-sash::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border-subtle);
+  transform: translateY(-50%);
+  transition: background-color var(--dur-fast) var(--ease-out), height var(--dur-fast) var(--ease-out);
+}
+
+/* 可拖态：抬高层级让扩大的命中区盖住上下相邻分区的边缘 */
+.sidebar-sash.draggable {
+  z-index: 1;
+  cursor: row-resize;
+}
+
+.sidebar-sash.draggable::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: 0;
+  bottom: -6px;
+  left: 0;
+}
+
+/* hover / 拖动中 / 键盘聚焦：线加粗成 accent 色，明确「这里能拖」 */
+.sidebar-sash.draggable:hover::after,
+.sidebar-sash.dragging::after,
+.sidebar-sash.draggable:focus-visible::after {
+  height: 2px;
+  background: var(--accent);
+}
+
+/* 键盘可达：分隔线用 tab 聚焦，聚焦环不占布局（::before 已扩好命中区） */
+.sidebar-sash.draggable:focus-visible {
+  outline: none;
+}
+
+/* 最后一个分区保留底边线（其余边界由分隔线承担）。
+   用 inset 阴影而不是 border-bottom：分区高度是 auto / flex-basis 算出来的，
+   border 会在这 1px 之外再加高，整列就比容器多 1px ——
+   表现正是"任意一个分区展开后出现一条怎么也滚不动的滚动条"。
+   阴影不占布局，视觉相同。 */
+.sidebar-sections > .sidebar-section:last-child {
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+}
+
+.sidebar-section-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  /* 26px：比文件树行（22px）略高一点、又不至于像 30px 那样"胖"。
+     改这一个变量即可，收起态高度与 JS 的布局计算都会跟着走 */
+  height: var(--section-head-h);
+  padding: 0 8px;
+  border: none;
+  /* 标题行与内容区同为面板底色，靠文字层级和分隔线区分，避免整列切成一条条深色块 */
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-section-head:hover {
+  /* 悬停用淡色浮层，与「展开中」的淡强调底（.active）区分开 */
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-section-head.active {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+  /* 展开项左侧 accent 竖条（inset 不影响布局） */
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.sidebar-section-head.active svg {
+  color: var(--accent);
+}
+
+/* 标题与内容之间不再额外画线：展开分区下方紧跟一根 sash（含 1px 线），
+   原来两条线相隔不到一个行高，看起来像是「多出来的一条边」 */
+.sidebar-section-head svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+/* 固定宽度 + 居中：字符宽度固定，展开/收起时标题行不会左右抖动。
+   文案统一为 ›，靠 rotate(90deg) 变成「向下」，旋转过程本身就是展开动效 */
+.sidebar-section-head .chevron {
+  margin-left: auto;
+  width: 12px;
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  opacity: 0.75;
+  transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-section-head.active .chevron {
+  transform: rotate(90deg);
+  opacity: 1;
+}
+
+.sidebar-section-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  /* 分区高度由外侧 flex 决定，内容超出时由内部列表自己滚动 */
+  overflow: hidden;
+}
+
+.sidebar-section-body.hidden {
+  display: none;
+}
+
+/* 文件树的滚动交给内层 .tree-body：
+   容器本身 overflow:hidden，过滤框与剪贴板状态条固定不动、不会跟着滚走；
+   滚动条只在真正有内容溢出时出现在列表上（此前容器 overflow:auto + 内层
+   由 padding/min-width 撑出的 1px 溢出，会显示一条"怎么也滚不动"的无效滚动条）。 */
+.sidebar-section-body.file-tree {
+  overflow: hidden;
+}
+
+/* 「正在打开的文件」列表 */
+.open-editors {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 0;
+}
+
+/* 行高 / 图标 / 左内边距与文件树同一套基准：两个分区同时展开时不会一行高一行矮 */
+.open-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.open-editor:hover {
+  background: var(--bg-hover);
+}
+
+/* 激活项与文件树的 selected 同一视觉：淡强调底 + 左侧竖条 */
+.open-editor.active {
+  background: var(--bg-selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.open-editor-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+.open-editor:hover .open-editor-icon svg,
+.open-editor.active .open-editor-icon svg {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+.open-editor-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-editor-dirty {
+  flex: none;
+  color: var(--accent);
+  font-size: 9px;
+}
+
+.open-editor-close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.open-editor:hover .open-editor-close {
+  opacity: 1;
+}
+
+.open-editor-close:hover {
+  color: var(--text-primary);
+}
+

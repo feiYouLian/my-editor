@@ -339,8 +339,9 @@ export class SidebarViews {
         btn.classList.toggle("active", open);
         btn.setAttribute("aria-expanded", String(open));
         btn.closest(".sidebar-section")?.classList.toggle("expanded", open);
+        // 图标固定为 ›，展开方向交给 CSS 的 rotate(90deg)，切换时有旋转过渡
         const chevron = btn.querySelector<HTMLElement>(".chevron");
-        if (chevron) chevron.textContent = open ? "⌄" : "›";
+        if (chevron) chevron.textContent = "›";
       });
     for (const [view, el] of Object.entries(this.panes) as [SidebarView, HTMLElement][]) {
       el.classList.toggle("hidden", !this.expanded.has(view));

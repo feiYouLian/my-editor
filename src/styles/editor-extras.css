@@ -1,0 +1,405 @@
+/* ---------------------------------------------------------------------------
+   模块：Blame 注释、预览目录 / Mermaid / KaTeX、结构化只读视图
+   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   --------------------------------------------------------------------------- */
+/* 当前行 Git Blame：跟随光标的行尾注释；不拦截鼠标事件 */
+.cm-inline-blame {
+  display: inline-block;
+  margin-left: 1.5em;
+  padding: 0 6px;
+  max-width: 52vw;
+  /* 固定高度：widget 出现在哪一行，哪一行都不能被撑高 */
+  height: 1.3em;
+  line-height: 1.3em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /*
+   * overflow:hidden 的 inline-block 基线会落到盒底，用 baseline 对齐会整块"浮高"：
+   * 改为对齐行盒文字底部，视觉上与代码同一行。
+   */
+  vertical-align: text-bottom;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-style: italic;
+  opacity: 0.72;
+  user-select: none;
+  pointer-events: none;
+  border-left: 1px solid var(--border);
+}
+
+/* ---- M4/G15：预览目录 / Mermaid / KaTeX ---- */
+
+/* 目录按钮与面板锚定在预览面板右上角（内容区可滚动，按钮不随之滚走） */
+#preview-pane {
+  position: relative;
+}
+
+.md-toc-toggle {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 4;
+  padding: 2px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #57606a;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.md-toc-toggle:hover,
+.md-toc-toggle.active {
+  color: #0969da;
+  border-color: #0969da;
+}
+
+.md-toc-toggle[hidden] {
+  display: none;
+}
+
+.md-toc-panel {
+  position: absolute;
+  top: 36px;
+  right: 16px;
+  z-index: 4;
+  max-width: 280px;
+  max-height: 60%;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.14);
+  font-size: 12px;
+}
+
+.md-toc-panel.hidden {
+  display: none;
+}
+
+.md-toc-item {
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #1f2328;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-toc-item:hover {
+  background: #eef1f4;
+  color: #0969da;
+}
+
+.md-toc-item[data-level="1"] {
+  font-weight: 600;
+}
+
+.md-toc-item[data-level="2"] {
+  padding-left: 18px;
+}
+
+.md-toc-item[data-level="3"] {
+  padding-left: 30px;
+}
+
+.md-toc-item[data-level="4"],
+.md-toc-item[data-level="5"],
+.md-toc-item[data-level="6"] {
+  padding-left: 42px;
+  color: #57606a;
+}
+
+/* Mermaid 占位块：渲染前显示提示，成功后替换为 SVG */
+.preview-content .md-mermaid {
+  margin: 0 auto 1.15em;
+  padding: 8px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #fff;
+  overflow: auto;
+  text-align: center;
+}
+
+.preview-content .md-mermaid-pending,
+.preview-content .md-mermaid-error {
+  color: #57606a;
+  font-size: 12px;
+}
+
+.preview-content .md-mermaid.failed {
+  text-align: left;
+  border-color: #d1242f;
+}
+
+.preview-content .md-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* KaTeX：块级公式可横向滚动，行内公式跟随行高 */
+.preview-content .katex-display {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ---- M4/G18：结构化只读视图（CSV 表格 / JSON 树） ---- */
+.sv-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+}
+
+.sv-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1200px, 92vw);
+  height: min(760px, 86vh);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.sv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sv-title {
+  max-width: 42%;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sv-tabs {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.sv-tab {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.sv-tab.active {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.sv-readonly {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.sv-close {
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sv-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sv-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.sv-hint {
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sv-hint-error {
+  color: var(--danger);
+}
+
+.sv-grid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 表头独立滚动条：横向跟随滚动，纵向不跟着走 */
+.sv-head-scroll {
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+}
+
+.sv-scroll {
+  flex: 1;
+  position: relative;
+  overflow: auto;
+}
+
+.sv-spacer {
+  position: relative;
+}
+
+.sv-rows {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.sv-row {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  font-size: 12px;
+  line-height: 26px;
+  white-space: nowrap;
+}
+
+/* 虚拟滚动：行绝对定位后按 translateY 摆放（行高与 TS 中的 ROW_HEIGHT 一致） */
+.sv-rows .sv-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.sv-head-scroll .sv-row {
+  position: static;
+  font-weight: 600;
+}
+
+.sv-cell {
+  flex: none;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.sv-status {
+  padding: 4px 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* JSON 树 */
+.sv-json {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.sv-json-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 8px;
+}
+
+.sv-json-node > .sv-json-row:hover {
+  background: var(--bg-hover);
+}
+
+.sv-json-toggle {
+  width: 12px;
+  flex: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.sv-json-key {
+  color: var(--json-key);
+}
+
+.sv-json-colon {
+  color: var(--text-secondary);
+}
+
+.sv-json-string {
+  color: var(--json-string);
+}
+
+.sv-json-number {
+  color: var(--json-number);
+}
+
+.sv-json-boolean {
+  color: var(--json-boolean);
+}
+
+.sv-json-null {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.sv-json-children.hidden {
+  display: none;
+}
+
+.sv-json-more {
+  margin: 4px 0 4px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sv-json-more:hover {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+/* 读屏播报区：视觉上不可见但仍在无障碍树里（不能用 display:none / visibility:hidden） */
+.a11y-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
