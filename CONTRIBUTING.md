@@ -36,7 +36,11 @@ npm test && npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --l
 四条全绿才算可提交。任何一条挂了都别用「反正不相关」放过——历史上这三类问题都出现过：
 类型检查通过但构建被 `vite` 拒绝、Rust 单测过了但前端命令表键位冲突、构建通过但运行时 IPC 参数对不上。
 
-当前基线：`npm test` 30 项、`cargo test --lib` 132 项。
+当前基线（2026-11-01）：`npm test` 130 项、`cargo test --lib` 178 项。同样四条命令已在
+`.github/workflows/ci.yml` 里做成门禁，push / PR 在 Windows runner 上自动跑。
+
+改动碰到 `src-tauri/tauri.conf.json` 的 `bundle` 时额外跑一次 `npm run tauri build`：
+打包失败（尤其 MSI/WiX 的代码页问题）只有真打包才能发现，而 CI 要几分钟编译后才报。
 
 手工回归看 [`验收清单_V1.md`](./验收清单_V1.md)（含 §10 冒烟清单），自动化覆盖不到的部分都在那里。
 
@@ -82,11 +86,13 @@ main.ts → 全部
 ```
 feat(editor): 新增 xxx
 fix(sidebar): 修复 xxx
+fix(bundle): 修复打包问题 xxx
 docs(readme): 同步 xxx
 refactor(core): 抽取 xxx
+refactor(styles): 拆分样式 xxx
 perf(large): 优化 xxx
 ci(release): xxx
-chore(release): 版本号升级至 0.4.0
+chore(release): 0.6.1
 ```
 
 PR 请按 [`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.md) 填写，重点写清三件事：
@@ -100,5 +106,6 @@ PR 请按 [`.github/PULL_REQUEST_TEMPLATE.md`](./.github/PULL_REQUEST_TEMPLATE.m
 npm run bump patch          # 或 minor / major / 指定版本
 ```
 
-发布流程与踩过的坑（tag 必须等于 `tauri.conf.json` 版本、不要手建 Release、不可变 Release 不能覆盖）见
+发布流程与踩过的坑（tag 必须等于 `tauri.conf.json` 版本、不要手建 Release、不可变 Release 不能覆盖、
+安装包文案含中文必须配 `bundle.windows.wix.language`）见
 [`README.md` → 版本发布](./README.md#版本发布)。

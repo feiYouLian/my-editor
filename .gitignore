@@ -7,3 +7,7 @@ target/
 # 本地配置与日志
 *.log
 .DS_Store
+
+# 本地临时产物（截图导出、AI 会话临时脚本）
+.screenshots/
+.trae-html-share-packages/
