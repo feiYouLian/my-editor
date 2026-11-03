@@ -24,7 +24,7 @@
 
 /* ---------- Minimap 缩略图 ---------- */
 .cm-minimap {
-  flex: 0 0 80px;
+  flex: 0 0 120px;
   position: relative;
   overflow: hidden;
   background: var(--bg-panel);
@@ -37,6 +37,14 @@
 
 .cm-minimap canvas {
   display: block;
+}
+
+/* 装饰层：选区 / 搜索命中，叠在纹理之上、视口框之下 */
+.cm-minimap .cm-minimap-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
 }
 
 .cm-minimap-viewport {
@@ -52,11 +60,41 @@
   border-top-color: color-mix(in srgb, var(--accent) 60%, transparent);
   border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
   pointer-events: none;
+  /* VS Code 默认 showSlider: mouseover —— 只在 hover / 拖拽时显示 */
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 
-.cm-minimap:hover .cm-minimap-viewport {
+.cm-minimap:hover .cm-minimap-viewport,
+.cm-minimap.cm-minimap-dragging .cm-minimap-viewport {
+  opacity: 1;
   background: rgba(76, 141, 255, 0.3);
   background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 悬停行预览：固定定位，靠近指针但不参与布局 */
+.cm-minimap-hover {
+  position: fixed;
+  z-index: 230;
+  display: none;
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+}
+
+.cm-minimap-hover.visible {
+  display: block;
 }
 
 /* 编辑区过窄（split 拖到极端）时整列隐藏 */
