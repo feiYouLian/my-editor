@@ -41,15 +41,33 @@ const EXTRA_HLJS_LANGUAGES = [
 /** 自动探测的代码体积上限：highlightAuto 代价随语言数增长，超大块跳过 */
 const HLJS_AUTO_MAX_CHARS = 20_000;
 
+/** DOMPurify 的最小契约：字符串模式用于导出，IN_PLACE 模式用于预览内联消毒 */
+export interface Sanitizer {
+  sanitize(html: string): string;
+  sanitize(node: HTMLElement, config: { IN_PLACE: true }): HTMLElement;
+}
+
 /** 管线的宿主契约（PreviewHost 实现；避免本模块反向依赖具体类） */
 export interface MarkdownPipelineHost {
-  installMarkdown(md: MarkdownRenderer, dompurify: { sanitize(html: string): string }): void;
+  installMarkdown(md: MarkdownRenderer, dompurify: Sanitizer): void;
 }
 
 /** 渲染器：除纯 HTML 外再暴露目录（TOC 需要在同一次解析里收集） */
 export interface MarkdownRenderer {
   render(text: string): string;
   renderWithToc(text: string): { html: string; toc: TocEntry[] };
+  /**
+   * 顶层块级 HTML（每项通常对应一个根元素）+ 起始源码行 + 源码指纹。
+   * reuse 返回 true 时该块跳过渲染（html 为 undefined），预览直接复用原 DOM；
+   * 仅当文档没有引用定义时调用方才会传入 reuse（引用会跨块影响渲染结果）。
+   */
+  renderBlocksWithToc(
+    text: string,
+    reuse?: (key: string) => boolean,
+  ): {
+    blocks: { key: string; line: number; html?: string }[];
+    toc: TocEntry[];
+  };
 }
 
 /** 构建并安装管线。加载失败由调用方（ensureMarkdown）统一捕获并允许重试。 */
@@ -86,9 +104,7 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
   await import("highlight.js/styles/github.css");
   const MarkdownIt = mdMod.default;
   // dompurify 类型解析不稳定（.mts default），运行时 default 必定存在
-  const DOMPurify = (dpMod as unknown as {
-    default: { sanitize(html: string): string };
-  }).default;
+  const DOMPurify = (dpMod as unknown as { default: Sanitizer }).default;
   const hljs = hljsMod.default;
   // 注册 common 之外的语言（下标与 EXTRA_HLJS_LANGUAGES 一一对应）
   extraLangMods.forEach((mod, i) =>
@@ -183,5 +199,77 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
     const html = md.render(text, env);
     return { html, toc: env.toc ?? [] };
   };
-  host.installMarkdown({ render, renderWithToc }, DOMPurify);
+  /**
+   * 块源码指纹（长度 + 双哈希）：直接在原文本区间上算，
+   * 不 slice 出整段源码，避免每次重渲染都为所有块复制一份字符串。
+   */
+  const hashBlockRange = (text: string, from: number, to: number): string => {
+    let a = 0x811c9dc5;
+    let b = 5381;
+    for (let i = from; i < to; i += 1) {
+      const c = text.charCodeAt(i);
+      a = Math.imul(a ^ c, 0x01000193) >>> 0;
+      b = (Math.imul(b, 33) + c) >>> 0;
+    }
+    return `${to - from}:${a}:${b}`;
+  };
+
+  /**
+   * 一次解析 + 分组渲染：块边界取「level 0 且带源行映射」的 token。
+   * 整篇仍完整解析，所以引用定义、目录锚点等跨块状态与整篇渲染一致。
+   * 无引用定义时，源码未变的块可通过 reuse 跳过渲染（含代码高亮等重活）。
+   */
+  const renderBlocksWithToc = (
+    text: string,
+    reuse?: (key: string) => boolean,
+  ): { blocks: { key: string; line: number; html?: string }[]; toc: TocEntry[] } => {
+    const env: { toc?: TocEntry[] } = {};
+    const tokens = md.parse(text, env);
+    // 引用定义会改变其它块的链接渲染结果：有定义时一律重新渲染。
+    // KaTeX 的全局宏定义（\gdef / \newcommand）也会跨块生效，同样禁用复用。
+    const references = (env as { references?: Record<string, unknown> }).references;
+    const hasGlobalMacro = /\\gdef\b|\\def\b|\\newcommand\b|\\renewcommand\b/.test(text);
+    const canReuse =
+      (!references || Object.keys(references).length === 0) && !hasGlobalMacro;
+    // 行首偏移：按块源码切片，用于内容指纹（仅数字数组，不复制整篇文本）
+    const lineStarts: number[] = [0];
+    for (let i = 0; i < text.length; i += 1) {
+      if (text.charCodeAt(i) === 10) lineStarts.push(i + 1);
+    }
+    const rangeOf = (fromLine: number, toLineExclusive: number): [number, number] => [
+      lineStarts[fromLine - 1] ?? text.length,
+      lineStarts[toLineExclusive - 1] ?? text.length,
+    ];
+    const blocks: { key: string; line: number; html?: string }[] = [];
+    const push = (list: typeof tokens, line: number, endLineExclusive: number): void => {
+      if (list.length === 0) return;
+      const [from, to] = rangeOf(line, endLineExclusive);
+      const key = hashBlockRange(text, from, to);
+      // 标题锚点 id 会受前文重复标题影响（title-2 / title-3）：这类块必须重新渲染
+      const hasHeading = list.some((token) => token.type === "heading_open");
+      if (canReuse && !hasHeading && reuse?.(key) === true) {
+        blocks.push({ key, line });
+        return;
+      }
+      const html = md.renderer.render(list, md.options, env);
+      if (html) blocks.push({ key, line, html });
+    };
+    let start = -1;
+    let startLine = 1;
+    const maxLine = lineStarts.length + 1;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token.level === 0 && token.map) {
+        const line = token.map[0] + 1;
+        if (start >= 0) push(tokens.slice(start, i), startLine, line);
+        start = i;
+        startLine = line;
+      }
+    }
+    if (start >= 0) push(tokens.slice(start), startLine, maxLine);
+    // 空文档 / 只有引用定义：整篇渲染一次，保持与旧路径一致
+    else push(tokens, 1, maxLine);
+    return { blocks, toc: env.toc ?? [] };
+  };
+  host.installMarkdown({ render, renderWithToc, renderBlocksWithToc }, DOMPurify);
 }

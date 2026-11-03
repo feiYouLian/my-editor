@@ -272,6 +272,16 @@ export class RunHost {
     return script;
   }
 
+  /** 输出面板当前是否可见（菜单勾选态用） */
+  get isOutputOpen(): boolean {
+    return this.runPanel.isOpen;
+  }
+
+  /** 是否已有输出内容（没有内容时不应为它收起别的底部面板） */
+  get hasOutput(): boolean {
+    return this.runPanel.hasContent;
+  }
+
   /** 隐藏输出面板（终端打开时调用，保留输出与运行状态） */
   hideOutputPanel(): void {
     this.runPanel.hide();

@@ -10,6 +10,7 @@
 import { syntaxTree } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
 import { parseMarkdownHeading } from "../core/outlineText";
+import { runWhenIdle } from "../ui/idle";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 interface OutlineItem {
@@ -63,10 +64,14 @@ export class OutlineView {
   private listEl!: HTMLElement;
   private countEl!: HTMLElement;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** 空闲重算的取消句柄：再次排程时作废，避免过期任务重复解析 */
+  private cancelIdleRefresh: (() => void) | null = null;
   /** 已渲染的行（行号升序）：光标跟随用 */
   private rows: { line: number; el: HTMLElement }[] = [];
   /** 上次高亮的行，避免每次光标移动都重排 */
   private currentLine = -1;
+  /** 上次高亮的条目下标：同一章节内移动光标不再遍历所有行切 class */
+  private currentIndex = -1;
 
   constructor(
     private host: HTMLElement,
@@ -78,9 +83,15 @@ export class OutlineView {
   /** 文档 / 标签变化后防抖刷新（编辑期间不对每次按键重建列表） */
   scheduleRefresh(): void {
     if (this.timer) clearTimeout(this.timer);
+    this.cancelIdleRefresh?.();
+    this.cancelIdleRefresh = null;
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.refresh();
+      // 大纲要遍历语法树 / 全篇标题：放到空闲时段，避免和输入、滚动抢同一帧
+      this.cancelIdleRefresh = runWhenIdle(() => {
+        this.cancelIdleRefresh = null;
+        this.refresh();
+      }, 500);
     }, REFRESH_MS);
   }
 
@@ -129,6 +140,7 @@ export class OutlineView {
     this.listEl.innerHTML = "";
     this.rows = [];
     this.currentLine = -1;
+    this.currentIndex = -1;
     const empty = document.createElement("div");
     empty.className = "sv-empty";
     empty.textContent = text;
@@ -148,13 +160,22 @@ export class OutlineView {
       if (this.rows[i].line <= line) index = i;
       else break;
     }
-    this.rows.forEach((row, i) => row.el.classList.toggle("current", i === index));
-    if (index >= 0) this.rows[index].el.scrollIntoView({ block: "nearest" });
+    // 同一章节内换行：高亮项没变，不必遍历全部行切 class、也不必滚动
+    if (index === this.currentIndex) return;
+    this.rows[this.currentIndex]?.el.classList.remove("current");
+    this.currentIndex = index;
+    if (index >= 0) {
+      const row = this.rows[index];
+      row.el.classList.add("current");
+      row.el.scrollIntoView({ block: "nearest" });
+    }
   }
 
   private renderItems(items: OutlineItem[]): void {
     this.listEl.innerHTML = "";
     this.rows = [];
+    this.currentLine = -1;
+    this.currentIndex = -1;
     const frag = document.createDocumentFragment();
     for (const item of items.slice(0, MAX_ITEMS)) {
       const row = document.createElement("button");

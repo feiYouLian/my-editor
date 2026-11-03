@@ -1,7 +1,8 @@
 /**
- * 通知中心面板：点状态栏的 ⚠ 图标弹出，列出待处理提示与快捷动作。
+ * 通知中心面板：点状态栏的 ⚠ / 时钟图标或瞬时消息弹出，列出待处理提示与快捷动作。
  *
- * 定位在状态栏按钮上方（fixed），点空白 / Esc 关闭；条目处理完自动移除。
+ * 定位固定贴在状态栏上方右缘（宽度与条目数都不影响落点），
+ * 点空白 / Esc 关闭；条目处理完自动移除。
  */
 
 import {
@@ -30,7 +31,8 @@ export class NoticePanel {
   private unsubscribeMessages: (() => void) | null = null;
 
   constructor(
-    private anchor: HTMLElement,
+    /** 打开入口（⚠ / 时钟图标 / 瞬时消息）：点击自身不应被"点外部关闭"吞掉 */
+    private anchors: HTMLElement[],
     private deps: { onMessage: (text: string) => void },
   ) {}
 
@@ -164,14 +166,13 @@ export class NoticePanel {
     renderMessages();
     document.body.append(panel);
 
-    // 贴在状态栏按钮上方
-    const rect = this.anchor.getBoundingClientRect();
-    const width = panel.offsetWidth;
-    const height = panel.offsetHeight;
-    const left = Math.max(4, Math.min(rect.left, window.innerWidth - width - 4));
-    const top = Math.max(4, rect.top - height - 6);
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
+    // 固定贴在状态栏上方右缘：不按内容宽高推算落点，
+    // 条目多少都不会让面板在屏幕上"跳"位置，也不会盖住状态栏本身
+    const anchor = this.anchors[0];
+    const rect = anchor.getBoundingClientRect();
+    panel.style.left = "auto";
+    panel.style.right = "8px";
+    panel.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
 
     this.el = panel;
     this.unsubscribe = subscribeNotices(renderList);
@@ -196,7 +197,9 @@ export class NoticePanel {
   private onDocClick = (e: MouseEvent): void => {
     const target = e.target;
     if (!(target instanceof Node)) return;
-    if (this.el?.contains(target) || this.anchor.contains(target)) return;
+    if (this.el?.contains(target)) return;
+    // 三个入口都算"面板自身"：否则点同一个图标会先被关闭再重新打开，表现为关不掉
+    if (this.anchors.some((el) => el.contains(target))) return;
     this.close();
   };
 

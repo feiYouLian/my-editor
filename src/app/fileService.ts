@@ -443,8 +443,14 @@ export class FileService {
     return `未命名-${n}`;
   }
 
-  /** 新建未命名文档（可指定初始名称，用于草稿恢复） */
-  newUntitled(name = this.nextUntitledName()): Tab {
+  /**
+   * 新建未命名文档（可指定初始名称，用于草稿恢复）。
+   * autoTitle：标签名跟随首个非空行（草稿恢复传入已有名称时必须关闭）。
+   */
+  newUntitled(
+    name = this.nextUntitledName(),
+    opts: { autoTitle?: boolean } = {},
+  ): Tab {
     // 恢复草稿时传入的是上次的标签名，可能已被现有标签占用。
     // 两个同名未命名标签在标签栏里无法区分，会被当成"两个变一个"，这里改用空闲序号。
     const finalName = tabStore.list().some((t) => !t.path && t.name === name)
@@ -463,7 +469,7 @@ export class FileService {
       readonly: false,
       readonly_reason: "",
     };
-    return tabStore.open(content);
+    return tabStore.open(content, { autoTitle: opts.autoTitle !== false });
   }
 
   /** 打开一个带内容的未命名标签（格式转换 / 代码生成结果，标记为未保存） */

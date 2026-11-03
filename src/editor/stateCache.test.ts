@@ -9,6 +9,7 @@ function entry(text: string): Omit<CachedState, "state"> & { state: EditorState 
     generation: 1,
     langKey: null,
     readonly: false,
+    revision: 0,
   };
 }
 

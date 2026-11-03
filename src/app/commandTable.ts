@@ -53,9 +53,9 @@ export interface CommandTableCtx {
   };
   diffService: DiffService;
   runHost: RunHost;
-  terminalHost: { toggle(): Promise<void>; hide(): void };
+  terminalHost: { toggle(): Promise<void>; hide(): void; readonly isOpen: boolean };
   windowChrome: { close(): void };
-  layout: { toggleSidebar(): void };
+  layout: { toggleSidebar(): void; readonly isSidebarVisible: boolean };
   palette: { toggle(): void };
   tabSwitcher: { switchTab(delta: number): void };
   formatHost: FormatHost;
@@ -79,8 +79,16 @@ export interface CommandTableCtx {
   showSidebarView: (
     view: "open" | "git" | "files" | "search" | "outline" | "bookmarks",
   ) => void;
+  /** 侧栏某分区是否正在显示（勾选态；侧栏收起时为 false） */
+  isSidebarViewOpen: (
+    view: "open" | "git" | "files" | "search" | "outline" | "bookmarks",
+  ) => boolean;
   /** 结构化只读视图（CSV 表格 / JSON 树）；不传则按扩展名猜 */
   showStructuredView: (mode?: "csv" | "json") => void;
+  /** 结构化视图是否正以指定模式打开（勾选态） */
+  isStructuredViewOpen: (mode: "csv" | "json") => boolean;
+  /** 显示运行输出面板（先收起终端与 Git 历史，避免底部面板叠在一起） */
+  showRunOutput: () => void;
   /** Git：分支切换面板 / 拉取 / 推送（状态栏入口之外的可命令化入口） */
   gitPickBranch: () => void;
   /** Git 只读开关：只查看 vs 可写（保护正在用的仓库） */
@@ -131,7 +139,10 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
+    isSidebarViewOpen,
     showStructuredView,
+    isStructuredViewOpen,
+    showRunOutput,
     gitPickBranch,
     gitToggleReadOnly,
     gitOpenHistory,
@@ -151,6 +162,19 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     if (blockIfReadonly()) return;
     showMessage(applyLineOp(getView(), op, getConfig().tabSize).message);
   };
+  /** 全屏状态缓存：isFullscreen 是异步接口，菜单勾选态需要同步取值 */
+  let fullscreenOn = false;
+  // 单测环境没有 window：跳过这次探测，菜单勾选态保持默认值
+  if (typeof window !== "undefined") {
+    void getCurrentWindow()
+      .isFullscreen()
+      .then((on) => {
+        fullscreenOn = on;
+      })
+      .catch(() => {
+        // 取不到就保持 false（菜单只是缺少勾选，不影响切换）
+      });
+  }
 
   return [
     // ---- 文件 ----
@@ -262,12 +286,13 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "encoding.detectMojibake", title: "检测乱码并建议编码", section: "编码", menu: "tools", menuLabel: "检测乱码并建议编码", menuOrder: 40, run: () => statusActions.detectMojibakeManually() },
     { id: "code.run", title: "运行当前文件（Code Run）", section: "运行", defaultKey: "F5", menu: "tools", menuLabel: "运行当前文件", menuOrder: 60, menuSeparatorBefore: true, run: () => runHost.runCurrentFile() },
     { id: "run.curlScript", title: "执行 cURL 脚本（选区/整篇，无需保存）", section: "运行", menu: "tools", menuLabel: "执行 cURL 脚本", menuOrder: 70, run: () => runHost.runCurlScript() },
-    { id: "terminal.toggle", title: "切换终端（Ctrl+`）", section: "终端", defaultKey: "Mod-`", menu: "view", menuLabel: "切换终端", menuOrder: 30, menuSeparatorBefore: true, run: () => void terminalHost.toggle() },
+    { id: "terminal.toggle", title: "切换终端（Ctrl+`）", section: "终端", defaultKey: "Mod-`", menu: "view", menuLabel: "切换终端", menuOrder: 30, menuSeparatorBefore: true, menuChecked: () => terminalHost.isOpen, run: () => void terminalHost.toggle() },
     { id: "code.runInTerminal", title: "在终端运行当前文件（Ctrl+F5）", section: "运行", defaultKey: "Mod-F5", menu: "tools", menuLabel: "在终端运行当前文件", menuOrder: 65, run: () => runHost.runInTerminal() },
     { id: "code.runCurlInTerminal", title: "在终端执行 cURL 脚本", section: "运行", run: () => runHost.runCurlInTerminal() },
-    { id: "output.show", title: "显示运行输出面板", section: "运行", menu: "view", menuLabel: "显示运行输出面板", menuOrder: 35, run: () => {
-        terminalHost.hide();
-        runHost.showOutputPanel();
+    { id: "output.show", title: "运行输出面板", section: "运行", menu: "view", menuLabel: "运行输出面板", menuOrder: 35, menuChecked: () => runHost.isOutputOpen, run: () => {
+        // 与终端同语义：已显示则收起；显示前先让出底部区域给其它面板
+        if (runHost.isOutputOpen) runHost.hideOutputPanel();
+        else showRunOutput();
       } },
     { id: "code.stop", title: "停止运行", section: "运行", menu: "tools", menuLabel: "停止运行", menuOrder: 75, run: () => runHost.stop() },
     { id: "search.toggleBookmark", title: "切换书签", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(getView()) },
@@ -303,7 +328,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     // ---- 视图 ----
     // 命令面板固定为「视图」第一项（VS Code 惯例），不再混在「编辑」里
     { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", menu: "view", menuLabel: "命令面板…", menuOrder: 5, hidden: true, run: () => palette.toggle() },
-    { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", menu: "view", menuLabel: "切换侧栏", menuOrder: 10, hidden: true, menuChecked: () => getConfig().layout.sidebarVisible, run: () => layout.toggleSidebar() },
+    { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", menu: "view", menuLabel: "切换侧栏", menuOrder: 10, hidden: true, menuChecked: () => layout.isSidebarVisible, run: () => layout.toggleSidebar() },
     { id: "view.toggleMinimap", title: "切换 Minimap 缩略图", section: "视图", defaultKey: "Mod-Shift-M", menu: "view", menuLabel: "切换 Minimap 缩略图", menuOrder: 40, menuSeparatorBefore: true, menuChecked: () => getConfig().layout.minimap, run: () => {
         const next = !getConfig().layout.minimap;
         // layout 段是浅合并，必须整对象回传；保存成功后主进程订阅会触发 Compartment 重配
@@ -313,11 +338,14 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       } },
     { id: "view.prevTab", title: "上一个标签", section: "视图", defaultKey: "Mod-PageUp", hidden: true, run: () => tabSwitcher.switchTab(-1) },
     { id: "view.nextTab", title: "下一个标签", section: "视图", defaultKey: "Mod-PageDown", hidden: true, run: () => tabSwitcher.switchTab(1) },
-    { id: "view.toggleFullscreen", title: "全屏 / 退出全屏", section: "视图", defaultKey: "F11", menu: "view", menuLabel: "全屏 / 退出全屏", menuOrder: 45, run: () => {
+    { id: "view.toggleFullscreen", title: "全屏 / 退出全屏", section: "视图", defaultKey: "F11", menu: "view", menuLabel: "全屏 / 退出全屏", menuOrder: 45, menuChecked: () => fullscreenOn, run: () => {
         const win = getCurrentWindow();
         void win
           .isFullscreen()
-          .then((on) => win.setFullscreen(!on))
+          .then(async (on) => {
+            await win.setFullscreen(!on);
+            fullscreenOn = !on;
+          })
           .catch((e) => showMessage(`全屏切换失败：${firstLine(e)}`));
       } },
     // 重新加载界面：改完前端资源 / 需要干净重放会话时用；执行前 flush 会话与草稿
@@ -344,15 +372,15 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         );
       } },
     { id: "view.messageHistory", title: "查看最近消息（状态栏历史）", section: "视图", menu: "view", menuLabel: "最近消息…", menuOrder: 72, run: () => showMessageHistory() },
-    { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 15, menuSeparatorBefore: true, run: () => showSidebarView("open") },
-    { id: "view.sidebarGit", title: "侧栏：源代码管理", section: "视图", menu: "view", menuLabel: "侧栏：源代码管理", menuOrder: 17, run: () => showSidebarView("git") },
-    { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 20, run: () => showSidebarView("files") },
-    { id: "view.sidebarSearch", title: "侧栏：搜索", section: "视图", menu: "view", menuLabel: "侧栏：搜索", menuOrder: 22, run: () => showSidebarView("search") },
-    { id: "view.sidebarOutline", title: "侧栏：大纲", section: "视图", menu: "view", menuLabel: "侧栏：大纲", menuOrder: 24, run: () => showSidebarView("outline") },
-    { id: "view.sidebarBookmarks", title: "侧栏：书签", section: "视图", menu: "view", menuLabel: "侧栏：书签", menuOrder: 26, run: () => showSidebarView("bookmarks") },
-    // 结构化只读视图（不改文件，只换一种看法）
-    { id: "view.structuredCsv", title: "以表格查看（CSV / TSV）", section: "视图", menu: "view", menuLabel: "表格视图（CSV）", menuOrder: 60, menuSeparatorBefore: true, run: () => showStructuredView("csv") },
-    { id: "view.structuredJson", title: "以树查看（JSON）", section: "视图", menu: "view", menuLabel: "JSON 树视图", menuOrder: 62, run: () => showStructuredView("json") },
+    { id: "view.sidebarOpen", title: "侧栏：打开的文件", section: "视图", menu: "view", menuLabel: "侧栏：打开的文件", menuOrder: 15, menuSeparatorBefore: true, menuChecked: () => isSidebarViewOpen("open"), run: () => showSidebarView("open") },
+    { id: "view.sidebarGit", title: "侧栏：源代码管理", section: "视图", menu: "view", menuLabel: "侧栏：源代码管理", menuOrder: 17, menuChecked: () => isSidebarViewOpen("git"), run: () => showSidebarView("git") },
+    { id: "view.sidebarFiles", title: "侧栏：文件", section: "视图", menu: "view", menuLabel: "侧栏：文件", menuOrder: 20, menuChecked: () => isSidebarViewOpen("files"), run: () => showSidebarView("files") },
+    { id: "view.sidebarSearch", title: "侧栏：搜索", section: "视图", menu: "view", menuLabel: "侧栏：搜索", menuOrder: 22, menuChecked: () => isSidebarViewOpen("search"), run: () => showSidebarView("search") },
+    { id: "view.sidebarOutline", title: "侧栏：大纲", section: "视图", menu: "view", menuLabel: "侧栏：大纲", menuOrder: 24, menuChecked: () => isSidebarViewOpen("outline"), run: () => showSidebarView("outline") },
+    { id: "view.sidebarBookmarks", title: "侧栏：书签", section: "视图", menu: "view", menuLabel: "侧栏：书签", menuOrder: 26, menuChecked: () => isSidebarViewOpen("bookmarks"), run: () => showSidebarView("bookmarks") },
+    // 结构化只读视图（不改文件，只换一种看法）；再点同一模式即关闭
+    { id: "view.structuredCsv", title: "以表格查看（CSV / TSV）", section: "视图", menu: "view", menuLabel: "表格视图（CSV）", menuOrder: 60, menuSeparatorBefore: true, menuChecked: () => isStructuredViewOpen("csv"), run: () => showStructuredView("csv") },
+    { id: "view.structuredJson", title: "以树查看（JSON）", section: "视图", menu: "view", menuLabel: "JSON 树视图", menuOrder: 62, menuChecked: () => isStructuredViewOpen("json"), run: () => showStructuredView("json") },
     // ---- Git（独立顶级菜单：Git 是本产品的一等能力，不再挤在「视图」里）----
     { id: "git.pull", title: "拉取（快进合并）", section: "Git", menu: "git", menuLabel: "拉取（快进合并）", menuOrder: 10, run: () => gitPull() },
     { id: "git.push", title: "推送", section: "Git", menu: "git", menuLabel: "推送", menuOrder: 20, run: () => gitPush() },

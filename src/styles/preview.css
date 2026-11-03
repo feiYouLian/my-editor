@@ -11,6 +11,10 @@
   /* Minimap 与编辑器并排（见 editor/minimap.ts）：minimap 是固定宽度的 flex 兄弟节点，
      不做覆盖层，避免横向滚动时长行钻到缩略图下面 */
   display: flex;
+  /* 拖拽分栏时宽度每帧变化：把内部重排的传播范围限制在本列内，
+     不让 CodeMirror 的测量过程波及预览列与整页布局。
+     只用 layout（不加 paint）：避免把编辑器的浮层裁掉 */
+  contain: layout;
 }
 
 #editor > .cm-editor {
@@ -70,6 +74,8 @@
   color: #1f2328;
   /* 预览始终是浅色文档：让原生滚动条/表单控件也走浅色 */
   color-scheme: light;
+  /* 与 #editor 同理：拖拽分栏时把 Markdown 文档的重排收敛在本列内 */
+  contain: layout;
 }
 
 /* 可拖动分割线（仅双栏显示） */
@@ -91,6 +97,12 @@
 body.dragging-split {
   user-select: none;
   cursor: col-resize;
+}
+
+/* HTML 预览是 iframe：跨文档会吞掉鼠标事件，拖到它上面时手势会断掉，
+   表现为"拖不动 / 一顿一顿"。拖拽期间统一让内嵌文档不接事件。 */
+body.dragging-split iframe {
+  pointer-events: none;
 }
 
 /* 侧栏分区高度拖拽中：同上，光标为上下调整 */

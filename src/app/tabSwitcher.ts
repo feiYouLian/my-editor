@@ -95,12 +95,16 @@ export class TabSwitcher {
         this.deps.largeHost.close();
         await this.deps.getEditor().loadDocument(
           tab.path ?? "",
-          tabStore.snapshotOf(tab),
+          // 传 getter：状态缓存与内容版本一致时不取全文，大文件切回不再重新序列化
+          () => tabStore.snapshotOf(tab),
           tab.readonly,
           tab.languageOverride,
           tab.id,
+          tab.contentRevision,
         );
         if (token !== this.loadToken) return;
+        // 重新加载 / 切回文档时更新未命名标签的标题（不在输入过程中用定时器改名）
+        tabStore.refreshAutoTitle(tab.id);
         this.deps.sessionHost.applyRestoredCursor(tab);
         // 普通切换（非首次会话恢复）也要回到该标签上次看到的位置
         this.deps.sessionHost.restoreScroll(tab);

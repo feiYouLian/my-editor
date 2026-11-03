@@ -27,6 +27,8 @@ export class TabsBar {
   private signature = "";
   /** 上次渲染时的激活标签 id（用于只切 class 的增量路径） */
   private activeId = "";
+  /** 已渲染过的标签 id：只有新出现的标签才播放入场动画，避免整栏重绘时全部重放 */
+  private knownIds = new Set<string>();
   private menu: HTMLElement | null = null;
   /** 溢出下拉：标签多到看不全时才出现 */
   private overflowBtn: HTMLButtonElement | null = null;
@@ -324,8 +326,9 @@ export class TabsBar {
     this.container.setAttribute("aria-label", "已打开的标签");
     for (const tab of tabStore.list()) {
       const active = tab.id === tabStore.active()?.id;
+      const entering = !this.knownIds.has(tab.id);
       const el = document.createElement("div");
-      el.className = `tab${active ? " active" : ""}`;
+      el.className = `tab${active ? " active" : ""}${entering ? " tab-enter" : ""}`;
       el.dataset.tabId = tab.id;
       el.setAttribute("role", "tab");
       el.setAttribute("aria-selected", String(active));
@@ -398,6 +401,7 @@ export class TabsBar {
       });
       this.container.append(el);
     }
+    this.knownIds = new Set(tabStore.list().map((t) => t.id));
     this.container.classList.toggle("hidden", tabStore.list().length === 0);
     this.scrollActiveIntoView();
     this.syncOverflowVisibility();

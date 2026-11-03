@@ -85,10 +85,11 @@ export interface EditorHandle {
    */
   loadDocument: (
     path: string,
-    content: string,
+    content: string | (() => string),
     readonly?: boolean,
     languageOverride?: string | null,
     docId?: string,
+    revision?: number,
   ) => Promise<void>;
   /** 关闭标签后丢弃其缓存状态 */
   forgetDocument: (docId: string) => void;
@@ -173,17 +174,22 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
   /** 已提示过「撤销历史已释放」的文档（避免每次切回都刷状态栏） */
   const undoLostWarned = new Set<string>();
   let activeDocKey: string | null = null;
+  /** 当前编辑器状态对应的标签内容版本（-1 = 未记录，只能退回全文比较） */
+  let activeRevision = -1;
   /** 配置（含空白 / 换行等开关）每次变更 +1，用于判断缓存状态是否过期 */
   let configGeneration = 0;
 
-  /** 取该文档的缩进风格：已检测过直接复用，否则按内容检测一次 */
-  function resolveIndent(docKey: string | null, content: string): IndentStyle {
+  /** 取该文档的缩进风格：已检测过直接复用，否则按需取内容检测一次 */
+  function resolveIndent(
+    docKey: string | null,
+    getContent: () => string,
+  ): IndentStyle {
     if (!settings.detectIndent) return globalIndentStyle();
     if (docKey) {
       const cached = indentByDoc.get(docKey);
       if (cached) return cached;
     }
-    const detected = detectIndent(content, {
+    const detected = detectIndent(getContent(), {
       tabSize: settings.tabSize,
       insertSpaces: settings.insertSpaces,
     });
@@ -271,6 +277,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
       generation: configGeneration,
       langKey: languageKey,
       readonly: currentReadonly,
+      revision: activeRevision,
     });
   }
 
@@ -315,21 +322,39 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
 
   async function loadDocument(
     path: string,
-    content: string,
+    content: string | (() => string),
     readonly = false,
     languageOverride?: string | null,
     docId?: string,
+    /** 标签内容版本（tab.contentRevision）：一致即可跳过切回时的全文比较 */
+    revision = -1,
   ): Promise<void> {
     const seq = ++docLoadSeq;
     const key = docId ?? null;
+    // content 允许传 getter：版本一致 / 状态可复用时完全不取全文，
+    // 只有必须比较或重建 EditorState 时才真正 toString。
+    let contentText: string | null = typeof content === "string" ? content : null;
+    const resolveContent = (): string => {
+      if (contentText === null) {
+        contentText = typeof content === "string" ? content : content();
+      }
+      return contentText;
+    };
+    // 版本一致说明编辑器状态与标签内容都未被外部替换，连全文比较都可省掉。
+    const revisionMatches = revision >= 0 && activeRevision === revision;
     const sameDoc =
-      key !== null && activeDocKey === key && view.state.doc.toString() === content;
+      key !== null &&
+      activeDocKey === key &&
+      (revisionMatches ||
+        (view.state.doc.length === resolveContent().length &&
+          view.state.doc.toString() === resolveContent()));
+    if (sameDoc) activeRevision = revision;
     loadingDepth++;
     try {
       currentPath = path;
       currentReadonly = readonly;
-      // 缩进按文档生效：必须先算，后面 createState / dynamicEffects 都要用
-      currentIndent = resolveIndent(key, content);
+      // 缩进按文档生效：已检测过的直接复用，不会为此取全文
+      currentIndent = resolveIndent(key, resolveContent);
       if (!sameDoc) {
         // 离开当前标签：先把状态（含撤销历史）存起来
         if (activeDocKey !== null) cacheActiveState(activeDocKey);
@@ -337,11 +362,17 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
         // 先取光标再删：delete 会连超限文档的光标记录一起清掉
         const cursor = key !== null ? stateCache.takeCursor(key) : undefined;
         if (key !== null) stateCache.delete(key);
-        if (cached && cached.state.doc.toString() === content) {
+        const cachedMatches =
+          cached !== undefined &&
+          ((revision >= 0 && cached.revision === revision) ||
+            (cached.state.doc.length === resolveContent().length &&
+              cached.state.doc.toString() === resolveContent()));
+        if (cached && cachedMatches) {
           view.setState(cached.state);
           languageKey = cached.langKey;
           // 先落 docId：语言加载 / 光标广播都依赖它判断当前文档
           activeDocKey = key;
+          activeRevision = revision;
           const scroll = EditorView.scrollIntoView(
             cached.state.selection.main.head,
             { y: "nearest" },
@@ -372,9 +403,10 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           }
         } else {
           // 新状态在创建时即按当前配置与只读态构建
-          view.setState(createState(content));
+          view.setState(createState(resolveContent()));
           languageKey = null;
           activeDocKey = key;
+          activeRevision = revision;
           // 没有可复用的缓存状态。只在**确实丢了历史**时提示：
           // 超大文档切走时拒绝缓存、或缓存超 8 条被淘汰（见 DocumentStateCache.lost）。
           // 首次打开文件时缓存里当然没有，那不是"丢失"——此前这里按 `!cached` 判断，
@@ -438,6 +470,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     languageSeq++;
     if (activeDocKey === docId) {
       activeDocKey = null;
+      activeRevision = -1;
       // 同时清空视图与语言高亮：否则已关闭文档的内容/语言会残留显示，
       // 且在飞的 applyLanguage 早已被守卫拦截，languageCompartment 不会自愈
       currentReadonly = false;
@@ -454,7 +487,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
     // 关闭"检测缩进"后立即回落到全局配置；开启时沿用当前文档已检测的结果
     currentIndent = settings.detectIndent
       ? (activeDocKey !== null ? indentByDoc.get(activeDocKey) : undefined) ??
-        resolveIndent(activeDocKey, view.state.doc.toString())
+        resolveIndent(activeDocKey, () => view.state.doc.toString())
       : globalIndentStyle();
     view.dispatch({
       effects: dynamicEffects(c, {

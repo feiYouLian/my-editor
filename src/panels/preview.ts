@@ -12,12 +12,17 @@
 
 import type { EditorView } from "@codemirror/view";
 import { pathKindOf as kindOf } from "./preview/pathKind";
-import { loadMarkdownPipeline, type MarkdownRenderer } from "./preview/markdownPipeline";
+import {
+  loadMarkdownPipeline,
+  type MarkdownRenderer,
+  type Sanitizer,
+} from "./preview/markdownPipeline";
 import type { TocEntry } from "./preview/markdownToc";
 import { hydrateMermaid } from "./preview/mermaid";
 import { EXPORT_IMAGE_MAX_BYTES, inlineLocalImages } from "./preview/localImages";
 import { renderImageViewer } from "./preview/imageViewer";
 import { PreviewFindBar, type PreviewFindScope } from "./preview/findBar";
+import { runWhenIdle } from "../ui/idle";
 import type { PreviewKind, PreviewMode, PreviewTab } from "./preview/types";
 
 export type { PreviewKind, PreviewMode, PreviewTab };
@@ -42,6 +47,26 @@ const SYNC_TOP_MARGIN = 8;
  */
 const PREVIEW_ECHO_MS = 120;
 
+/**
+ * 在按 key 升序排列的数组里找最后一个 key ≤ value 的下标（没有则 -1）。
+ * 滚动联动每帧都要定位块：块数可达数百上千，线性扫描会随文档长度变成热路径。
+ */
+function lastAtOrBefore<T>(list: readonly T[], value: number, key: (item: T) => number): number {
+  let lo = 0;
+  let hi = list.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(list[mid]) <= value) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
 export class PreviewHost {
   private mode: PreviewMode = "edit";
   private kind: PreviewKind = null;
@@ -50,16 +75,26 @@ export class PreviewHost {
   private activeId: string | null = null;
   private mdReady: Promise<void> | null = null;
   private md: MarkdownRenderer | null = null;
-  private dompurify: { sanitize(html: string): string } | null = null;
+  private dompurify: Sanitizer | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 空闲渲染的取消句柄：切标签 / 释放内容时必须作废 */
+  private cancelIdleRender: (() => void) | null = null;
   private contentEl: HTMLElement;
   /** 已渲染到预览区的标签 id（HTML 同标签重渲染时保留滚动位置） */
   private renderedTabId: string | null = null;
+  /**
+   * 已渲染内容的对象引用（字符串不可变，引用相同即内容未变）。
+   * 用来跳过"同一标签、同一内容"的重复整篇渲染——启动恢复、模式切换
+   * 都会对同一个标签再走一次 apply()，重新跑 markdown-it + DOMPurify 是白费的。
+   */
+  private renderedSource: string | null = null;
   /** 渲染代际：await 后据此丢弃被更新渲染取代的旧结果 */
   private renderSeq = 0;
   /** Markdown 目录：按钮 + 面板（懒创建；无标题或非 md 时隐藏） */
   private tocBtn: HTMLButtonElement | null = null;
   private tocPanel: HTMLElement | null = null;
+  /** 目录条目签名：标题没变时不重建目录列表 */
+  private tocSignature = "";
 
   // ---- 双栏滚动联动状态 ----
   /** 最近一次参与联动的编辑器视图（供重渲染 / 图片加载后校准用） */
@@ -75,6 +110,15 @@ export class PreviewHost {
   /** 建缓存时的内容高度：图片加载 / 重渲染会改变它，作为失效信号 */
   private markerCacheHeight = -1;
 
+  // ---- 块级增量渲染 ----
+  /**
+   * 上次渲染的顶层块节点（HTML 指纹 + 根节点）。
+   * 重渲染时渲染结果相同的块直接复用节点，只创建变化的块，避免整篇 DOM 重建。
+   */
+  private renderedBlocks: { key: string; line: number; node: HTMLElement }[] | null = null;
+  /** 块缓存所属标签：换标签时必须丢弃，否则会把上一标签的节点搬到新文档里 */
+  private renderedBlocksTabId: string | null = null;
+
   constructor(
     private pane: HTMLElement,
     private area: HTMLElement,
@@ -89,12 +133,16 @@ export class PreviewHost {
   ) {
     this.pane.innerHTML = '<div class="preview-content"></div>';
     this.contentEl = this.pane.querySelector<HTMLElement>(".preview-content")!;
-    this.contentEl.addEventListener("scroll", () => this.onPreviewScroll());
+    // 不阻止默认滚动：passive 避免浏览器为等待监听器而拖慢滚动
+    this.contentEl.addEventListener("scroll", () => this.onPreviewScroll(), { passive: true });
     this.findBar = new PreviewFindBar(this.pane, () => this.findScope());
-    // 窗口尺寸变化会改变块高度：丢弃标记缓存，下一帧重建
-    window.addEventListener("resize", () => {
-      this.markerCache = null;
-    });
+    // 预览列尺寸变化（窗口缩放 / 拖拽分栏）会重排文档：丢弃块标记缓存，下次联动时重建。
+    // 用 ResizeObserver 而不是 window.resize：拖拽分栏不会触发窗口 resize。
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => {
+        this.markerCache = null;
+      }).observe(this.contentEl);
+    }
   }
 
   /** 移除预览区残留的图片工具条，避免连续打开图片时叠加 */
@@ -146,10 +194,17 @@ export class PreviewHost {
     const usable = entries.filter((entry) => entry.text !== "");
     if (usable.length < 2) {
       this.hideToc();
+      this.tocSignature = "";
       return;
     }
     const { btn, panel } = this.ensureTocUi();
     btn.hidden = false;
+    // 标题列表没变时跳过重建：正文编辑停顿会反复走这里，几百个标题的 DOM 重建很浪费
+    const signature = usable
+      .map((entry) => `${entry.level}\u0001${entry.id}\u0001${entry.text}`)
+      .join("\u0002");
+    if (signature === this.tocSignature) return;
+    this.tocSignature = signature;
     panel.innerHTML = "";
     for (const entry of usable) {
       const item = document.createElement("div");
@@ -181,6 +236,8 @@ export class PreviewHost {
     if (tab?.kind === "image") {
       this.kind = null;
       this.renderedTabId = null;
+      this.renderedSource = null;
+      this.resetBlockCache();
       this.contentEl.classList.remove("md-doc");
       this.hideToc();
       this.findBar.forget();
@@ -208,6 +265,9 @@ export class PreviewHost {
     if (this.mode === "edit" && prevId !== this.activeId) this.releaseContent();
     this.setAreaMode(this.mode);
     if (this.mode !== "edit" && tab) {
+      // 同一标签 + 同一份内容（引用未变）已经渲染过：跳过整篇 markdown-it + DOMPurify。
+      // 启动恢复（activate 一次、显式 load 再一次）与模式切换都会走到这里。
+      if (this.renderedTabId === tab.id && this.renderedSource === tab.content) return;
       this.renderSafe(tab, this.kind);
     }
   }
@@ -283,26 +343,44 @@ export class PreviewHost {
     this.clearImageToolbar();
     this.markerCache = null;
     this.renderedTabId = null;
+    this.renderedSource = null;
+    this.resetBlockCache();
+  }
+
+  /** 丢弃块级增量渲染的节点缓存（内容已释放 / 换标签 / 改走 HTML 渲染） */
+  private resetBlockCache(): void {
+    this.renderedBlocks = null;
+    this.renderedBlocksTabId = null;
   }
 
   /** 取消待触发的防抖渲染（立即渲染 / 释放内容时调用） */
   private cancelScheduledRender(): void {
-    if (!this.renderTimer) return;
-    clearTimeout(this.renderTimer);
-    this.renderTimer = null;
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+    this.cancelIdleRender?.();
+    this.cancelIdleRender = null;
   }
 
   /** 编辑内容变化后的防抖重渲染：内容快照由调用方在真正渲染时再取 */
   scheduleRender(getTab: () => PreviewTab): void {
     if (this.mode === "edit" || !this.kind) return;
     if (this.renderTimer) clearTimeout(this.renderTimer);
+    this.cancelIdleRender?.();
+    this.cancelIdleRender = null;
     this.renderTimer = setTimeout(() => {
       this.renderTimer = null;
       const kind = this.kind;
       if (!kind || this.mode === "edit") return;
       const tab = getTab();
       if (this.activeId !== tab.id) return;
-      this.renderSafe(tab, kind);
+      // 整篇 markdown-it 解析仍是重活：推迟到空闲时段，避免和输入 / 滚动抢帧
+      this.cancelIdleRender = runWhenIdle(() => {
+        this.cancelIdleRender = null;
+        if (this.kind !== kind || this.mode === "edit" || this.activeId !== tab.id) return;
+        this.renderSafe(tab, kind);
+      }, 600);
     }, 300);
   }
 
@@ -316,6 +394,8 @@ export class PreviewHost {
       this.contentEl.innerHTML = "";
       this.markerCache = null;
       this.renderedTabId = null;
+      this.renderedSource = null;
+      this.resetBlockCache();
       const note = document.createElement("div");
       note.className = "preview-note";
       note.textContent = String(e instanceof Error ? e.message : e);
@@ -372,11 +452,8 @@ export class PreviewHost {
   private previewScrollTopForLine(lineNo: number): number | null {
     const markers = this.lineMarkers();
     if (markers.length === 0) return null;
-    let idx = 0;
-    for (let i = 0; i < markers.length; i++) {
-      if (markers[i].line <= lineNo) idx = i;
-      else break; // data-line 按文档序递增
-    }
+    // data-line 按文档序递增：二分定位，滚动热路径不做线性扫描
+    const idx = Math.max(0, lastAtOrBefore(markers, lineNo, (m) => m.line));
     const cur = markers[idx];
     const next = markers[idx + 1];
     if (!next) return Math.max(0, cur.top - SYNC_TOP_MARGIN);
@@ -394,6 +471,8 @@ export class PreviewHost {
     if (this.markerCache !== null && this.markerCacheHeight === height) {
       return this.markerCache;
     }
+    // 注意不能用 offsetTop：表格里的 thead/tr 等元素 offsetParent 会是 <table>，
+    // 它们的 offsetTop 不是内容坐标，会把表格文档的块标记整体算错（表现为滚动错位）。
     const contentTop =
       this.contentEl.getBoundingClientRect().top - this.contentEl.scrollTop;
     const markers: { line: number; top: number }[] = [];
@@ -446,6 +525,8 @@ export class PreviewHost {
         '<div class="preview-note">文件过大（超过 20MB），预览已禁用</div>';
       this.markerCache = null;
       this.renderedTabId = null;
+      this.renderedSource = null;
+      this.resetBlockCache();
       this.hideToc();
       return;
     }
@@ -454,21 +535,105 @@ export class PreviewHost {
       await this.ensureMarkdown();
       // 管线加载期间可能已切走：不必再渲染整篇文档
       if (this.isStale(tab, seq)) return;
-      // 先渲染为 DOM：本地图片需在消毒前替换为 data URL
-      // （盘符路径会被 DOMPurify 当作未知协议而移除 src）
-      const holder = document.createElement("div");
-      // 一次解析同时拿到 HTML 与目录（heading id 在解析期间打上）
-      const rendered = this.md!.renderWithToc(tab.content);
-      holder.innerHTML = rendered.html;
-      await inlineLocalImages(holder, tab.path);
-      // 解析期间可能已切标签 / 切模式，或已有更新的渲染：丢弃过期结果
-      if (this.isStale(tab, seq)) return;
-      // innerHTML 替换会重置滚动位置：先记录再恢复（双栏下随后按编辑器位置校准）
+      // 上一轮同标签的块节点可复用；换标签必须丢弃，避免把上一标签的节点搬过来
+      const reusable = new Map<string, { node: HTMLElement; line: number }[]>();
+      const reusableCounts = new Map<string, number>();
+      if (this.renderedBlocksTabId === tab.id) {
+        for (const entry of this.renderedBlocks ?? []) {
+          const queue = reusable.get(entry.key);
+          if (queue) queue.push({ node: entry.node, line: entry.line });
+          else reusable.set(entry.key, [{ node: entry.node, line: entry.line }]);
+          reusableCounts.set(entry.key, (reusableCounts.get(entry.key) ?? 0) + 1);
+        }
+      }
+      this.renderedBlocks = null;
+      this.renderedBlocksTabId = tab.id;
+
+      // 源码未变的块直接跳过渲染：省掉 markdown 渲染 / 代码高亮 / 公式排版等重活
+      const reuse = (key: string): boolean => {
+        const available = reusableCounts.get(key) ?? 0;
+        if (available <= 0) return false;
+        reusableCounts.set(key, available - 1);
+        return true;
+      };
+      // 一次解析同时拿到块级 HTML 与目录（heading id 在解析期间打上）
+      const rendered = this.md!.renderBlocksWithToc(tab.content, reuse);
+      const blocks = rendered.blocks;
+
+      const ordered: HTMLElement[] = [];
+      const created: HTMLElement[] = [];
+      let canPatch = true;
+      for (const block of blocks) {
+        // 只有管线明确跳过渲染（html 缺失）的块才复用旧节点；
+        // 标题块即使源码没变也会重新渲染（锚点 id 可能受前文影响），不能用旧节点
+        if (!block.html) {
+          const queue = reusable.get(block.key);
+          const cached = queue && queue.length > 0 ? queue.pop() : undefined;
+          if (!cached) {
+            canPatch = false;
+            break;
+          }
+          // 复用块要同步 data-line：上方插入 / 删除行会让源码行号整体位移
+          this.syncBlockLine(cached.node, cached.line, block.line);
+          ordered.push(cached.node);
+          continue;
+        }
+        const wrapper = document.createElement("div");
+        wrapper.innerHTML = block.html;
+        // 每个块应只产出一个根元素；出现多个根时退回整篇替换，避免块与节点错位
+        if (wrapper.childElementCount !== 1) {
+          canPatch = false;
+          break;
+        }
+        const node = wrapper.firstElementChild as HTMLElement;
+        ordered.push(node);
+        created.push(node);
+      }
+
+      if (canPatch && created.length > 0) {
+        // 先渲染为 DOM：本地图片需在消毒前替换为 data URL
+        // （盘符路径会被 DOMPurify 当作未知协议而移除 src）
+        const holder = document.createElement("div");
+        holder.append(...created);
+        await inlineLocalImages(holder, tab.path);
+        // 解析期间可能已切标签 / 切模式，或已有更新的渲染：丢弃过期结果
+        if (this.isStale(tab, seq)) return;
+        // markdown-it html:false + DOMPurify 兜底消毒；只处理本次新建的块
+        this.dompurify!.sanitize(holder, { IN_PLACE: true });
+        // 消毒器若移除了某个根元素，块与节点的对应关系不再成立
+        if (holder.childElementCount !== created.length) canPatch = false;
+      }
+
+      // 替换内容会重置滚动位置：先记录再恢复（双栏下随后按编辑器位置校准）
       const scrollTop = this.contentEl.scrollTop;
-      // markdown-it html:false + DOMPurify 兜底消毒（data:image 在媒体标签上被允许）
-      this.contentEl.innerHTML = this.dompurify!.sanitize(holder.innerHTML);
-      this.contentEl.scrollTop = scrollTop;
+      if (canPatch) {
+        const frag = document.createDocumentFragment();
+        for (const node of ordered) frag.append(node);
+        this.contentEl.replaceChildren(frag);
+        this.contentEl.scrollTop = scrollTop;
+        this.renderedBlocks = ordered.map((node, index) => ({
+          key: blocks[index].key,
+          line: blocks[index].line,
+          node,
+        }));
+        // 只有新建块里的图片需要等加载；复用块的监听早已绑定
+        for (const node of created) this.bindImageLoadResync(node);
+      } else {
+        // 兜底：整篇重建（极少触发，例如某块产出了多个根元素）
+        const holder = document.createElement("div");
+        // 部分块可能走了复用（没有 html），这里必须整篇重新渲染
+        holder.innerHTML = this.md!.render(tab.content);
+        await inlineLocalImages(holder, tab.path);
+        if (this.isStale(tab, seq)) return;
+        this.dompurify!.sanitize(holder, { IN_PLACE: true });
+        this.contentEl.replaceChildren(...Array.from(holder.childNodes));
+        this.contentEl.scrollTop = scrollTop;
+        this.resetBlockCache();
+        this.bindImageLoadResync();
+      }
+
       this.renderedTabId = tab.id;
+      this.renderedSource = tab.content;
       this.renderToc(rendered.toc);
       // Mermaid 图表：懒加载后把占位块替换成 SVG（失败降级为源码块）
       void hydrateMermaid(this.contentEl, (html) => this.dompurify!.sanitize(html)).catch(
@@ -476,12 +641,12 @@ export class PreviewHost {
       );
       // 新内容：块标记缓存必须重建（scrollHeight 变化不一定能完全反映）
       this.markerCache = null;
-      this.bindImageLoadResync();
       this.scheduleResync();
       // 内容已换：按当前查询重建命中（高亮的 Range 指向旧 DOM）
       this.findBar.revive();
     } else {
       this.contentEl.classList.remove("md-doc");
+      this.resetBlockCache();
       this.hideToc();
       // 同一标签重渲染（编辑停顿 / 模式切换）保留 iframe 滚动位置；换标签仍从顶部开始
       let prevScroll = 0;
@@ -518,6 +683,7 @@ export class PreviewHost {
         );
       }
       this.renderedTabId = tab.id;
+      this.renderedSource = tab.content;
     }
   }
 
@@ -564,10 +730,7 @@ export class PreviewHost {
   }
 
   /** 管线构建完成后安装（供 loadMarkdownPipeline 回调） */
-  installMarkdown(
-    md: MarkdownRenderer,
-    dompurify: { sanitize(html: string): string },
-  ): void {
+  installMarkdown(md: MarkdownRenderer, dompurify: Sanitizer): void {
     this.md = md;
     this.dompurify = dompurify;
   }
@@ -610,11 +773,8 @@ export class PreviewHost {
     // 全部用内容坐标比较：容器滚动量即"预览顶部边缘"在内容坐标中的位置
     // （scrollTop 与缓存的 top 同一坐标系，无需逐帧读取 rect）
     const threshold = this.contentEl.scrollTop + 2;
-    let idx = -1;
-    for (let i = 0; i < markers.length; i++) {
-      if (markers[i].top <= threshold) idx = i;
-      else break;
-    }
+    // markers 已按 top 升序（lineMarkers 里排过）：二分代替逐项比较
+    const idx = lastAtOrBefore(markers, threshold, (m) => m.top);
     let line: number;
     if (idx < 0) {
       line = markers[0].line;
@@ -633,9 +793,24 @@ export class PreviewHost {
     this.onScrollToLine(line);
   }
 
+  /**
+   * 复用块的行号同步：块内容未变、仅整体位移时，把块内所有 data-line
+   * 按起点差值平移（列表等块内部有多个行标记，不能统一盖成起始行）。
+   */
+  private syncBlockLine(node: HTMLElement, oldLine: number, newLine: number): void {
+    const delta = newLine - oldLine;
+    if (delta === 0) return;
+    const shift = (el: HTMLElement): void => {
+      const current = Number(el.dataset.line);
+      if (Number.isFinite(current)) el.dataset.line = String(current + delta);
+    };
+    shift(node);
+    node.querySelectorAll<HTMLElement>("[data-line]").forEach(shift);
+  }
+
   /** 图片异步加载会改变文档高度：加载完成后按编辑器位置重新校准 */
-  private bindImageLoadResync(): void {
-    for (const img of this.contentEl.querySelectorAll("img")) {
+  private bindImageLoadResync(root: HTMLElement = this.contentEl): void {
+    for (const img of root.querySelectorAll("img")) {
       if (img.complete) continue;
       img.addEventListener(
         "load",

@@ -74,6 +74,11 @@ export class StructuredView {
     return this.backdrop !== null;
   }
 
+  /** 当前展示模式（视图菜单勾选态用） */
+  get currentMode(): StructuredMode {
+    return this.mode;
+  }
+
   /** 按扩展名猜默认视图；.json/.jsonc 走树，其余走表格 */
   static modeForName(name: string | null): StructuredMode {
     return name && /\.jsonc?$/i.test(name) ? "json" : "csv";
@@ -243,10 +248,14 @@ export class StructuredView {
     const rows = el("div", "sv-rows");
     spacer.append(rows);
     scroller.append(spacer);
-    scroller.addEventListener("scroll", () => {
-      if (this.headScroll) this.headScroll.scrollLeft = scroller.scrollLeft;
-      this.scheduleTableWindow();
-    });
+    scroller.addEventListener(
+      "scroll",
+      () => {
+        if (this.headScroll) this.headScroll.scrollLeft = scroller.scrollLeft;
+        this.scheduleTableWindow();
+      },
+      { passive: true },
+    );
 
     grid.append(headScroll, scroller);
     body.append(grid);

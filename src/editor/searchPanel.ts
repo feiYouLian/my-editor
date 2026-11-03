@@ -1,5 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 import { getSearchQuery } from "@codemirror/search";
+import { runWhenIdle } from "../ui/idle";
 import { bookmarkAllMatches } from "./bookmarks";
 
 /**
@@ -27,6 +28,8 @@ export class SearchResultsPanel {
   private countEl!: HTMLElement;
   private filterInput!: HTMLInputElement;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 空闲重枚举的取消句柄：再次排程 / 关闭面板时必须作废 */
+  private cancelIdleRefresh: (() => void) | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -104,9 +107,15 @@ export class SearchResultsPanel {
    */
   scheduleRefresh(): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.cancelIdleRefresh?.();
+    this.cancelIdleRefresh = null;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
-      this.refresh();
+      // 重枚举会扫全文档（最多 1 万命中）：放到空闲时段，避免撞上输入 / 滚动帧
+      this.cancelIdleRefresh = runWhenIdle(() => {
+        this.cancelIdleRefresh = null;
+        this.refresh();
+      }, 500);
     }, 150);
   }
 
@@ -165,6 +174,8 @@ export class SearchResultsPanel {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
+    this.cancelIdleRefresh?.();
+    this.cancelIdleRefresh = null;
     this.container.innerHTML = "";
     this.container.classList.add("hidden");
   }

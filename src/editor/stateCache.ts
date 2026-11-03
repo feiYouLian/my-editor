@@ -12,6 +12,8 @@ export interface CachedState {
   /** 该状态实际生效的高亮语言（null = 纯文本 / 被性能保护禁用） */
   langKey: string | null;
   readonly: boolean;
+  /** 缓存时的标签内容版本：版本未变即可跳过切回时的全文比较 */
+  revision: number;
 }
 
 /** 缓存条数上限 */

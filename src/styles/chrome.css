@@ -67,7 +67,9 @@
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  /* 顶部菜单是主要入口：比正文略大、加粗，扫视时更容易定位 */
+  font-size: 13px;
+  font-weight: 600;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
   height: 24px;

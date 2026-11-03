@@ -27,6 +27,11 @@ const NEWLINE_OPTIONS: { value: string; label: string }[] = [
 
 /** 自动乱码检测的文件体积上限（更大文件跳过，避免重复读盘） */
 const MOJIBAKE_MAX_BYTES = 5 * 1024 * 1024;
+/**
+ * 送检文本采样长度（头 + 尾）：乱码是全篇特征，采样足够判定；
+ * 避免大文件在打开时再做一次全文 toString 与 IPC 序列化。
+ */
+const MOJIBAKE_SAMPLE_CHARS = 256 * 1024;
 
 interface MojibakeReport {
   suspicious: boolean;
@@ -256,7 +261,7 @@ export class StatusActions {
     try {
       const report = await invoke<MojibakeReport>("detect_mojibake", {
         path: tab.path,
-        text: tabStore.snapshotOf(tab),
+        text: tabStore.contentSampleOf(tab, MOJIBAKE_SAMPLE_CHARS),
         current: tab.encoding,
       });
       const current = tabStore.findById(tabId);

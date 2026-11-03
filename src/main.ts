@@ -199,7 +199,11 @@ statusWrap.addEventListener("click", () => statusBar.toggleWordWrap());
 initBusy({ show: statusBar.showBusy, hide: statusBar.hideBusy });
 
 // ---- 通知中心（H9）：失败与待处理提示的聚合入口 ----
-const noticePanel = new NoticePanel(statusNotice, { onMessage: statusBar.showMessage });
+const noticePanel = new NoticePanel(
+  // ⚠ 角标、时钟图标与状态栏瞬时消息都能打开这个面板
+  [statusNotice, statusHistory, statusMessage],
+  { onMessage: statusBar.showMessage },
+);
 
 /** ⚠ 角标与消息历史图标共用同一个打开动作 */
 const toggleNoticePanel = (e: Event): void => {
@@ -550,8 +554,38 @@ function maybePromptExternalChange(): void {
   void promptExternalReload(tab);
 }
 
+/**
+ * 内容帧里真正会变的只有「脏标记 / 外部修改标记」：
+ * 只有它们变化时才需要重建标签栏、打开的文件列表与状态栏。
+ * 其余字段（路径 / 名称 / 编码 / 换行 / 语言）都走结构帧。
+ */
+function tabFlagSignature(): string {
+  return tabStore
+    .list()
+    .map((t) => `${t.id}\u0001${t.dirty ? 1 : 0}${t.externallyChanged ? 1 : 0}`)
+    .join("\u0002");
+}
+
+/** 上一次应用渲染时的标记签名：内容帧高频触发，先比对再决定是否重绘 */
+let lastTabFlagSignature = "";
+
 /** 标签页状态变化 → 重渲染 + 同步编辑器内容 + 持久化会话 */
 tabStore.subscribe((kind) => {
+  // 内容帧（每次按键所在帧）只处理确实变化的标记，避免每帧重建侧栏列表与状态栏；
+  // 滚动 / 输入时的卡顿主要来自这类"无差别全量刷新"。
+  if (kind === "content") {
+    const flags = tabFlagSignature();
+    if (flags !== lastTabFlagSignature) {
+      lastTabFlagSignature = flags;
+      tabsBarView.render();
+      openEditors.refresh();
+      statusBar.refresh();
+    }
+    scheduleRunButtonRefresh();
+    return;
+  }
+
+  lastTabFlagSignature = tabFlagSignature();
   const prevActiveId = tabSwitcher.currentId;
   tabsBarView.render();
   openEditors.refresh();
@@ -564,8 +598,7 @@ tabStore.subscribe((kind) => {
   // 运行按钮依赖当前文档的语言与头部内容（cURL 识别）：
   // 结构帧立即刷新；内容帧合并到 300ms 后再算（cURL 识别要读 4KB 文档头，
   // 不能挂在每个按键帧上，但也不能只在结构帧算——输入 curl 后按钮应及时可用）
-  if (kind === "structure") refreshRunButton();
-  else scheduleRunButtonRefresh();
+  refreshRunButton();
   sessionHost.refreshDraftBadge();
   if (tabStore.active()?.id !== prevActiveId) {
     // 等这一轮标签载入完成再问，避免"标签还没显示就弹窗"
@@ -1005,6 +1038,11 @@ let inlineBlameEnabled = (() => {
 })();
 let lastCursorLine = 1;
 let lastBlamePath = "";
+/** 当前真正写入编辑器的行内 Blame（-1 = 未显示）：避免同一行反复 dispatch */
+let appliedBlameLine = -1;
+let appliedBlamePath = "";
+/** 光标请求代际：blame 异步返回时只让最后一次光标位置生效 */
+let blameSeq = 0;
 /** path → 行号映射；Promise 缓存避免光标每次移动都重新跑 git blame */
 const inlineBlameCache = new Map<string, Promise<Map<number, BlameAnnotation>>>();
 
@@ -1019,9 +1057,18 @@ function toBlameAnnotation(line: BlameLine): BlameAnnotation {
   };
 }
 
+/** 清除行内 Blame；已经没显示时不再 dispatch（光标每次移动都会走到这里） */
+function clearInlineBlame(): void {
+  if (appliedBlameLine === -1) return;
+  appliedBlameLine = -1;
+  appliedBlamePath = "";
+  editorHandle.setBlame(null);
+}
+
 /** 按当前光标行更新内联 Blame；不满足条件时清除 */
 function updateInlineBlame(line = lastCursorLine): void {
   lastCursorLine = line;
+  const seq = ++blameSeq;
   const tab = activeTab();
   if (
     !inlineBlameEnabled ||
@@ -1032,14 +1079,14 @@ function updateInlineBlame(line = lastCursorLine): void {
     tab.dirty ||
     editorHandle.docId() !== tab.id
   ) {
-    editorHandle.setBlame(null);
+    clearInlineBlame();
     return;
   }
   const path = tab.path;
   // 换文件先清掉上一文件的注释，避免加载新 blame 期间显示错行
   if (lastBlamePath !== path) {
     lastBlamePath = path;
-    editorHandle.setBlame(null);
+    clearInlineBlame();
   }
   let cached = inlineBlameCache.get(path);
   if (!cached) {
@@ -1065,6 +1112,8 @@ function updateInlineBlame(line = lastCursorLine): void {
   }
   const pending = cached;
   void pending.then((map) => {
+    // 光标在 blame 返回前移动过多次：只让最后一次请求落地，避免一次性 dispatch 多个过期注释
+    if (seq !== blameSeq) return;
     const current = activeTab();
     if (
       !inlineBlameEnabled ||
@@ -1075,7 +1124,16 @@ function updateInlineBlame(line = lastCursorLine): void {
     ) {
       return;
     }
-    editorHandle.setBlame(map.get(lastCursorLine) ?? null);
+    const info = map.get(lastCursorLine) ?? null;
+    if (!info) {
+      // 该行没有 Blame：清掉旧注释；已经清过则不再 dispatch
+      clearInlineBlame();
+      return;
+    }
+    if (appliedBlamePath === path && appliedBlameLine === lastCursorLine) return;
+    appliedBlamePath = path;
+    appliedBlameLine = lastCursorLine;
+    editorHandle.setBlame(info);
   });
 }
 
@@ -1135,11 +1193,14 @@ editorHandle = createEditor($("editor"), {
     if (sidebarViews.isExpanded("outline")) sidebarOutline.scheduleRefresh();
   },
   onCursorChange: ({ line, col, totalLines, selectedChars }) => {
-    statusCursor.textContent =
+    // 文字没变就不写：textContent 赋值即使内容相同也会作废该节点的样式/布局
+    const cursorText =
       selectedChars > 0
         ? `行 ${line}，列 ${col}（选中 ${selectedChars} 字符）`
         : `行 ${line}，列 ${col}`;
-    statusLines.textContent = `共 ${totalLines} 行`;
+    if (statusCursor.textContent !== cursorText) statusCursor.textContent = cursorText;
+    const linesText = `共 ${totalLines} 行`;
+    if (statusLines.textContent !== linesText) statusLines.textContent = linesText;
     const tab = activeTab();
     // 同上：编辑器文档与激活标签不一致时丢弃，避免光标串台
     if (tab && editorHandle.docId() === tab.id) {
@@ -1182,8 +1243,14 @@ editorHandle = createEditor($("editor"), {
 // 惰性快照：按键只标记内容已变，需要全文时经 snapshotOf 从编辑器拉取
 tabStore.setContentProvider({
   docId: () => editorHandle.docId(),
-  full: () => editorHandle.getContent(),
+  // 切标签时只存 Text 引用，不做全文 toString（Text 是不可变快照，随编辑器继续编辑也不会变）
+  doc: () => editorHandle.view.state.doc,
+  length: () => editorHandle.view.state.doc.length,
   head: (chars) => editorHandle.view.state.doc.sliceString(0, chars),
+  tail: (chars) => {
+    const doc = editorHandle.view.state.doc;
+    return doc.sliceString(Math.max(0, doc.length - chars));
+  },
 });
 
 // 配置变更 → 热更新编辑器（缩进/括号/缩进线/同名高亮/列选择/键位/主题等 Compartment 重配）
@@ -1568,7 +1635,8 @@ const sessionHost = new SessionHost(
     refreshStatus: () => statusBar.refresh(),
     onReloadActiveTab: () => reloadActiveTab(),
     onOpenFile: (path) => fileService.openFilePath(path, { silent: true }),
-    onNewUntitled: (name) => fileService.newUntitled(name),
+    // 草稿恢复的标签名是上次保存的标题，不能再被首个非空行覆盖
+    onNewUntitled: (name) => fileService.newUntitled(name, { autoTitle: false }),
     onLoadPendingTab: (tab) => largeHost.loadPendingTab(tab),
     onDiffDisk: () => void diffService.diffUnsaved({ allowClean: true }),
     getDocId: () => editorHandle.docId(),
@@ -1721,7 +1789,20 @@ $<HTMLButtonElement>("search-box").addEventListener("click", () => palette.open(
 for (const id of ["btn-sidebar-toggle", "btn-sidebar-show"]) {
   document.getElementById(id)?.addEventListener("click", () => layout.toggleSidebar());
 }
-$<HTMLButtonElement>("btn-terminal").addEventListener("click", () => void terminalHost.toggle());
+const terminalBtn = $<HTMLButtonElement>("btn-terminal");
+terminalBtn.addEventListener("click", () => void terminalHost.toggle());
+// 终端面板显隐没有集中回调：直接观察面板容器的 class，标题栏按钮保持同步高亮
+const terminalPanelEl = document.getElementById("terminal-panel");
+if (terminalPanelEl) {
+  const syncTerminalButton = (): void => {
+    terminalBtn.classList.toggle("active", !terminalPanelEl.classList.contains("hidden"));
+  };
+  new MutationObserver(syncTerminalButton).observe(terminalPanelEl, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  syncTerminalButton();
+}
 
 // 调试面板开关（免去按 F12）；命令属 core webview 插件而非 window。
 // 发布构建同样可用：Cargo.toml 已开启 tauri 的 devtools 特性，否则该命令不存在。
@@ -1780,7 +1861,29 @@ registerCommands(
     toggleResultsPanel,
     focusWorkspaceSearch,
     showSidebarView,
-    showStructuredView: (mode) => structuredView.open(mode),
+    isSidebarViewOpen: (view) => layout.isSidebarVisible && sidebarViews.isExpanded(view),
+    showStructuredView: (mode) => {
+      // 已打开时再点同一模式 = 关闭；点另一模式 = 切换视图（菜单勾选态随之变化）
+      if (structuredView.isOpen) {
+        if (mode && structuredView.currentMode !== mode) structuredView.open(mode);
+        else structuredView.close();
+        return;
+      }
+      structuredView.open(mode);
+    },
+    isStructuredViewOpen: (mode) =>
+      structuredView.isOpen && structuredView.currentMode === mode,
+    showRunOutput: () => {
+      // 没有输出时 showOutputPanel 只给提示：不要顺手把终端 / Git 历史收掉
+      if (!runHost.hasOutput) {
+        runHost.showOutputPanel();
+        return;
+      }
+      // 底部区域只留一个面板：与「Git 历史」入口的让位规则保持一致
+      terminalHost.hide();
+      gitHistoryPanel.hide();
+      runHost.showOutputPanel();
+    },
     gitPickBranch: () => branchPicker.open(),
     gitToggleReadOnly: () => void toggleGitReadOnly(),
     gitOpenHistory: () => openGitHistory(),
@@ -2128,11 +2231,17 @@ async function bootstrap(): Promise<void> {
       const sess = await loadSession();
       sessionActiveUntitled = sess.activeUntitledName ?? null;
       sessionHost.primeRestoredCursors(sess.openFiles);
-      // 按会话记录的顺序建标签：选中项静默载入内容，其余先建占位标签（顺序因此与关闭前一致）
-      for (const f of sess.openFiles) {
-        const isActive = f.active === true || f.path === sess.activeFile;
-        if (isActive) await fileService.openFilePath(f.path, { silent: true });
-        else tabStore.openPending(f.path, basenameOf(f.path));
+      // 按会话记录的顺序建标签：选中项静默载入内容，其余先建占位标签（顺序因此与关闭前一致）。
+      // 整个循环合并为一次结构通知，避免每个标签都重建一遍标签栏 / 侧栏（标签多时是 O(n²)）
+      const endRestoreBatch = tabStore.beginBatch();
+      try {
+        for (const f of sess.openFiles) {
+          const isActive = f.active === true || f.path === sess.activeFile;
+          if (isActive) await fileService.openFilePath(f.path, { silent: true });
+          else tabStore.openPending(f.path, basenameOf(f.path));
+        }
+      } finally {
+        endRestoreBatch();
       }
       // 选中项：优先 active 标志，其次 activeFile，最后退回第一个标签
       const activePath =

@@ -35,6 +35,12 @@ const CLOSE_BRACKETS = ")]}";
 /** 需要遮罩（跳过其中括号）的语法树节点名 */
 const MASKED_NODE = /string|comment|regex|template/i;
 
+/**
+ * 单次扫描的字符上限：视口上下各 50 行的文本若超过这个量级，
+ * 说明存在超长行；此时逐字符扫描会在输入帧里造成明显停顿，直接跳过着色。
+ */
+const MAX_SCAN_CHARS = 200_000;
+
 export interface RainbowBracketsOptions {
   /** 超过此行数整体禁用（默认 50000） */
   maxLines?: number;
@@ -77,6 +83,7 @@ export function rainbowBrackets(options: RainbowBracketsOptions = {}): Extension
     const toLine = Math.min(state.doc.lines, lastLine + padLines);
     const from = state.doc.line(fromLine).from;
     const to = state.doc.line(toLine).to;
+    if (to - from > MAX_SCAN_CHARS) return Decoration.none;
 
     const masked = maskedRanges(state, from, to);
     const text = state.sliceDoc(from, to);

@@ -8,9 +8,11 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import type { EditorView } from "@codemirror/view";
 import { getConfig, settings } from "../config/settings";
 import { tabStore, type Tab } from "../store/tabs";
+import { runWhenIdle } from "../ui/idle";
 import {
   deleteDraft,
   listDrafts,
@@ -55,6 +57,14 @@ export interface SessionHostDeps {
   onExternalOnActive?: (tab: Tab) => void;
 }
 
+/** 草稿保存时间（秒）→ 菜单里的可读时间 */
+function formatDraftTime(savedAt: number): string {
+  const date = new Date(savedAt * 1000);
+  if (Number.isNaN(date.getTime())) return "未知时间";
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** 会话里记录的标签位置：光标行列 + 滚动偏移 */
 interface SavedPosition {
   line: number;
@@ -80,6 +90,8 @@ export class SessionHost {
   private draftKeys = new Map<string, string>();
   /** 每标签的草稿写入防抖定时器 */
   private draftTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 防抖结束后等待空闲的草稿写入：取消句柄（标签 id → cancel） */
+  private draftIdle = new Map<string, () => void>();
   /** 会话是否有未落盘的光标变化 */
   private sessionDirty = false;
   /** 结构变化的合并写盘定时器 */
@@ -90,6 +102,26 @@ export class SessionHost {
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
   /** 文件监听失败只提示一次：反反复复弹会变成噪音 */
   private watchWarned = false;
+  /** 窗口在后台时收到外部修改：标题加 ● 并请求任务栏提示（前台已有状态栏 / 标签标记） */
+  private attentionMarked = false;
+
+  private markBackgroundAttention(): void {
+    if (this.attentionMarked) return;
+    if (!document.hidden && document.hasFocus()) return;
+    this.attentionMarked = true;
+    const win = getCurrentWindow();
+    void win.setTitle(`● ${document.title}`).catch(() => {});
+    void win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+  }
+
+  /** 窗口回到前台：撤销标题圆点与任务栏闪烁（外部修改本身仍有状态栏 / 标签提示） */
+  private clearBackgroundAttention(): void {
+    if (!this.attentionMarked) return;
+    this.attentionMarked = false;
+    const win = getCurrentWindow();
+    void win.setTitle(document.title).catch(() => {});
+    void win.requestUserAttention(null).catch(() => {});
+  }
 
   private warnWatchFailed(e: unknown): void {
     console.warn("[watch] 失败", e);
@@ -111,9 +143,25 @@ export class SessionHost {
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && (this.sessionDirty || this.sessionTimer)) this.saveNow();
     });
+
+    // 草稿徽标可点：给「草稿已存」一个应用内的恢复入口，而不是只能等下次启动
+    this.draftBadgeEl.setAttribute("role", "button");
+    this.draftBadgeEl.tabIndex = 0;
+    this.draftBadgeEl.title = "查看 / 恢复草稿";
+    this.draftBadgeEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.showDraftMenu(e);
+    });
+    this.draftBadgeEl.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      const rect = this.draftBadgeEl.getBoundingClientRect();
+      void this.showDraftMenu({ clientX: rect.left, clientY: rect.top });
+    });
     window.addEventListener("beforeunload", () => {
       if (this.sessionDirty || this.sessionTimer) this.saveNow();
     });
+    window.addEventListener("focus", () => this.clearBackgroundAttention());
 
     // 外部修改：不在后台打扰。
     // 后台标签只在标签上加 ⟳；用户切到该标签时才弹确认（由 main.ts 的订阅触发），
@@ -122,6 +170,7 @@ export class SessionHost {
       const tab = tabStore.findByPath(path);
       if (!tab || tab.externallyChanged) return;
       tabStore.markExternal(tab.id, true);
+      this.markBackgroundAttention();
       this.deps.refreshStatus();
       // 通知中心留一条：状态栏「外部修改」只在激活标签显示，后台标签只有一个 ⟳，
       // 错过之后没有任何地方能回看是哪几个文件被动过。
@@ -352,11 +401,18 @@ export class SessionHost {
     if (!this.draftable(tab)) return;
     const pending = this.draftTimers.get(tab.id);
     if (pending) clearTimeout(pending);
+    this.draftIdle.get(tab.id)?.();
+    this.draftIdle.delete(tab.id);
     this.draftTimers.set(
       tab.id,
       setTimeout(() => {
         this.draftTimers.delete(tab.id);
-        void this.persistDraft(tab.id);
+        // 草稿要序列化全文并写盘：推迟到空闲时段，避免和输入 / 滚动抢同一帧
+        const cancel = runWhenIdle(() => {
+          this.draftIdle.delete(tab.id);
+          void this.persistDraft(tab.id);
+        }, 1500);
+        this.draftIdle.set(tab.id, cancel);
       }, getConfig().session.draftDebounceMs),
     );
   }
@@ -402,6 +458,9 @@ export class SessionHost {
       clearTimeout(timer);
       this.draftTimers.delete(tabId);
     }
+    // 已进入空闲队列的写入也要作废，否则删掉的草稿会被重新写回来
+    this.draftIdle.get(tabId)?.();
+    this.draftIdle.delete(tabId);
     const tab = tabStore.findById(tabId);
     const key = this.draftKeys.get(tabId) ?? (tab ? this.draftKeyFor(tab) : null);
     this.draftKeys.delete(tabId);
@@ -419,6 +478,8 @@ export class SessionHost {
     const timer = this.draftTimers.get(tabId);
     if (timer) clearTimeout(timer);
     this.draftTimers.delete(tabId);
+    this.draftIdle.get(tabId)?.();
+    this.draftIdle.delete(tabId);
     this.draftKeys.delete(tabId);
     this.cursorPos.delete(tabId);
     // 标签已关闭：滚动位置不再有用（id 不复用，留着只会让 Map 无界增长）
@@ -435,18 +496,137 @@ export class SessionHost {
     }
     this.sessionDirty = false;
     await saveSession(this.buildSessionState()).catch(() => {});
-    const timers = [...this.draftTimers.entries()];
-    for (const [id, timer] of timers) {
+    // 待写草稿可能停在"防抖定时器"或"空闲队列"两处：统一取消后立即落盘
+    const ids = new Set([...this.draftTimers.keys(), ...this.draftIdle.keys()]);
+    for (const [id, timer] of this.draftTimers) {
       clearTimeout(timer);
       this.draftTimers.delete(id);
-      await this.persistDraft(id);
     }
+    for (const [id, cancel] of this.draftIdle) {
+      cancel();
+      this.draftIdle.delete(id);
+    }
+    for (const id of ids) await this.persistDraft(id);
   }
 
   /** 状态栏「草稿已存」标记：仅激活标签存在草稿时显示 */
   refreshDraftBadge(): void {
     const tab = this.deps.getActiveTab();
     this.draftBadgeEl.classList.toggle("hidden", !tab || !this.draftKeys.has(tab.id));
+  }
+
+  /**
+   * 草稿徽标点击：列出磁盘上的草稿（最近 10 个），选择后恢复为标签。
+   * 恢复沿用启动自动恢复的同一套规则：原文件已变化则新建「副本」，否则打开原文件。
+   */
+  private async showDraftMenu(anchor: { clientX: number; clientY: number }): Promise<void> {
+    const tab = tabStore.active();
+    if (!tab) return;
+    let drafts: DraftInfo[];
+    try {
+      drafts = await listDrafts();
+    } catch (e) {
+      this.deps.showMessage(`读取草稿列表失败：${firstLine(e)}`);
+      return;
+    }
+    if (drafts.length === 0) {
+      this.deps.showMessage("当前没有可恢复的草稿");
+      return;
+    }
+    const recent = drafts
+      .slice()
+      .sort((a, b) => b.savedAt - a.savedAt)
+      .slice(0, 10);
+    const actions = recent.map((draft) => ({
+      label: `${draft.name} · ${formatDraftTime(draft.savedAt)}${draft.stale ? "（原文件已变化）" : ""}`,
+      run: () => this.openDraftActions(draft, anchor),
+    }));
+    openStatusMenu<null>({
+      anchor: { x: anchor.clientX, y: anchor.clientY },
+      header:
+        drafts.length > recent.length
+          ? `草稿（共 ${drafts.length} 个，显示最近 ${recent.length} 个）`
+          : `草稿（${drafts.length} 个）— 点击选择恢复 / 丢弃`,
+      options: [],
+      actions,
+      current: null,
+      tabId: tab.id,
+      onMessage: this.deps.showMessage,
+      onPick: () => {},
+    });
+  }
+
+  /** 二级菜单：单个草稿的「恢复 / 丢弃」 */
+  private openDraftActions(
+    draft: DraftInfo,
+    anchor: { clientX: number; clientY: number },
+  ): void {
+    const tab = tabStore.active();
+    if (!tab) return;
+    openStatusMenu<null>({
+      anchor: { x: anchor.clientX, y: anchor.clientY },
+      header: `草稿「${draft.name}」· ${formatDraftTime(draft.savedAt)}`,
+      options: [],
+      actions: [
+        { label: "恢复草稿内容", run: () => void this.restoreDraft(draft) },
+        { label: "丢弃这个草稿", run: () => void this.dropDraft(draft) },
+      ],
+      current: null,
+      tabId: tab.id,
+      onMessage: this.deps.showMessage,
+      onPick: () => {},
+    });
+  }
+
+  /** 删除磁盘上的草稿（不影响标签里已有的内容） */
+  private async dropDraft(draft: DraftInfo): Promise<void> {
+    const ok = await confirmAction(
+      `删除草稿「${draft.name}」？删除后这份未保存内容将无法恢复。`,
+      "删除草稿",
+    );
+    if (!ok) return;
+    try {
+      await deleteDraft(draft.key);
+    } catch (e) {
+      this.deps.showMessage(`删除草稿失败：${firstLine(e)}`);
+      return;
+    }
+    for (const [tabId, key] of [...this.draftKeys]) {
+      if (key === draft.key) this.draftKeys.delete(tabId);
+    }
+    this.refreshDraftBadge();
+    this.deps.showMessage(`已删除草稿「${draft.name}」`);
+  }
+
+  /** 从草稿恢复一个标签；已有未保存修改时先确认覆盖 */
+  private async restoreDraft(draft: DraftInfo): Promise<void> {
+    const payload = await readDraft(draft.key).catch(() => null);
+    if (!payload?.content) {
+      this.deps.showMessage(`草稿「${draft.name}」为空或读取失败`);
+      return;
+    }
+    const existing = draft.path ? tabStore.findByPath(draft.path) : null;
+    if (existing?.dirty) {
+      const ok = await confirmAction(
+        `「${existing.name}」有未保存修改，恢复草稿会覆盖当前内容。继续吗？`,
+        "覆盖并恢复",
+      );
+      if (!ok) return;
+    }
+    const target = draft.stale
+      ? this.deps.onNewUntitled(`${draft.name}（副本）`)
+      : await this.ensureTabForDraft(draft);
+    if (!target) {
+      this.deps.showMessage(`无法为草稿「${draft.name}」打开标签`);
+      return;
+    }
+    tabStore.applyDraft(target.id, payload.content);
+    // 先删旧草稿再按当前标签的 key 落盘（与启动恢复同一顺序，避免同 key 自删）
+    await deleteDraft(draft.key).catch(() => {});
+    if (tabStore.active()?.id === target.id) await this.deps.onReloadActiveTab();
+    else tabStore.activate(target.id);
+    void this.persistDraft(target.id);
+    this.deps.showMessage(`已恢复草稿「${draft.name}」，Ctrl+S 保存`);
   }
 
   /** 找到/新建草稿对应的标签：有路径则打开（占位标签先载入），未命名则新建 */

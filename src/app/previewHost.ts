@@ -66,11 +66,16 @@ export class PreviewController {
     );
 
     // 编辑器滚动 → 预览联动
-    deps.getView().scrollDOM.addEventListener("scroll", () => {
-      // 预览联动产生的回显：忽略，避免两侧互相追赶
-      if (performance.now() < this.editorEchoUntil) return;
-      this.panel.syncFromEditor(deps.getView());
-    });
+    deps.getView().scrollDOM.addEventListener(
+      "scroll",
+      () => {
+        // 预览联动产生的回显：忽略，避免两侧互相追赶
+        if (performance.now() < this.editorEchoUntil) return;
+        this.panel.syncFromEditor(deps.getView());
+      },
+      // 不调用 preventDefault：passive 让滚动不必等待 JS，滚动条跟手更明显
+      { passive: true },
+    );
 
     // 视图模式按钮（编辑 / 预览 / 双栏）
     modeBar.querySelectorAll<HTMLButtonElement>("button").forEach((btn) => {
@@ -96,13 +101,14 @@ export class PreviewController {
     });
   }
 
-  private toTab(tab: Tab): PreviewTab {
+  /** withContent=false 用于编辑模式：预览不可见，不应为它取一次全文快照 */
+  private toTab(tab: Tab, withContent = true): PreviewTab {
     return {
       id: tab.id,
       kind: tab.kind,
       path: tab.path,
       name: tab.name,
-      content: tabStore.snapshotOf(tab),
+      content: withContent ? tabStore.snapshotOf(tab) : "",
       size: tab.size,
       dataUrl: tab.dataUrl,
     };
@@ -166,7 +172,13 @@ export class PreviewController {
     this.modeBar.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === mode);
     });
-    this.panel.apply(tab ? this.toTab(tab) : null, mode);
+    // 普通代码标签不需要喂给预览宿主（编辑模式也不取全文）；
+    // 这样切标签时不会为了预览再做一次 tabStore.snapshotOf
+    const previewable = tab !== null && (kind !== null || tab.kind === "image");
+    this.panel.apply(
+      previewable && tab ? this.toTab(tab, mode !== "edit") : null,
+      mode,
+    );
   }
 
   /**

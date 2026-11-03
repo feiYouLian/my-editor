@@ -125,20 +125,23 @@ export function createStatusBar(
 
   function refreshWhitespace(): void {
     const on = deps.isWhitespaceOn();
-    elements.whitespace.textContent = `空白: ${on ? "显" : "隐"}`;
+    const text = `空白: ${on ? "显" : "隐"}`;
+    if (elements.whitespace.textContent !== text) elements.whitespace.textContent = text;
     elements.whitespace.classList.toggle("on", on);
   }
 
   function refreshWordWrap(): void {
     // 读同步镜像而非配置：配置落库有 300ms 防抖，窗口内还是旧值
-    elements.wrap.textContent = `换行: ${wordWrapOn ? "开" : "关"}`;
+    const text = `换行: ${wordWrapOn ? "开" : "关"}`;
+    if (elements.wrap.textContent !== text) elements.wrap.textContent = text;
     elements.wrap.classList.toggle("on", wordWrapOn);
   }
 
   /** 图片尺寸文案：仅激活标签已回报尺寸时可用，否则显示占位 */
   function refreshImageSize(tab: Tab | null): void {
     const known = tab && imageSize?.tabId === tab.id ? imageSize : null;
-    elements.imageSize.textContent = known ? `${known.width} × ${known.height}` : "—";
+    const text = known ? `${known.width} × ${known.height}` : "—";
+    if (elements.imageSize.textContent !== text) elements.imageSize.textContent = text;
   }
 
   function setImageSize(tabId: string, width: number, height: number): void {
@@ -175,26 +178,38 @@ export function createStatusBar(
     });
   }
 
+  /** 值没变就不写：textContent / title 赋值会作废节点样式，状态栏字段很多 */
+  const setText = (el: HTMLElement, text: string): void => {
+    if (el.textContent !== text) el.textContent = text;
+  };
+  const setTitle = (el: HTMLElement, text: string): void => {
+    if (el.title !== text) el.title = text;
+  };
+
   function refresh(): void {
     const tab = deps.getActiveTab();
     applyFieldVisibility();
     refreshImageSize(tab);
-    elements.path.textContent = tab ? tab.name : "未打开文件";
-    elements.path.title = tab?.path ?? "";
-    elements.size.textContent = tab ? formatSize(tab.size) : "—";
-    elements.encoding.textContent = tab
-      ? `${tab.encoding}${tab.mojibakeReason ? " ⚠" : ""}`
-      : "UTF-8";
-    elements.encoding.title = tab?.mojibakeReason
-      ? `${tab.mojibakeReason}（点击切换编码）`
-      : "点击切换编码（重新打开为…）";
-    elements.newline.textContent = tab ? tab.newline : "—";
+    setText(elements.path, tab ? tab.name : "未打开文件");
+    setTitle(elements.path, tab?.path ?? "");
+    setText(elements.size, tab ? formatSize(tab.size) : "—");
+    setText(
+      elements.encoding,
+      tab ? `${tab.encoding}${tab.mojibakeReason ? " ⚠" : ""}` : "UTF-8",
+    );
+    setTitle(
+      elements.encoding,
+      tab?.mojibakeReason
+        ? `${tab.mojibakeReason}（点击切换编码）`
+        : "点击切换编码（重新打开为…）",
+    );
+    setText(elements.newline, tab ? tab.newline : "—");
     // 虚拟视图（大文件 / 日志）没有光标回调，行数只能由标签里的总行数渲染
     if (tab?.virtual && typeof tab.totalLines === "number") {
-      elements.lines.textContent = `共 ${tab.totalLines} 行`;
+      setText(elements.lines, `共 ${tab.totalLines} 行`);
     }
-    elements.language.textContent = tab ? deps.languageLabel(tab) : "纯文本";
-    elements.indent.textContent = tab ? deps.indentLabel() : "—";
+    setText(elements.language, tab ? deps.languageLabel(tab) : "纯文本");
+    setText(elements.indent, tab ? deps.indentLabel() : "—");
     elements.dirty.classList.toggle("hidden", !tab?.dirty);
     elements.external.classList.toggle("hidden", tab?.externallyChanged !== true);
     elements.readonly.classList.toggle("hidden", tab?.readonly !== true);
@@ -202,11 +217,11 @@ export function createStatusBar(
       // 只写"只读"等于没说：把原因压在字段里，不必 hover 才知道为什么不能编辑
       const reason = (tab.readonlyReason ?? "").trim();
       const short = reason.length > 12 ? `${reason.slice(0, 12)}…` : reason;
-      elements.readonly.textContent = short ? `只读 · ${short}` : "只读";
-      elements.readonly.title = reason;
+      setText(elements.readonly, short ? `只读 · ${short}` : "只读");
+      setTitle(elements.readonly, reason);
     } else {
-      elements.readonly.textContent = "只读";
-      elements.readonly.title = "";
+      setText(elements.readonly, "只读");
+      setTitle(elements.readonly, "");
     }
     refreshWhitespace();
     refreshWordWrap();

@@ -68,6 +68,11 @@ export class TerminalHost {
   private pendingBytes = 0;
   private pendingExit = new Map<string, number | null>();
 
+  /** 终端面板当前是否可见（菜单勾选态 / 标题栏按钮高亮用） */
+  get isOpen(): boolean {
+    return this.panel?.isOpen ?? false;
+  }
+
   constructor(private deps: TerminalHostDeps) {
     this.listenersReady = this.setupListeners();
     subscribeSettings(() => this.panel?.applySettings());

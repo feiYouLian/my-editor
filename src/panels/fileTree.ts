@@ -81,6 +81,8 @@ export class FileTree {
   private filtering = false;
   /** 根层子项容器（nodes 只记目录项，根目录要单独记，否则增量刷新根层会退回全量） */
   private rootChildren: HTMLElement | null = null;
+  /** 路径 → 行元素：选中 / 定位时避免对大树的 querySelector 全扫；失效项按 isConnected 懒清理 */
+  private rowByPath = new Map<string, HTMLElement>();
   /** 进行中的目录加载：revealPath 等它就绪，不再靠轮询猜时间 */
   private pendingLoads = new Map<string, Promise<void>>();
 
@@ -175,7 +177,17 @@ export class FileTree {
     return out;
   }
 
-  private paintSelection(): void {
+  /**
+   * 重绘选中态：传入 paths 时只更新这些行（单选 / Ctrl 点选不再扫整棵树），
+   * 不传则全量重刷（树重建 / 新目录加载后补状态用）。
+   */
+  private paintSelection(paths?: Iterable<string>): void {
+    if (paths) {
+      for (const path of new Set(paths)) {
+        this.rowOf(path)?.classList.toggle("selected", this.selection.has(path));
+      }
+      return;
+    }
     for (const row of this.visibleRows()) {
       const path = row.dataset.path;
       row.classList.toggle("selected", !!path && this.selection.has(path));
@@ -183,17 +195,22 @@ export class FileTree {
   }
 
   private setSelection(entries: { path: string; isDir: boolean }[], anchor?: string): void {
+    const changed = [...this.selection.keys()];
     this.selection.clear();
-    for (const entry of entries) this.selection.set(entry.path, entry.isDir);
+    for (const entry of entries) {
+      this.selection.set(entry.path, entry.isDir);
+      changed.push(entry.path);
+    }
     if (anchor !== undefined) this.anchorPath = anchor;
-    this.paintSelection();
+    this.paintSelection(changed);
   }
 
   private clearSelection(): void {
     if (this.selection.size === 0) return;
+    const changed = [...this.selection.keys()];
     this.selection.clear();
     this.anchorPath = null;
-    this.paintSelection();
+    this.paintSelection(changed);
   }
 
   /**
@@ -234,11 +251,11 @@ export class FileTree {
           this.extendSelection(info);
         } else if (this.selection.has(info.path)) {
           this.selection.delete(info.path);
-          this.paintSelection();
+          this.paintSelection([info.path]);
         } else {
           this.selection.set(info.path, info.isDir);
           this.anchorPath = info.path;
-          this.paintSelection();
+          this.paintSelection([info.path]);
         }
         row.focus({ preventScroll: true });
       },
@@ -258,13 +275,15 @@ export class FileTree {
       return;
     }
     const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+    const changed = [...this.selection.keys()];
     this.selection.clear();
     for (let i = lo; i <= hi; i++) {
       const path = paths[i];
       if (!path) continue;
       this.selection.set(path, rows[i].dataset.dir === "1");
+      changed.push(path);
     }
-    this.paintSelection();
+    this.paintSelection(changed);
   }
 
   // ---- 拖拽移动（pointer 自绘） ----
@@ -423,6 +442,7 @@ export class FileTree {
     const seq = ++this.filterSeq;
     this.filtering = true;
     this.bodyEl.innerHTML = "";
+    this.rowByPath.clear();
     const loading = document.createElement("div");
     loading.className = "tree-empty";
     loading.textContent = "搜索中…";
@@ -476,6 +496,7 @@ export class FileTree {
     row.dataset.path = file.path;
     row.dataset.dir = "0";
     row.tabIndex = -1;
+    this.rowByPath.set(file.path, row);
 
     const icon = document.createElement("span");
     icon.className = "tree-icon";
@@ -587,6 +608,7 @@ export class FileTree {
     if (this.filtering) return;
     this.bodyEl.innerHTML = "";
     this.nodes.clear();
+    this.rowByPath.clear();
     if (!this.root) {
       const hint = document.createElement("div");
       hint.className = "tree-empty";
@@ -624,6 +646,7 @@ export class FileTree {
       return;
     }
     container.replaceChildren();
+    this.forgetRowsUnder(dir);
     void this.loadChildren(dir, container, this.depthOf(dir));
   }
 
@@ -664,6 +687,17 @@ export class FileTree {
     }
   }
 
+  /** 让出一帧给浏览器处理输入/绘制，再继续建下一批节点 */
+  private yieldToIdle(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(() => resolve(), { timeout: 250 });
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  }
+
   private async loadChildrenInner(
     dir: string,
     container: HTMLElement,
@@ -685,9 +719,25 @@ export class FileTree {
     }
     // 过期结果直接丢弃：否则会与后一次加载的节点叠加成重复行
     if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
-    const frag = document.createDocumentFragment();
-    for (const entry of entries) frag.append(this.createNode(entry, depth));
-    container.append(frag);
+    const CHUNK = 200;
+    if (entries.length <= CHUNK) {
+      const frag = document.createDocumentFragment();
+      for (const entry of entries) frag.append(this.createNode(entry, depth));
+      container.append(frag);
+    } else {
+      // 大目录（如 node_modules）一次建几千个节点会卡住主线程：
+      // 先建首批，其余在空闲时段分批补齐；期间保留代际校验，折叠/刷新可立即中止
+      for (let start = 0; start < entries.length; start += CHUNK) {
+        if (this.loadTokens.get(dir) !== token || !container.isConnected) return;
+        const slice = entries.slice(start, start + CHUNK);
+        const frag = document.createDocumentFragment();
+        for (const entry of slice) frag.append(this.createNode(entry, depth));
+        container.append(frag);
+        // 目标文件可能已在首批出现：不必等整个目录渲染完才定位
+        this.tryReveal();
+        if (start + CHUNK < entries.length) await this.yieldToIdle();
+      }
+    }
     // 多选状态跨重绘保留：新行建好后补一次选中态
     this.paintSelection();
   }
@@ -702,6 +752,7 @@ export class FileTree {
     // 选中/拖拽/批量操作都按 row 自己的 data-path 取条目（与扁平结果行同一套约定）
     row.dataset.path = entry.path;
     row.dataset.dir = entry.is_dir ? "1" : "0";
+    this.rowByPath.set(entry.path, row);
     if (this.selection.has(entry.path)) row.classList.add("selected");
     // 每级 12px、起点 8px：与 .tree-flat-row 的左内边距对齐（CSS 里那套基准值）
     row.style.paddingLeft = `${depth * 12 + 8}px`;
@@ -762,6 +813,7 @@ export class FileTree {
         setTimeout(() => {
           container.classList.remove("tree-children-exit");
           container.replaceChildren();
+          this.forgetRowsUnder(dir);
         }, 120);
       }
     } else {
@@ -824,11 +876,23 @@ export class FileTree {
     row.scrollIntoView({ block: "nearest" });
   }
 
+  /** 丢弃某目录子树的行缓存（收起 / 增量重建后这些行已脱离 DOM） */
+  private forgetRowsUnder(dir: string): void {
+    for (const key of this.rowByPath.keys()) {
+      if (isSameOrInsidePath(key, dir)) this.rowByPath.delete(key);
+    }
+  }
+
   /** 按路径取行元素（树行与扁平结果行通用；不存在返回 null） */
   private rowOf(path: string): HTMLElement | null {
-    return this.container.querySelector<HTMLElement>(
+    const cached = this.rowByPath.get(path);
+    if (cached?.isConnected) return cached;
+    if (cached) this.rowByPath.delete(path);
+    const found = this.container.querySelector<HTMLElement>(
       `.tree-row[data-path="${CSS.escape(path)}"]`,
     );
+    if (found) this.rowByPath.set(path, found);
+    return found;
   }
 
   /** 该路径是否在当前工作区内（决定能否在树里定位；工作区外的文件没有对应节点） */
@@ -855,14 +919,19 @@ export class FileTree {
     const parts = path.slice(root.length + 1).split(/[\\/]/);
     let changed = false;
     let cur = root;
+    /** 链路上最深的、已经渲染出来的目录（新展开的层从它开始重建） */
+    let branch = root;
     for (let i = 0; i < parts.length - 1; i++) {
       cur = `${cur}${sep}${parts[i]}`;
       if (!this.expanded.has(cur)) {
         this.expanded.add(cur);
         changed = true;
       }
+      if (!changed && this.nodes.has(cur)) branch = cur;
     }
-    if (changed) this.render();
+    // 只重建新展开那一支：整树 render() 会把所有已展开目录的 list_dir
+    // 全部重发一遍（切标签时最明显的一卡）。
+    if (changed) this.refreshDir(branch);
     this.tryReveal();
   }
 

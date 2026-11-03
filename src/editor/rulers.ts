@@ -32,6 +32,8 @@ const rulerTheme = EditorView.theme({
 
 class RulerView {
   private layer: HTMLDivElement;
+  /** 上次同步时的横向滚动量：纵向滚动不改变标尺位置，不必重建 */
+  private lastScrollLeft = Number.NaN;
 
   constructor(private view: EditorView) {
     this.layer = document.createElement("div");
@@ -42,7 +44,11 @@ class RulerView {
   }
 
   update(update: ViewUpdate): void {
-    if (update.geometryChanged || update.viewportChanged) this.sync();
+    if (!update.geometryChanged && !update.viewportChanged) return;
+    const left = this.view.scrollDOM.scrollLeft;
+    // 纯纵向滚动会持续触发 viewportChanged，但标尺位置没变：跳过读 rect / 重建
+    if (!update.geometryChanged && left === this.lastScrollLeft) return;
+    this.sync();
   }
 
   destroy(): void {
@@ -51,6 +57,7 @@ class RulerView {
 
   private sync(): void {
     const columns = settings.rulers;
+    this.lastScrollLeft = this.view.scrollDOM.scrollLeft;
     // 数量很少（通常 1–2 条），直接重建比做差异更便宜
     this.layer.textContent = "";
     if (columns.length === 0) return;

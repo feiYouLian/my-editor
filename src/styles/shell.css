@@ -138,6 +138,12 @@
   border-color: transparent;
 }
 
+/* 面板已打开（如终端）：与菜单勾选态一致的强调底色 */
+.icon-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* ---------- 文件树（3.10） ---------- */
 /* 统一基准：正文 12px / 行高 22px / 图标 14px / 每级缩进 12px。
    任何一项内部再写别的值都会破坏对齐，新增规则请复用这些数值。 */

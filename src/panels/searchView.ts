@@ -78,6 +78,8 @@ export interface SearchViewDeps {
 const DEBOUNCE_MS = 300;
 const MAX_FILES = 200;
 const MAX_MATCHES = 2000;
+/** 单个文件最多渲染多少条命中：防止一个巨型文件把侧栏 DOM 撑到几千行 */
+const MAX_RENDERED_PER_FILE = 200;
 const SEARCH_HISTORY_KEY = "my-editor.searchHistory";
 const SEARCH_INCLUDE_KEY = "my-editor.searchInclude";
 const SEARCH_EXCLUDE_KEY = "my-editor.searchExclude";
@@ -510,7 +512,8 @@ export class SearchView {
       // 展开替换行即预览（替换文本可为空 = 删除命中）；命中红色删除线，替换内容绿色高亮
       const showPreview = this.replaceOpen;
       const hasReplacement = this.replaceEl.value.length > 0;
-      for (const match of file.matches) {
+      const rendered = file.matches.slice(0, MAX_RENDERED_PER_FILE);
+      for (const match of rendered) {
         const row = document.createElement("button");
         row.type = "button";
         row.className = "sv-match";
@@ -547,6 +550,11 @@ export class SearchView {
         const more = document.createElement("div");
         more.className = "sv-empty";
         more.textContent = "（该文件命中过多，已截断）";
+        rows.append(more);
+      } else if (file.matches.length > rendered.length) {
+        const more = document.createElement("div");
+        more.className = "sv-empty";
+        more.textContent = `仅显示前 ${MAX_RENDERED_PER_FILE} 条（共 ${file.matches.length} 条，可在文件中查看其余）`;
         rows.append(more);
       }
 

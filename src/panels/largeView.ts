@@ -91,10 +91,14 @@ export class LargeView {
     this.el = el;
 
     // ---- 事件 ----
-    el.scrollEl.addEventListener("scroll", () => {
-      this.pauseFollowIfScrolledUp();
-      this.scheduleLoad();
-    });
+    el.scrollEl.addEventListener(
+      "scroll",
+      () => {
+        this.pauseFollowIfScrolledUp();
+        this.scheduleLoad();
+      },
+      { passive: true },
+    );
     el.followBtn.addEventListener("click", () => this.toggleFollow());
     el.filterBtn.addEventListener("click", () => void this.runFilter());
     el.clearBtn.addEventListener("click", () => void this.clearFilter());

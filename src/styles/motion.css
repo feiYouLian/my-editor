@@ -121,8 +121,9 @@
   animation: ui-pop-down-in var(--dur-fast) var(--ease-out);
 }
 
-/* 标签：新建 / 切换时轻微上浮（关闭不做动画：元素直接移除） */
-.tab {
+/* 标签：仅新建时轻微上浮。整栏因脏标记 / 改名重绘时不再重放，
+   否则每次结构变化所有标签都会一起闪一下（见 ui/tabsBar.ts 的 tab-enter） */
+.tab.tab-enter {
   animation: ui-tab-in var(--dur-base) var(--ease-out);
 }
 

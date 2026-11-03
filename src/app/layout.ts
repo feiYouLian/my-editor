@@ -29,10 +29,33 @@ export class LayoutPane {
   /** 最近一次应用的侧栏宽度 / 分栏比例（松手时落盘用） */
   private sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   private splitRatioLast = 0.5;
+  /**
+   * 拖拽起点的容器几何（缓存值）：
+   * 拖拽期间窗口尺寸不会变，没必要每次 mousemove 都 getBoundingClientRect()——
+   * 那是强制同步布局，紧跟在上一帧的样式写入之后会直接造成 layout thrash。
+   */
+  private mainLeft = 0;
+  private splitRect: { left: number; width: number } | null = null;
+  /** 上一帧真正写进 CSS 的分栏比例：值相同就不重复写（省掉无谓的样式失效） */
+  private appliedSplit: number | null = null;
+  /** 缓存的主区元素：避免每次拖拽都 querySelector */
+  private mainEl: HTMLElement | null = null;
+  /** 是否已把宽度写进 CSS：首帧必须写一次，之后才按值去重 */
+  private sidebarApplied = false;
 
   constructor(private deps: LayoutDeps) {
     this.initSplitResizer();
     this.initSidebarResizer();
+    // 窗口尺寸变化后几何缓存失效（下次 mousedown 重新测）
+    window.addEventListener("resize", () => {
+      this.splitRect = null;
+    });
+  }
+
+  /** 主区元素（按需查找并缓存；装配时机变化时也不会丢功能） */
+  private main(): HTMLElement | null {
+    if (!this.mainEl) this.mainEl = document.querySelector<HTMLElement>(".main");
+    return this.mainEl;
   }
 
   /** 合帧执行：同一帧内后到的位置覆盖先到的（末次必达） */
@@ -46,10 +69,15 @@ export class LayoutPane {
 
   // ---- 侧栏显隐 ----
 
+  /** 侧栏当前是否可见（菜单勾选态：配置写回有防抖，不能读配置） */
+  get isSidebarVisible(): boolean {
+    return this.sidebarVisible;
+  }
+
   /** 仅应用到界面（设置中心回调用，持久化由 updateSettings 完成） */
   setSidebarVisible(visible: boolean): void {
     this.sidebarVisible = visible;
-    document.querySelector(".main")?.classList.toggle("no-sidebar", !visible);
+    this.main()?.classList.toggle("no-sidebar", !visible);
     // 收起后侧栏连同头部开关一起不可见，改由标签栏左端的按钮负责展开
     const showBtn = document.getElementById("btn-sidebar-show");
     if (showBtn instanceof HTMLElement) showBtn.hidden = visible;
@@ -75,10 +103,12 @@ export class LayoutPane {
   /** 只改样式，不落盘（拖动过程中每帧调用，localStorage 写入放到松手） */
   private applySidebarWidth(px: number): number {
     const clamped = Math.min(640, Math.max(150, px));
+    // 亚像素抖动会带来无意义的样式失效：值没变就不写（首帧必须写一次，
+    // 不能依赖 CSS 里的兜底默认值，否则默认值改动后两处口径会漂移）
+    if (this.sidebarApplied && clamped === this.sidebarWidth) return clamped;
+    this.sidebarApplied = true;
     this.sidebarWidth = clamped;
-    document
-      .querySelector<HTMLElement>(".main")
-      ?.style.setProperty("--sidebar-width", `${clamped}px`);
+    this.main()?.style.setProperty("--sidebar-width", `${clamped}px`);
     return clamped;
   }
 
@@ -95,16 +125,16 @@ export class LayoutPane {
     el?.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       this.sidebarResizing = true;
+      // 拖动期间窗口几何不会变：起点测一次，之后只做减法
+      this.mainLeft = this.main()?.getBoundingClientRect().left ?? 0;
       el.classList.add("dragging");
       document.body.classList.add("dragging-split");
       e.preventDefault();
     });
     window.addEventListener("mousemove", (e) => {
-      if (!this.sidebarResizing) return;
-      const main = document.querySelector(".main");
-      if (!main) return;
+      if (!this.sidebarResizing || !this.main()) return;
       // 合帧：同一帧内只应用最新位置，避免每次 mousemove 都触发布局
-      this.pendingSidebarX = e.clientX - main.getBoundingClientRect().left;
+      this.pendingSidebarX = e.clientX - this.mainLeft;
       this.scheduleDrag(() => {
         if (this.pendingSidebarX !== null) this.applySidebarWidth(this.pendingSidebarX);
       });
@@ -138,19 +168,31 @@ export class LayoutPane {
     el?.addEventListener("mousedown", (e) => {
       if (this.deps.isSplitMode() !== true) return;
       this.resizing = true;
+      // 同上：拖拽期间容器几何不变，起点测一次即可（避免 mousemove 强制同步布局）
+      const rect = this.splitArea()?.getBoundingClientRect();
+      this.splitRect = rect ? { left: rect.left, width: rect.width } : null;
+      // 外部（设置中心滑杆 / 双击复位）可能改过 CSS，首帧强制写一次
+      this.appliedSplit = null;
       el.classList.add("dragging");
       document.body.classList.add("dragging-split");
       e.preventDefault();
     });
     window.addEventListener("mousemove", (e) => {
       if (!this.resizing) return;
-      const area = this.splitArea();
-      if (!area) return;
-      const rect = area.getBoundingClientRect();
+      let rect = this.splitRect;
+      if (!rect) {
+        const measured = this.splitArea()?.getBoundingClientRect();
+        if (!measured) return;
+        rect = { left: measured.left, width: measured.width };
+        this.splitRect = rect;
+      }
+      if (rect.width <= 0) return;
       this.pendingSplitX = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
       this.scheduleDrag(() => {
         if (this.pendingSplitX === null) return;
         this.splitRatioLast = this.pendingSplitX;
+        if (this.appliedSplit === this.pendingSplitX) return;
+        this.appliedSplit = this.pendingSplitX;
         this.splitArea()?.style.setProperty(
           "--split-ratio",
           `${(this.splitRatioLast * 100).toFixed(1)}%`,
@@ -161,6 +203,7 @@ export class LayoutPane {
       if (!this.resizing) return;
       this.resizing = false;
       this.pendingSplitX = null;
+      this.appliedSplit = null;
       el?.classList.remove("dragging");
       document.body.classList.remove("dragging-split");
       // 松手才落盘：以当前 CSS 值为准（滑杆刚改过、拖拽未移动时也不会写回旧比例）

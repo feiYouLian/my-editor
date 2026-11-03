@@ -31,14 +31,25 @@ function fingerprint(text: string): ContentFingerprint {
   return { len: text.length, a, b };
 }
 
+/** 编辑器文档快照（CM6 Text 的最小契约）：持有引用很便宜，toString 才 O(n) */
+export interface DocSnapshot {
+  readonly length: number;
+  toString(): string;
+  sliceString(from: number, to?: number): string;
+}
+
 /** 编辑器当前内容的读取入口（由 main.ts 注入，避免 store 依赖编辑器实现） */
 export interface ContentProvider {
   /** 编辑器当前承载的文档 id（与查询 id 不一致说明该标签已不在编辑器里） */
   docId: () => string | null;
-  /** 全文：O(n)，仅在确实需要全文时调用 */
-  full: () => string;
+  /** 当前文档快照：切走时先存引用，真正需要全文时再 toString */
+  doc: () => DocSnapshot;
+  /** 当前文档长度：O(1)，用于在不需要全文时快速判定内容是否可能回到基线 */
+  length: () => number;
   /** 前 N 个字符：O(N)，供 cURL 特征检测等只读头部的场景 */
   head: (chars: number) => string;
+  /** 后 N 个字符：O(N)，供大文件采样检测（编码诊断等） */
+  tail: (chars: number) => string;
 }
 
 export interface Tab {
@@ -56,6 +67,16 @@ export interface Tab {
   savedTrailingNewline: boolean;
   /** content 可能落后于编辑器：按键只标脏，读取前经 snapshotOf 同步 */
   contentDirty?: boolean;
+  /**
+   * 切走时暂存的编辑器文档引用（未做 toString）。
+   * contentDirty 仍为 true，任何读取入口会先materialize成 content。
+   */
+  pendingDoc?: DocSnapshot;
+  /**
+   * 内容版本：每次由编辑器之外替换 content 时 +1。
+   * 编辑器状态缓存记录读入时的版本，版本一致即可跳过切回时的全文比较。
+   */
+  contentRevision: number;
   size: number;
   dirty: boolean;
   encoding: string;
@@ -85,6 +106,8 @@ export interface Tab {
   externallyChanged?: boolean;
   /** 语言模式覆盖：undefined = 按扩展名自动，null = 纯文本，字符串 = 指定语言键 */
   languageOverride?: string | null;
+  /** 新建的未命名文档：标签名跟随首个非空行（另存为 / 草稿恢复后不再自动改名） */
+  autoTitle?: boolean;
   /** 乱码检测建议的编码（无建议 / 未检出时为空串或 undefined） */
   mojibakeSuggested?: string;
   /** 乱码检测说明（非空即表示疑似乱码，状态栏加 ⚠） */
@@ -104,6 +127,35 @@ export type TabChangeKind = "structure" | "content";
 
 /** 停手精算脏标记的等待时长：按键路径只标脏，无新输入才取全文比较 */
 const CONTENT_SETTLE_MS = 800;
+
+/** 自动标题最多取多少个字符 */
+const AUTO_TITLE_MAX_CHARS = 5;
+/** 查找首个非空行时最多扫描的字符数：标题一定在文档头部，没必要全篇扫描 */
+const AUTO_TITLE_SCAN_CHARS = 8192;
+
+/**
+ * 未命名文档的自动标题：首个非空行去掉 Markdown 标题 / 列表前缀后取前 N 个字符。
+ * 全部为空时返回空串（调用方保持原标签名）。
+ */
+export function untitledTitleFrom(text: string, maxChars = AUTO_TITLE_MAX_CHARS): string {
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf("\n", start);
+    if (end < 0) end = text.length;
+    const raw = text.slice(start, end).replace(/\r$/, "").trim();
+    if (raw) {
+      const clean = raw
+        .replace(/^#+\s*/, "")
+        .replace(/^>\s*/, "")
+        .replace(/^[-*+]\s+/, "")
+        .replace(/^\d+[.)]\s+/, "")
+        .trim();
+      if (clean) return Array.from(clean).slice(0, maxChars).join("");
+    }
+    start = end + 1;
+  }
+  return "";
+}
 
 class TabStore {
   private tabs: Tab[] = [];
@@ -149,6 +201,33 @@ class TabStore {
     this.closeListeners.forEach((fn) => fn(tab));
   }
 
+  /** 批量通知挂起层数：>0 时结构变更只累积，结束后合并发一次 */
+  private notifySuspended = 0;
+  /** 挂起期间是否发生过结构变更 */
+  private structurePending = false;
+
+  /**
+   * 批量结构变更：期间合并结构通知，结束时只发一次。
+   * 返回的结束函数幂等，可直接放进 try/finally；用于启动恢复多标签等 O(n²) 场景。
+   */
+  beginBatch(): () => void {
+    this.notifySuspended += 1;
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this.notifySuspended -= 1;
+      if (this.notifySuspended > 0 || !this.structurePending) return;
+      this.structurePending = false;
+      this.contentPending = false;
+      if (this.contentRaf !== null) {
+        cancelAnimationFrame(this.contentRaf);
+        this.contentRaf = null;
+      }
+      this.listeners.forEach((fn) => fn("structure"));
+    };
+  }
+
   /** 结构变更：立即通知。已排程的内容通知被其覆盖（订阅方读的是最新状态） */
   private emitStructure(): void {
     this.contentPending = false;
@@ -156,6 +235,11 @@ class TabStore {
       cancelAnimationFrame(this.contentRaf);
       this.contentRaf = null;
     }
+    if (this.notifySuspended > 0) {
+      this.structurePending = true;
+      return;
+    }
+    this.structurePending = false;
     this.listeners.forEach((fn) => fn("structure"));
   }
 
@@ -195,20 +279,32 @@ class TabStore {
   }
 
   /**
+   * 切换激活项：先把旧标签的编辑器内容落回，并顺手刷新它（若是未命名文档）的标题。
+   * 改名只在这里发生，输入过程中不做任何定时改名，避免打断手感。
+   */
+  private setActive(nextId: string | null): void {
+    if (this.activeId === nextId) return;
+    const prev = this.activeId;
+    // 只存文档引用，不在这里做全文 toString：切标签的点击响应不再随文件体积变慢
+    this.syncContent(prev, true);
+    if (prev !== null) this.updateAutoTitle(prev);
+    this.activeId = nextId;
+  }
+
+  /**
    * 打开文本文件：已打开则激活，否则新开标签（未命名文档 path 为空，每次新建独立标签）。
    * opts.unsaved：内容未落盘（格式转换/代码生成结果），基线指纹置空使其标记为脏；
    * opts.languageOverride：直接指定高亮语言，避免首次渲染后再次切换。
    */
   open(
     content: FileContent,
-    opts: { unsaved?: boolean; languageOverride?: string | null } = {},
+    opts: { unsaved?: boolean; languageOverride?: string | null; autoTitle?: boolean } = {},
   ): Tab {
     const existing = content.path
       ? this.tabs.find((t) => t.path === content.path)
       : undefined;
     if (existing) {
-      this.syncContent(this.activeId);
-      this.activeId = existing.id;
+      this.setActive(existing.id);
       this.emitStructure();
       return existing;
     }
@@ -220,6 +316,7 @@ class TabStore {
       name: content.name,
       kind: "text",
       content: content.content,
+      contentRevision: 0,
       savedFingerprint: opts.unsaved ? EMPTY_FINGERPRINT : fingerprint(content.content),
       savedTrailingNewline: opts.unsaved ? false : content.content.endsWith("\n"),
       size: content.size,
@@ -235,10 +332,10 @@ class TabStore {
       readonlyReason: content.readonly_reason,
     };
     if (opts.languageOverride !== undefined) tab.languageOverride = opts.languageOverride;
+    if (opts.autoTitle === true) tab.autoTitle = true;
     this.tabs.push(tab);
     // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
-    this.syncContent(this.activeId);
-    this.activeId = tab.id;
+    this.setActive(tab.id);
     this.emitStructure();
     return tab;
   }
@@ -254,11 +351,11 @@ class TabStore {
     totalLines?: number;
   }): Tab {
     // 同路径普通标签可能正承载编辑器内容：先落回标签，避免把用户输入丢掉
-    if (this.activeId) this.syncContent(this.activeId);
+    if (this.activeId) this.syncContent(this.activeId, true);
     const existing = this.tabs.find((t) => t.path === info.path);
     if (existing) {
       if (existing.virtual) {
-        this.activeId = existing.id;
+        this.setActive(existing.id);
         this.emitStructure();
         return existing;
       }
@@ -275,6 +372,7 @@ class TabStore {
       name: info.name,
       kind: "text",
       content: "",
+      contentRevision: 0,
       savedFingerprint: EMPTY_FINGERPRINT,
       savedTrailingNewline: false,
       size: info.size,
@@ -294,8 +392,7 @@ class TabStore {
     };
     this.tabs.push(tab);
     // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
-    this.syncContent(this.activeId);
-    this.activeId = tab.id;
+    this.setActive(tab.id);
     this.emitStructure();
     return tab;
   }
@@ -303,6 +400,8 @@ class TabStore {
   /** 用已载入内容填充标签（占位标签载入 / 虚拟标签转编辑器共用） */
   private applyContent(tab: Tab, content: FileContent): void {
     tab.content = content.content;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     tab.savedFingerprint = fingerprint(content.content);
     tab.savedTrailingNewline = content.content.endsWith("\n");
@@ -385,6 +484,7 @@ class TabStore {
       name,
       kind: "text",
       content: "",
+      contentRevision: 0,
       savedFingerprint: EMPTY_FINGERPRINT,
       savedTrailingNewline: false,
       size: 0,
@@ -419,6 +519,8 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return null;
     tab.content = content;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     tab.pending = false;
     // 基线仍是磁盘内容：草稿一律视为未保存修改
@@ -431,8 +533,7 @@ class TabStore {
   openImage(path: string, name: string, size: number, dataUrl: string): Tab {
     const existing = this.tabs.find((t) => t.path === path);
     if (existing) {
-      this.syncContent(this.activeId);
-      this.activeId = existing.id;
+      this.setActive(existing.id);
       this.emitStructure();
       return existing;
     }
@@ -443,6 +544,7 @@ class TabStore {
       kind: "image",
       dataUrl,
       content: "",
+      contentRevision: 0,
       savedFingerprint: EMPTY_FINGERPRINT,
       savedTrailingNewline: false,
       size,
@@ -459,18 +561,15 @@ class TabStore {
     };
     this.tabs.push(tab);
     // 切换激活项前先落回旧标签内容，否则之后保存/草稿会读到旧值
-    this.syncContent(this.activeId);
-    this.activeId = tab.id;
+    this.setActive(tab.id);
     this.emitStructure();
     return tab;
   }
 
   activate(id: string): void {
-    if (this.activeId !== id) {
-      this.syncContent(this.activeId);
-      this.activeId = id;
-      this.emitStructure();
-    }
+    if (this.activeId === id) return;
+    this.setActive(id);
+    this.emitStructure();
   }
 
   close(id: string): Tab | null {
@@ -544,6 +643,25 @@ class TabStore {
     this.scheduleSettle(id);
   }
 
+  /**
+   * 未命名文档：按首个非空行更新标签名（最多 5 字）。
+   * 调用时机是切换标签 / 重新加载，不在输入过程中用定时器改名。
+   */
+  refreshAutoTitle(id: string): void {
+    if (this.updateAutoTitle(id)) this.emitStructure();
+  }
+
+  /** 计算并写入标题；返回是否真的改名（由调用方决定是否发结构通知） */
+  private updateAutoTitle(id: string): boolean {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab || !tab.autoTitle || tab.path) return false;
+    // 头部读取不触发全文 toString：切走时暂存的文档引用同样支持按需切片
+    const title = untitledTitleFrom(this.contentHeadOf(tab, AUTO_TITLE_SCAN_CHARS));
+    if (!title || title === tab.name) return false;
+    tab.name = title;
+    return true;
+  }
+
   /** 排程一次停手精算：窗口内无新输入才取全文比较 */
   private scheduleSettle(id: string): void {
     const prev = this.settleTimers.get(id);
@@ -570,6 +688,8 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
     tab.content = content;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     tab.dirty = true;
     this.emitStructure();
@@ -580,6 +700,8 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
     tab.content = content;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     tab.savedFingerprint = fingerprint(content);
     tab.savedTrailingNewline = content.endsWith("\n");
@@ -596,9 +718,13 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return false;
     if (this.provider?.docId() === id) return false;
+    // 非激活标签可能只持有文档引用：先落成字符串才能做文本变换
+    this.materializePending(tab);
     const next = fn(tab.content);
     if (next === tab.content) return false;
     tab.content = next;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     this.refreshDirty(tab);
     this.emitContent();
@@ -608,36 +734,83 @@ class TabStore {
   /** 读取标签最新内容：激活标签会先同步编辑器内容（惰性快照，O(n) 且会更新脏标记） */
   snapshotOf(tab: Tab): string {
     this.syncContent(tab.id);
+    this.materializePending(tab);
     return tab.content;
+  }
+
+  /** 把切走时暂存的文档引用转成字符串（只在真正需要全文时调用） */
+  private materializePending(tab: Tab): void {
+    const doc = tab.pendingDoc;
+    if (!doc) return;
+    tab.pendingDoc = undefined;
+    tab.content = doc.toString();
+    tab.contentDirty = false;
+    // 长度已经和基线不同：内容必然脏，没必要再为确认这一点做全篇指纹
+    if (tab.content.length === tab.savedFingerprint.len) this.refreshDirty(tab);
+    else tab.dirty = true;
   }
 
   /** 读取内容头部（不触发全文 toString）：供按前缀判断的场景 */
   contentHeadOf(tab: Tab, chars: number): string {
     const p = this.provider;
     if (tab.contentDirty && p && p.docId() === tab.id) return p.head(chars);
+    if (tab.pendingDoc) return tab.pendingDoc.sliceString(0, chars);
     return tab.content.length > chars ? tab.content.slice(0, chars) : tab.content;
+  }
+
+  /**
+   * 读取内容采样（头 + 尾，总长不超过 maxChars）。
+   * 用于诊断类分析：避免为大文件额外做一次全文 toString / IPC。
+   */
+  contentSampleOf(tab: Tab, maxChars: number): string {
+    const half = Math.max(1, Math.floor(maxChars / 2));
+    const p = this.provider;
+    if (tab.contentDirty && p && p.docId() === tab.id) {
+      return `${p.head(half)}\n…\n${p.tail(half)}`;
+    }
+    if (tab.pendingDoc) {
+      const doc = tab.pendingDoc;
+      if (doc.length === 0) return "";
+      const tailFrom = Math.max(0, doc.length - half);
+      return `${doc.sliceString(0, half)}\n…\n${doc.sliceString(tailFrom)}`;
+    }
+    if (tab.content.length <= maxChars) return tab.content;
+    return `${tab.content.slice(0, half)}\n…\n${tab.content.slice(-half)}`;
   }
 
   /** 停手后的精确精算：撤销回原状时清掉脏点（由 scheduleSettle 排程） */
   private settleContent(id: string): void {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab || !tab.contentDirty || !this.provider || this.provider.docId() !== id) return;
+    // 长度已经与保存基线不同：内容必然仍是脏的，没必要为确认这一点做全文 toString + 指纹
+    if (this.provider.length() !== tab.savedFingerprint.len) return;
     const before = tab.dirty;
     this.syncContent(id);
     if (tab.dirty !== before) this.emitStructure();
   }
 
-  /** 内部：把编辑器内容落回标签（仅对当前激活文档有效） */
-  private syncContent(id: string | null): void {
+  /**
+   * 内部：把编辑器内容落回标签（仅对当前激活文档有效）。
+   * defer = 只存文档引用、不做 toString（切标签用）；真正需要内容时由
+   * snapshotOf / contentHeadOf / materializePending 补齐。
+   */
+  private syncContent(id: string | null, defer = false): void {
     if (id === null) return;
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab || !tab.contentDirty) return;
     const p = this.provider;
     // 非激活标签：内容已在切走时落回，不做全文快照
     if (!p || p.docId() !== id) return;
-    tab.content = p.full();
+    if (defer) {
+      tab.pendingDoc = p.doc();
+      return;
+    }
+    tab.pendingDoc = undefined;
+    tab.content = p.doc().toString();
     tab.contentDirty = false;
-    this.refreshDirty(tab);
+    // 长度与基线不同必然脏；长度相同才需要全篇指纹判断是否已撤销回原状
+    if (tab.content.length === tab.savedFingerprint.len) this.refreshDirty(tab);
+    else tab.dirty = true;
   }
 
   /** 依据内容指纹与元数据基线重算脏标记（撤销回基线即变干净） */
@@ -697,6 +870,8 @@ class TabStore {
     const tab = this.tabs.find((t) => t.id === id);
     if (!tab) return;
     tab.content = content.content;
+    tab.pendingDoc = undefined;
+    tab.contentRevision += 1;
     tab.contentDirty = false;
     tab.savedFingerprint = fingerprint(content.content); // 磁盘内容成为内容基线
     tab.savedTrailingNewline = content.content.endsWith("\n");
@@ -720,6 +895,8 @@ class TabStore {
     if (tab) {
       tab.path = path;
       tab.name = name;
+      // 落盘后标签名来自文件名：不再跟随首个非空行
+      tab.autoTitle = false;
       this.emitStructure();
     }
   }

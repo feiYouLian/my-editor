@@ -102,9 +102,24 @@
   font-weight: 600;
 }
 
-/* 草稿标记：仅激活标签存在未保存草稿时显示 */
+/* 草稿标记：仅激活标签存在未保存草稿时显示；可点击查看 / 恢复草稿 */
 .status-draft {
   color: var(--text-secondary);
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.status-draft:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.status-draft:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* 外部修改标记：可点击重新载入 */
@@ -160,10 +175,19 @@
   display: none;
 }
 
+/* 面板固定宽度 + 贴右下角：宽度随内容变化会改变左边界，看起来像"位置飘" */
 .notice-panel {
-  min-width: 340px;
-  max-width: 480px;
+  width: min(460px, calc(100vw - 16px));
+  min-width: 0;
+  max-width: none;
+  max-height: min(60vh, 520px);
   padding: 0;
+}
+
+/* 从状态栏向上展开：覆盖 .context-menu 默认的左上锚点动画 */
+.context-menu.notice-panel {
+  transform-origin: bottom right;
+  animation: ui-pop-in var(--dur-slow) var(--ease-out);
 }
 
 .notice-head {

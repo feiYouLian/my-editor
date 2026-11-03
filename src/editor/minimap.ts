@@ -206,8 +206,15 @@ class MinimapPlugin implements PluginValue {
   private canvasWidth = 0;
   /** 内容实际绘制高度（短文档时小于 canvasHeight） */
   private contentHeight = 0;
+  /** 主题色缓存：只在主题 / 重配后失效，避免每次重绘都读计算样式 */
+  private colors: string[] | null = null;
+  /** 上次写入的视口框高度与显隐：滚动时高度不变，避免每帧写 style 触发布局失效 */
+  private vpHeight = -1;
+  private vpVisible: boolean | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
+  /** 父容器宽度缓存：ResizeObserver 已给出尺寸，拖拽分栏时不再逐帧 getBoundingClientRect */
+  private parentWidth = 0;
   private rebuildTimer: number | null = null;
   /** 空闲回调句柄：重建被推迟到浏览器空闲时执行（见 scheduleRebuild） */
   private idleHandle: number | null = null;
@@ -239,21 +246,28 @@ class MinimapPlugin implements PluginValue {
     this.el.addEventListener("pointerup", this.onPointerUp);
     this.el.addEventListener("pointercancel", this.onPointerUp);
 
+    this.parentWidth = this.parent.getBoundingClientRect().width;
     if (typeof ResizeObserver === "function") {
-      this.resizeObserver = new ResizeObserver(() => this.handleResize());
+      this.resizeObserver = new ResizeObserver((entries) => {
+        this.parentWidth = entries[0]?.contentRect.width ?? this.parentWidth;
+        this.handleResize();
+      });
       this.resizeObserver.observe(this.parent);
     }
     // 应用主题（data-theme）切换不产生编辑器事务，单独观察以刷新 canvas 配色
     if (typeof MutationObserver === "function") {
-      this.themeObserver = new MutationObserver(() => this.scheduleRebuild(true));
+      this.themeObserver = new MutationObserver(() => {
+        this.colors = null;
+        this.scheduleRebuild(true);
+      });
       this.themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["data-theme"],
       });
     }
 
-    this.syncVisibility();
     // 同步首绘：切标签时 setState 会重建本插件，同步绘制可避免空列闪一帧
+    // （rebuild 内部已含 syncVisibility，不必先测一次）
     this.rebuild();
   }
 
@@ -262,6 +276,7 @@ class MinimapPlugin implements PluginValue {
       this.scheduleRebuild();
     } else if (update.transactions.some((tr) => tr.reconfigured)) {
       // 主题 / 字号等 Compartment 重配后重绘（canvas 配色取自 CSS 变量）
+      this.colors = null;
       this.scheduleRebuild(true);
     }
     if (update.geometryChanged || update.viewportChanged) this.scheduleViewport();
@@ -326,13 +341,16 @@ class MinimapPlugin implements PluginValue {
   private handleResize(): void {
     if (this.disposed) return;
     this.syncVisibility();
-    this.scheduleRebuild(true);
+    // 宽度变化只影响可见性（密度带按行统计，与宽度无关）。
+    // 拖拽分栏时宽度每帧都变，无条件重建会让每帧重绘整幅 canvas
+    // 并读一次计算样式（getComputedStyle），是拖拽掉帧的主因。
+    if (this.measureHeight() !== this.canvasHeight) this.scheduleRebuild(true);
     this.scheduleViewport();
   }
 
   /** 宽度不足时整列隐藏（split 模式可拖到编辑区仅剩 15%） */
   private syncVisibility(): void {
-    const available = this.parent.getBoundingClientRect().width;
+    const available = this.parentWidth;
     const tooNarrow = available > 0 && available - WIDTH < MIN_CONTENT_WIDTH;
     this.el.classList.toggle(HIDDEN_CLASS, tooNarrow);
   }
@@ -358,12 +376,15 @@ class MinimapPlugin implements PluginValue {
     return Math.max(MIN_CANVAS_HEIGHT, Math.min(MAX_CANVAS_HEIGHT, Math.round(viewH)));
   }
 
-  /** 解析各分类的主题色（视口框配色走 CSS 的 --accent，不在此处） */
+  /** 解析各分类的主题色（视口框配色走 CSS 的 --accent，不在此处）。
+   *  结果缓存：getComputedStyle 在布局/样式已失效的帧里会强制一次全量样式重算。 */
   private kindColors(): string[] {
+    if (this.colors) return this.colors;
     const style = getComputedStyle(this.el);
-    return KIND_VARS.map(
+    this.colors = KIND_VARS.map(
       (name, i) => style.getPropertyValue(name).trim() || KIND_FALLBACK[i],
     );
+    return this.colors;
   }
 
   private draw(height: number): void {
@@ -386,7 +407,6 @@ class MinimapPlugin implements PluginValue {
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, height);
-    this.viewportEl.style.display = this.hasDoc ? "" : "none";
     const bands = this.bands;
     if (!bands) return;
 
@@ -466,7 +486,10 @@ class MinimapPlugin implements PluginValue {
     const total = scroller.scrollHeight;
     const viewH = scroller.clientHeight;
     if (!this.hasDoc || total <= 0 || this.canvasHeight <= 0) {
-      this.viewportEl.style.display = "none";
+      if (this.vpVisible !== false) {
+        this.vpVisible = false;
+        this.viewportEl.style.display = "none";
+      }
       return;
     }
     // 内容实际绘制高度（短文档小于画布）：视口框按它算，否则会出现"整列都被框住"
@@ -475,8 +498,15 @@ class MinimapPlugin implements PluginValue {
     const maxTop = Math.max(0, contentH - boxH);
     const maxScroll = Math.max(0, total - viewH);
     const top = maxScroll > 0 ? (scroller.scrollTop / maxScroll) * maxTop : 0;
-    this.viewportEl.style.display = "";
-    this.viewportEl.style.height = `${boxH}px`;
+    if (this.vpVisible !== true) {
+      this.vpVisible = true;
+      this.viewportEl.style.display = "";
+    }
+    // 高度写值会作废布局：滚动过程中它其实不变，只在变化时写一次
+    if (this.vpHeight !== boxH) {
+      this.vpHeight = boxH;
+      this.viewportEl.style.height = `${boxH}px`;
+    }
     this.viewportEl.style.transform = `translateY(${top}px)`;
   }
 

@@ -18,6 +18,23 @@ let apiPromise: Promise<MermaidApi> | null = null;
 /** 渲染序号：同一篇文档多次渲染时 id 不能重复 */
 let renderSeq = 0;
 
+/**
+ * 已渲染图表缓存（源码 → 消毒后的 SVG）。
+ * 编辑 Markdown 时每次停顿都会整篇重渲染，图表源码不变时不必重跑 mermaid。
+ */
+const SVG_CACHE_LIMIT = 32;
+const svgCache = new Map<string, string>();
+
+function cacheSvg(source: string, svg: string): void {
+  svgCache.delete(source);
+  svgCache.set(source, svg);
+  while (svgCache.size > SVG_CACHE_LIMIT) {
+    const oldest = svgCache.keys().next().value;
+    if (oldest === undefined) break;
+    svgCache.delete(oldest);
+  }
+}
+
 function loadMermaid(): Promise<MermaidApi> {
   if (!apiPromise) {
     apiPromise = import("mermaid")
@@ -52,21 +69,43 @@ export async function hydrateMermaid(
 ): Promise<void> {
   const blocks = [...root.querySelectorAll<HTMLElement>(".md-mermaid")];
   if (blocks.length === 0) return;
+
+  // 先命中缓存（同一源码在本篇里重复出现时只复用第一次，避免 SVG id 冲突）
+  const seen = new Set<string>();
+  const pending: { block: HTMLElement; source: string }[] = [];
+  for (const block of blocks) {
+    // 已渲染 / 已失败的块在增量渲染中被复用：不要重复跑 mermaid
+    if (block.classList.contains("rendered") || block.classList.contains("failed")) continue;
+    const source = block.dataset.mermaid ?? "";
+    if (!source.trim()) continue;
+    if (!seen.has(source)) {
+      seen.add(source);
+      const cached = svgCache.get(source);
+      if (cached) {
+        block.innerHTML = cached;
+        block.classList.add("rendered");
+        continue;
+      }
+    }
+    pending.push({ block, source });
+  }
+  if (pending.length === 0) return;
+
   let api: MermaidApi;
   try {
     api = await loadMermaid();
   } catch (e) {
-    failAll(blocks, `Mermaid 组件加载失败：${String(e instanceof Error ? e.message : e).split("\n")[0]}`);
+    failAll(pending.map((item) => item.block), `Mermaid 组件加载失败：${String(e instanceof Error ? e.message : e).split("\n")[0]}`);
     return;
   }
-  for (const block of blocks) {
-    const source = block.dataset.mermaid ?? "";
-    if (!source.trim()) continue;
+  for (const { block, source } of pending) {
     try {
       renderSeq += 1;
       const { svg } = await api.render(`md-mermaid-${Date.now()}-${renderSeq}`, source);
-      block.innerHTML = sanitize(svg);
+      const safe = sanitize(svg);
+      block.innerHTML = safe;
       block.classList.add("rendered");
+      cacheSvg(source, safe);
     } catch (e) {
       fail(block, source, String(e instanceof Error ? e.message : e).split("\n")[0]);
     }

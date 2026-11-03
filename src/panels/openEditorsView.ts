@@ -34,6 +34,10 @@ interface MenuItem {
 export class OpenEditorsView {
   private readonly listEl: HTMLElement;
   private menu: HTMLElement | null = null;
+  /** 上次渲染的结构签名（标签集 / 名称 / 脏标记；初始哨兵保证空列表先渲染一次） */
+  private signature = "\u0000";
+  /** 上次高亮的激活标签 id：只改 active 行，不为切标签重建整个列表 */
+  private activeId = "";
 
   constructor(host: HTMLElement, private deps: OpenEditorsDeps) {
     host.innerHTML = "";
@@ -47,10 +51,24 @@ export class OpenEditorsView {
     });
   }
 
-  /** 标签集合 / 激活项 / 脏标记变化时重绘（数量小，直接重建） */
+  /** 标签集合 / 激活项 / 脏标记变化时重绘；只切激活项时走增量 class 切换 */
   refresh(): void {
     const tabs = tabStore.list();
-    const activeId = tabStore.active()?.id;
+    const activeId = tabStore.active()?.id ?? "";
+    // 结构键不含激活项：切标签时只更新 active 行，不重建列表
+    const signature = tabs
+      .map((tab) => `${tab.id}\u0001${tab.name}\u0001${tab.dirty ? 1 : 0}`)
+      .join("\u0002");
+    if (signature === this.signature) {
+      if (activeId === this.activeId) return;
+      this.activeId = activeId;
+      this.listEl.querySelectorAll<HTMLElement>(".open-editor").forEach((row) => {
+        row.classList.toggle("active", row.dataset.tabId === activeId);
+      });
+      return;
+    }
+    this.signature = signature;
+    this.activeId = activeId;
     this.listEl.innerHTML = "";
 
     if (tabs.length === 0) {
@@ -65,6 +83,7 @@ export class OpenEditorsView {
     for (const tab of tabs) {
       const row = document.createElement("div");
       row.className = `open-editor${tab.id === activeId ? " active" : ""}`;
+      row.dataset.tabId = tab.id;
       row.title = tab.path ?? tab.name;
 
       const icon = document.createElement("span");
