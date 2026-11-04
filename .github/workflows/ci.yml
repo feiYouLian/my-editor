@@ -41,6 +41,11 @@ jobs:
       - name: 前端单测
         run: npm test
 
+      # S2 接入后启用：playwright.config.ts 尚不存在时自动跳过，不阻塞当前门禁
+      - name: E2E 关键路径
+        if: ${{ hashFiles('playwright.config.ts') != '' }}
+        run: npx playwright test
+
       - name: Rust 单测
         run: cargo test --lib
         working-directory: src-tauri
