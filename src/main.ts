@@ -60,7 +60,7 @@ import {
 import { cleanupDrafts, loadSession } from "./services/session";
 import { TreeWatcher } from "./services/treeWatch";
 import { logError, logEvent } from "./services/diagnostics";
-import { onOpenExternalFiles, takePendingFiles } from "./services/launch";
+import { onOpenExternalFiles, takePendingFiles, takePendingWorkspace } from "./services/launch";
 import {
   settings,
   effectiveIgnoreDirs,
@@ -1928,13 +1928,17 @@ palette.registerAll(
 );
 new MenuBar($("menubar"), menuModel((cmd) => shortcutText(cmd)));
 
-async function openWorkspaceDir(): Promise<void> {
-  const dir = await pickDirectory();
-  if (!dir) return;
-  // setRoot 会经 onWorkspaceStateChange 同步 workspaceRoot、侧栏标题与持久化
+/** 打开工作区：对话框与命令行目录参数共用（setRoot 会同步根路径 / 标题 / 持久化） */
+function openWorkspacePath(dir: string): void {
   fileTree.setRoot(dir);
   // 新工作区：重新读取 Git 状态（状态栏分支入口随之更新或隐藏）
   gitHost.scheduleRefresh();
+}
+
+async function openWorkspaceDir(): Promise<void> {
+  const dir = await pickDirectory();
+  if (!dir) return;
+  openWorkspacePath(dir);
 }
 
 /**
@@ -2299,16 +2303,19 @@ async function bootstrap(): Promise<void> {
   // Git 状态首次载入（工作区已恢复）
   gitHost.scheduleRefresh();
 
-  // 文件关联 /「打开方式 ▸ my-editor」/ 第二实例转发来的文件：
+  // 文件关联 /「打开方式 ▸ my-editor」/ 第二实例转发来的文件或目录：
   // 冷启动与运行中共用同一个待打开队列（Rust cli.rs），取完即清空
   const openPendingExternalFiles = async (): Promise<void> => {
     let paths: string[];
+    let dir: string | null;
     try {
-      paths = await takePendingFiles();
+      [paths, dir] = await Promise.all([takePendingFiles(), takePendingWorkspace()]);
     } catch (e) {
-      console.warn("[launch] 读取待打开文件失败", e);
+      console.warn("[launch] 读取待打开内容失败", e);
       return;
     }
+    // 目录先于文件：文件树根要就位，Git 状态与相对路径解析都依赖它
+    if (dir) openWorkspacePath(dir);
     for (const path of paths) await fileService.openFilePath(path);
   };
   // 先注册再取队列：避免「取完之后、注册之前」到达的第二个实例事件被漏掉

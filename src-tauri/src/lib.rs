@@ -13,6 +13,9 @@ pub fn run() {
     commands::cli::push_pending(commands::cli::files_from_args(
         args.get(1..).unwrap_or(&[]),
     ));
+    commands::cli::push_pending_workspace(commands::cli::dirs_from_args(
+        args.get(1..).unwrap_or(&[]),
+    ));
 
     let result = tauri::Builder::default()
         // 单实例必须第一个注册（官方要求）。第二个实例把已有窗口拉到前台后自行退出，
@@ -26,10 +29,13 @@ pub fn run() {
             // 应用已运行时「打开方式」送来的文件：入队并通知前端取走。
             // 前端取不到（事件早于就绪）时，启动阶段也会从同一队列兜底。
             let files = commands::cli::files_from_args(argv.get(1..).unwrap_or(&[]));
-            if files.is_empty() {
+            let dir = commands::cli::dirs_from_args(argv.get(1..).unwrap_or(&[]));
+            if files.is_empty() && dir.is_none() {
                 return;
             }
             commands::cli::push_pending(files);
+            commands::cli::push_pending_workspace(dir);
+            // 事件名沿用 open-files：前端收到后同时取文件与工作区两个队列
             let _ = app.emit("open-files", ());
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -50,6 +56,7 @@ pub fn run() {
             commands::association::scan_legacy_associations,
             commands::association::clear_legacy_associations,
             commands::cli::take_pending_files,
+            commands::cli::take_pending_workspace,
             commands::file::open_text_file,
             commands::file::probe_file,
             commands::file::reopen_with_encoding,

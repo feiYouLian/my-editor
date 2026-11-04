@@ -13,6 +13,11 @@ export function takePendingFiles(): Promise<string[]> {
   return invoke<string[]>("take_pending_files");
 }
 
+/** 取走启动参数里的工作区目录（命令行传目录时设置；取完即清空） */
+export function takePendingWorkspace(): Promise<string | null> {
+  return invoke<string | null>("take_pending_workspace");
+}
+
 /** 订阅「外部又送来了文件」（应用已在运行时再次打开） */
 export function onOpenExternalFiles(cb: () => void): Promise<UnlistenFn> {
   return listen("open-files", () => cb());
