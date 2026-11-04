@@ -41,6 +41,16 @@ jobs:
       - name: 前端单测
         run: npm test
 
+      # 静态契约与护栏（只读扫描 / 集合比较，失败即非零退出）
+      - name: IPC 参数契约
+        run: node scripts/check-ipc-contract.mjs
+
+      - name: 生产代码 panic 点
+        run: node scripts/scan-unsafe.mjs
+
+      - name: DOM 注入面
+        run: node scripts/scan-innerhtml.mjs
+
       # S2 接入后启用：playwright.config.ts 尚不存在时自动跳过，不阻塞当前门禁
       - name: E2E 关键路径
         if: ${{ hashFiles('playwright.config.ts') != '' }}

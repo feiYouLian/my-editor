@@ -761,32 +761,16 @@ pub fn config_path(app: tauri::AppHandle) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    /// 与前端共用同一契约夹具：状态栏字段顺序 + 格式化工具键必须一致
+    /// 与前端共用同一契约夹具：全部配置键与默认值逐项一致。
+    /// 任一侧新增字段而另一侧没跟上，这里就会失败（0.6.1 的 P2-6 即此类）。
     #[test]
     fn defaults_match_frontend_contract() {
         let raw = include_str!("../../../src/config/fixtures/defaults-contract.json");
         let fixture: serde_json::Value = serde_json::from_str(raw).expect("契约夹具应是合法 JSON");
 
-        let ids: Vec<String> = default_status_bar_fields()
-            .into_iter()
-            .map(|f| f.id)
-            .collect();
-        let expected_ids: Vec<String> = fixture["statusBarFields"]
-            .as_array()
-            .expect("statusBarFields 数组")
-            .iter()
-            .map(|v| v.as_str().unwrap_or_default().to_string())
-            .collect();
-        assert_eq!(ids, expected_ids);
-
-        let keys: Vec<String> = default_formatters().keys().cloned().collect();
-        let expected_keys: Vec<String> = fixture["formatterKeys"]
-            .as_array()
-            .expect("formatterKeys 数组")
-            .iter()
-            .map(|v| v.as_str().unwrap_or_default().to_string())
-            .collect();
-        assert_eq!(keys, expected_keys);
+        let expected = fixture["config"].clone();
+        let actual = serde_json::to_value(AppConfig::default()).expect("默认配置应可序列化");
+        assert_eq!(actual, expected);
 
         // 大文件视图编码 = 后端 CANDIDATES 去掉 UTF-16（字节级行扫描不支持）
         let expected_enc: Vec<String> = crate::commands::encoding::CANDIDATES

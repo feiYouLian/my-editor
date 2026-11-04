@@ -14,7 +14,7 @@ pub fn run() {
         args.get(1..).unwrap_or(&[]),
     ));
 
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         // 单实例必须第一个注册（官方要求）。第二个实例把已有窗口拉到前台后自行退出，
         // 避免两个进程并发写 session.json / drafts 互相覆盖。
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -145,6 +145,12 @@ pub fn run() {
             commands::large::refresh_large_file,
             commands::large::close_large_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    // 启动失败（端口被占、WebView 初始化失败等）不 panic：打印原因后以非零码退出，
+    // 让用户看到可复制的信息，而不是静默崩溃。
+    if let Err(err) = result {
+        eprintln!("应用启动失败: {err}");
+        std::process::exit(1);
+    }
 }

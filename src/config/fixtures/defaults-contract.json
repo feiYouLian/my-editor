@@ -1,19 +1,121 @@
 {
-  "statusBarFields": [
-    "path",
-    "readonly",
-    "size",
-    "encoding",
-    "newline",
-    "language",
-    "indent",
-    "whitespace",
-    "wrap",
-    "cursor",
-    "lines",
-    "dirty"
-  ],
-  "formatterKeys": ["cpp", "go", "java", "python", "rust"],
+  "note": "前后端默认值契约的唯一定义。任一侧新增/删除配置键或改动默认值，两侧单测都会失败——必须同时改这里。",
+  "config": {
+    "version": 2,
+    "theme": "dark",
+    "editorTheme": "dark",
+    "tabSize": 2,
+    "insertSpaces": true,
+    "formatOnSave": false,
+    "highlighterDisabledOver": 50000,
+    "largeFileThreshold": 20971520,
+    "longLineSkipChars": 2000,
+    "languageExtensions": {
+      ".js": "javascript",
+      ".ts": "typescript",
+      ".py": "python",
+      ".rs": "rust",
+      ".java": "java",
+      ".md": "markdown",
+      ".log": "plaintext"
+    },
+    "legacyLanguages": [],
+    "editorEnhancements": {
+      "columnSelection": true,
+      "columnSelectionModifier": "Alt",
+      "columnEditorKey": "Alt+c",
+      "occurrenceHighlight": true,
+      "showWhitespace": false,
+      "bracketMatching": true,
+      "indentGuides": true,
+      "rainbowBrackets": true,
+      "wordWrap": false,
+      "codeFolding": true,
+      "autoCloseBrackets": true,
+      "autoIndent": true,
+      "wordCompletion": true,
+      "detectIndent": true,
+      "rulers": []
+    },
+    "keybindings": [],
+    "layout": {
+      "sidebarVisible": true,
+      "sidebarView": "files",
+      "sidebarExpanded": ["files"],
+      "sidebarSizes": {},
+      "splitRatio": 0.5,
+      "defaultViewMode": "split",
+      "showLineNumbers": true,
+      "showActiveLine": true,
+      "minimap": true,
+      "editorFontSize": 14,
+      "editorFontFamily": "",
+      "statusBarFields": [
+        { "id": "path", "visible": true },
+        { "id": "readonly", "visible": true },
+        { "id": "size", "visible": true },
+        { "id": "encoding", "visible": true },
+        { "id": "newline", "visible": true },
+        { "id": "language", "visible": true },
+        { "id": "indent", "visible": true },
+        { "id": "whitespace", "visible": true },
+        { "id": "wrap", "visible": true },
+        { "id": "cursor", "visible": true },
+        { "id": "lines", "visible": true },
+        { "id": "dirty", "visible": true }
+      ]
+    },
+    "session": {
+      "restoreOnStartup": true,
+      "confirmOnClose": true,
+      "draftDebounceMs": 1000,
+      "draftRetentionDays": 7
+    },
+    "workspace": {
+      "rememberExpanded": true,
+      "lastDirectory": "",
+      "watchTree": true
+    },
+    "largeFile": {
+      "logExtensions": [".log"],
+      "sparseIndexAnchorBytes": 65536,
+      "viewportPaddingLines": 200
+    },
+    "fetch": {
+      "allowPrivateNetwork": false
+    },
+    "terminal": {
+      "shell": ""
+    },
+    "globalReplace": {
+      "backup": true
+    },
+    "files": {
+      "openWithDoubleClick": false,
+      "trimTrailingWhitespaceOnSave": false,
+      "ensureFinalNewlineOnSave": false,
+      "encodeMemory": true,
+      "notifyOnSave": true
+    },
+    "system": {
+      "fileAssociation": false
+    },
+    "git": {
+      "readOnly": false
+    },
+    "ignoreDirs": ["node_modules", ".git", "dist"],
+    "fileEncodingMemory": {},
+    "formatters": {
+      "python": { "tool": "black", "args": ["-q", "-"] },
+      "go": { "tool": "gofmt", "args": [] },
+      "java": { "tool": "google-java-format", "args": ["--aosp"] },
+      "rust": { "tool": "rustfmt", "args": [] },
+      "cpp": {
+        "tool": "clang-format",
+        "args": ["-style=file", "-assume-filename=__PLACEHOLDER__"]
+      }
+    }
+  },
   "largeViewEncodings": [
     "UTF-8",
     "GBK",

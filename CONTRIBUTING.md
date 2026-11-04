@@ -31,18 +31,21 @@ npm run tauri build          # 产物在 src-tauri/target/release/bundle/
 
 ```bash
 npm test && npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --lib)
+node scripts/check-ipc-contract.mjs && node scripts/scan-unsafe.mjs && node scripts/scan-innerhtml.mjs
 ```
 
-四条全绿才算可提交。任何一条挂了都别用「反正不相关」放过——历史上这三类问题都出现过：
-类型检查通过但构建被 `vite` 拒绝、Rust 单测过了但前端命令表键位冲突、构建通过但运行时 IPC 参数对不上。
+全部通过才算可提交。任何一条挂了都别用「反正不相关」放过——历史上这几类问题都出现过：
+类型检查通过但构建被 `vite` 拒绝、Rust 单测过了但前端命令表键位冲突、构建通过但运行时 IPC 参数对不上
+（最后这类现在由第二行的契约校验在运行前拦下）。
 
-当前基线（2026-11-01）：`npm test` 130 项、`cargo test --lib` 178 项。同样四条命令已在
-`.github/workflows/ci.yml` 里做成门禁，push / PR 在 Windows runner 上自动跑。
+当前基线（2026-11-04）：`npm test` 131 项、`cargo test --lib` 184 项（2 项默认 ignore）、
+非清空用途的 DOM 注入点 14 处。这些命令已在 `.github/workflows/ci.yml` 里做成门禁，
+push / PR 在 Windows runner 上自动跑。
 
 改动碰到 `src-tauri/tauri.conf.json` 的 `bundle` 时额外跑一次 `npm run tauri build`：
 打包失败（尤其 MSI/WiX 的代码页问题）只有真打包才能发现，而 CI 要几分钟编译后才报。
 
-手工回归看 [`验收清单_V1.md`](./验收清单_V1.md)（含 §10 冒烟清单），自动化覆盖不到的部分都在那里。
+手工回归看 [`docs/ACCEPTANCE.md`](./docs/ACCEPTANCE.md)（三层验收表，自动门禁与人工条目已建立对应关系）。
 
 ## 4 代码约定（硬约束）
 

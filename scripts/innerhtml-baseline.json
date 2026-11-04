@@ -1,0 +1,14 @@
+{
+  "note": "S1 记录的收敛基线：非清空用途的 innerHTML / insertAdjacentHTML。S3 改造完成后 total 改为 0。",
+  "total": 14,
+  "files": {
+    "src/panels/conflictGuide.ts": 1,
+    "src/panels/cronPanel.ts": 1,
+    "src/panels/gitBlame.ts": 1,
+    "src/panels/gitView.ts": 1,
+    "src/panels/helpDialog.ts": 1,
+    "src/panels/preview.ts": 6,
+    "src/panels/preview/export.ts": 1,
+    "src/panels/preview/mermaid.ts": 2
+  }
+}
