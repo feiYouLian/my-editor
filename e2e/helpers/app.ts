@@ -35,7 +35,10 @@ async function cdpReady(): Promise<boolean> {
  * 文件路径经 cli.rs 入队，前端就绪后统一打开；原生文件对话框不在 WebView 内，
  * CDP 点不到，需要选文件时一律走这条入口。
  */
-export async function launchApp(args: string[] = []): Promise<ChildProcess> {
+export async function launchApp(
+  args: string[] = [],
+  opts: { configDir?: string } = {},
+): Promise<ChildProcess> {
   if (!existsSync(EXE)) {
     throw new Error(
       `未找到调试版应用：${EXE}\n先执行 npm run tauri build -- --debug --no-bundle`,
@@ -45,7 +48,7 @@ export async function launchApp(args: string[] = []): Promise<ChildProcess> {
   if (await cdpReady()) {
     throw new Error(`调试端口 ${PORT} 已被占用：先结束残留的 my-editor 进程再跑 E2E`);
   }
-  const configDir = mkdtempSync(join(tmpdir(), "my-editor-e2e-profile-"));
+  const configDir = opts.configDir ?? mkdtempSync(join(tmpdir(), "my-editor-e2e-profile-"));
   const child = spawn(EXE, args, {
     env: {
       ...process.env,
@@ -60,6 +63,16 @@ export async function launchApp(args: string[] = []): Promise<ChildProcess> {
   return child;
 }
 
+/** 等上一次实例彻底退出、调试端口释放（重启恢复类用例用） */
+export async function waitForPortFree(timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await cdpReady())) return;
+    await delay(200);
+  }
+  throw new Error(`调试端口 ${PORT} 在 ${timeoutMs}ms 内未释放`);
+}
+
 async function waitForCdp(timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -69,8 +82,8 @@ async function waitForCdp(timeoutMs = 20_000): Promise<void> {
   throw new Error(`WebView2 调试端口 ${PORT} 在 ${timeoutMs}ms 内未就绪`);
 }
 
-/** 结束整个进程树并清理临时配置目录 */
-export function killApp(child: ChildProcess): void {
+/** 结束整个进程树并清理临时配置目录（keepProfile=true 时保留，用于重启恢复类用例） */
+export function killApp(child: ChildProcess, opts: { keepProfile?: boolean } = {}): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (child.exitCode === null) {
@@ -79,7 +92,7 @@ export function killApp(child: ChildProcess): void {
   }
   const dir = profiles.get(pid);
   profiles.delete(pid);
-  if (!dir) return;
+  if (!dir || opts.keepProfile) return;
   try {
     rmSync(dir, { recursive: true, force: true });
   } catch {

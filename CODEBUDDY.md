@@ -76,8 +76,8 @@ Rust 侧约束：
   新增 IPC 参数契约 / 生产 panic 点 / DOM 注入面三道静态门禁（`scripts/`，已接入 `ci.yml`）；
   验收基线整理为 `docs/ACCEPTANCE.md`（自动 / 半自动 / 人工三层，与批次一一对应）
 - 0.7.0 计划 S2 进行中（2026-11-04）：E2E 基座已接入（调试版应用 + WebView2 CDP + Playwright，
-  `e2e/` + `playwright.config.ts`，7 条用例覆盖启动基线与路径 1 / 5（仅只读视图）/ 6 / 7 / 9）；
-  渲染层测试覆盖 `searchView` / `quickOpen` / `tabsBar` / `gitView`；其余 7 条关键路径待补
+  `e2e/` + `playwright.config.ts`，9 条用例覆盖启动基线与路径 1 / 2（不转码）/ 3 / 5（仅只读视图）/ 6 / 7 / 9）；
+  渲染层测试覆盖 `searchView` / `quickOpen` / `tabsBar` / `gitView`；其余 5 条关键路径待补
 - **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
-- 未达项：E2E 已接入 7 条用例，12 条关键路径覆盖 5 条（大文件仅只读视图），其余 7 条未补；自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名
+- 未达项：E2E 已接入 9 条用例，12 条关键路径覆盖 7 条（路径 2 / 5 为部分覆盖），其余 5 条未补；自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名
