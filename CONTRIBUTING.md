@@ -38,7 +38,7 @@ node scripts/check-ipc-contract.mjs && node scripts/scan-unsafe.mjs && node scri
 类型检查通过但构建被 `vite` 拒绝、Rust 单测过了但前端命令表键位冲突、构建通过但运行时 IPC 参数对不上
 （最后这类现在由第二行的契约校验在运行前拦下）。
 
-当前基线（2026-11-04）：`npm test` 131 项 + 渲染层 13 项、`cargo test --lib` 187 项（2 项默认 ignore）、
+当前基线（2026-11-04）：`npm test` 131 项 + 渲染层 13 项、`cargo test --lib` 189 项（2 项默认 ignore）、
 非清空用途的 DOM 注入点 14 处。这些命令已在 `.github/workflows/ci.yml` 里做成门禁，
 push / PR 在 Windows runner 上自动跑。
 

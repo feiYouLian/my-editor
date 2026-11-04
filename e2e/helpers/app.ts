@@ -53,6 +53,8 @@ export async function launchApp(
     env: {
       ...process.env,
       MY_EDITOR_CONFIG_DIR: configDir,
+      // WebView2 的 localStorage / sessionStorage 也按用例隔离（默认是所有实例共用）
+      WEBVIEW2_USER_DATA_FOLDER: join(configDir, "webview"),
       // WebView2 读取该变量并打开 CDP 端口；只影响调试，不影响应用行为
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`,
     },
