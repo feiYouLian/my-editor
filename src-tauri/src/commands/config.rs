@@ -311,6 +311,22 @@ impl Default for FileSettings {
     }
 }
 
+/// 系统集成：只做「打开方式」候选，不改系统默认程序
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SystemSettings {
+    /// 在 Windows 资源管理器的「打开方式」中登记 my-editor（默认关）
+    pub file_association: bool,
+}
+
+impl Default for SystemSettings {
+    fn default() -> Self {
+        Self {
+            file_association: false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
 pub struct FormatterEntry {
@@ -354,6 +370,8 @@ pub struct AppConfig {
     pub terminal: TerminalSettings,
     pub global_replace: GlobalReplaceSettings,
     pub files: FileSettings,
+    /// 系统集成（文件关联等）
+    pub system: SystemSettings,
     /// Git 只读开关（设置页可切；后端按此拒绝所有写入类 Git 命令）
     pub git: GitSettings,
     pub ignore_dirs: Vec<String>,
@@ -385,6 +403,7 @@ impl Default for AppConfig {
             terminal: TerminalSettings::default(),
             global_replace: GlobalReplaceSettings::default(),
             files: FileSettings::default(),
+            system: SystemSettings::default(),
             git: GitSettings::default(),
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),
@@ -818,6 +837,21 @@ mod tests {
         assert!(back.files.ensure_final_newline_on_save);
         assert!(!back.files.encode_memory);
         assert_eq!(back.editor_enhancements.rulers, vec![80, 120]);
+    }
+
+    /// 文件关联开关：JSON 往返不丢，且旧配置缺省为关（不能默认改写系统关联）
+    #[test]
+    fn file_association_roundtrips_and_defaults_off() {
+        let legacy: AppConfig =
+            serde_json::from_str(r#"{"version":2}"#).expect("旧配置应可解析");
+        assert!(!legacy.system.file_association);
+
+        let mut cfg = AppConfig::default();
+        cfg.system.file_association = true;
+        let json = serde_json::to_string(&cfg).expect("序列化");
+        assert!(json.contains("\"fileAssociation\":true"));
+        let back: AppConfig = serde_json::from_str(&json).expect("反序列化");
+        assert!(back.system.file_association);
     }
 
     /// 旧配置缺少新字段时取默认值（默认开的三项不能被当成 false）

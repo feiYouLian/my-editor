@@ -1,4 +1,4 @@
-import { oneDark } from "@codemirror/theme-one-dark";
+import { oneDark, oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
 import { EditorView } from "@codemirror/view";
 import { defaultHighlightStyle, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
@@ -14,7 +14,7 @@ import {
 
 /**
  * 编辑器主题工厂：按主题类别与字号组装编辑器扩展。
- * 应用 UI 主题走 CSS 变量（main.css :root[data-theme]），编辑器语法主题在此切换：
+ * 应用 UI 主题走 CSS 变量（styles/tokens.css 的 :root[data-theme]），编辑器语法主题在此切换：
  * - dark：one-dark（默认）
  * - light：CM6 默认浅色高亮 + 浅色结构底
  * - high-contrast：one-dark 语法色 + 纯黑高对比结构底（黑底白字、强选区）
@@ -77,8 +77,8 @@ function baseLayout(fontSize: number, fontFamily = ""): Extension {
     // 书签 gutter
     "& .cm-bookmark-gutter": { width: "22px", minWidth: "22px" },
     ".cm-bookmark": { color: "#ffcc66", cursor: "pointer", fontSize: "12px" },
-    // 补全弹窗：CM 默认选中项用系统 Highlight 色，深色主题下常常几乎看不见，
-    // 导致"不知道回车会插入哪一条"。改成强调色实底 + 白字，并把行高放宽。
+    // 补全弹窗：CM 默认选中项用系统 Highlight 色，深色主题下几乎看不见；
+    // 这里用强调色实底 + 白字，并放宽行高。
     ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
       padding: "3px 8px",
       lineHeight: "1.4",
@@ -113,6 +113,30 @@ const SYNTAX_TAGS: Record<SyntaxKey, Tag> = {
   link: t.link,
   invalid: t.invalid,
 };
+
+/** 自定义主题 → HighlightStyle；同一主题对象只创建一次，Minimap 与编辑器共用同一套 class */
+const customStyleCache = new WeakMap<UserTheme, HighlightStyle>();
+
+function highlightStyleForTheme(theme: UserTheme): HighlightStyle {
+  const cached = customStyleCache.get(theme);
+  if (cached) return cached;
+  const specs = SYNTAX_KEYS.filter((key) => theme.syntax[key]).map((key) => ({
+    tag: SYNTAX_TAGS[key],
+    color: theme.syntax[key] as string,
+  }));
+  const style = specs.length > 0 ? HighlightStyle.define(specs) : defaultHighlightStyle;
+  customStyleCache.set(theme, style);
+  return style;
+}
+
+/** 当前编辑器主题实际使用的 HighlightStyle（Minimap 用它解析真实 token 颜色） */
+export function editorHighlightStyle(kind: EditorThemeSetting): HighlightStyle {
+  if (kind === "light") return defaultHighlightStyle;
+  if (kind === "high-contrast") return oneDarkHighlightStyle;
+  const name = customThemeName(kind);
+  const theme = name ? findUserTheme(name) : null;
+  return theme ? highlightStyleForTheme(theme) : oneDarkHighlightStyle;
+}
 
 /**
  * 自定义主题（themes/<名字>.json）→ 编辑器扩展。
@@ -150,15 +174,7 @@ export function customThemeExtensions(
     baseLayout(fontSize, fontFamily),
   ];
 
-  const specs = SYNTAX_KEYS.filter((key) => theme.syntax[key]).map((key) => ({
-    tag: SYNTAX_TAGS[key],
-    color: theme.syntax[key] as string,
-  }));
-  exts.push(
-    specs.length > 0
-      ? syntaxHighlighting(HighlightStyle.define(specs))
-      : syntaxHighlighting(defaultHighlightStyle),
-  );
+  exts.push(syntaxHighlighting(highlightStyleForTheme(theme)));
   return exts;
 }
 

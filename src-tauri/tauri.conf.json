@@ -50,56 +50,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "fileAssociations": [
-      {
-        "ext": [
-          "txt",
-          "text",
-          "log",
-          "md",
-          "markdown",
-          "json",
-          "jsonc",
-          "yaml",
-          "yml",
-          "toml",
-          "ini",
-          "conf",
-          "cfg",
-          "properties",
-          "xml",
-          "html",
-          "htm",
-          "css",
-          "js",
-          "jsx",
-          "ts",
-          "tsx",
-          "rs",
-          "py",
-          "go",
-          "java",
-          "c",
-          "h",
-          "cpp",
-          "hpp",
-          "cs",
-          "php",
-          "rb",
-          "sh",
-          "bat",
-          "ps1",
-          "sql",
-          "csv",
-          "diff",
-          "patch"
-        ],
-        "name": "Text Document",
-        "description": "以 my-editor 打开文本文件",
-        "role": "Editor",
-        "mimeType": "text/plain"
-      }
-    ],
     "windows": {
       "wix": {
         "language": "zh-CN"

@@ -2,7 +2,7 @@
  * Markdown 预览管线：markdown-it + DOMPurify + highlight.js 懒加载，
  * 首次预览时构建一次，安装进宿主（installMarkdown）。
  *
- * 额外能力（M4/G15）：标题锚点 + 目录、KaTeX 数学公式、Mermaid 图表占位。
+ * 能力：标题锚点 + 目录、KaTeX 数学公式、Mermaid 图表占位。
  * 数学与图表都按需加载：Mermaid 只在文档里真有图表时才 import。
  */
 

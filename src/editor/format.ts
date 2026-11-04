@@ -134,7 +134,7 @@ export async function formatText(
   filePath: string | null,
 ): Promise<FormatResult> {
   // CLI 通道优先（Prettier 不覆盖的语言）。
-  // 工具与参数以后端 config.json 为准：用户新增语言只需改配置，前端不再用内置表否决。
+  // 工具与参数以 config.json 为准：用户新增语言只需改配置，前端不校验工具是否存在。
   const cli = languageKey
     ? (getConfig().formatters[languageKey] ?? cliFormatters[languageKey])
     : undefined;

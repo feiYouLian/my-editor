@@ -1,7 +1,7 @@
 /**
  * JSON → Java 代码生成（纯字符串模板，无第三方依赖）。
  *
- * 规则（与《新增功能_技术设计文档》3.3 一致）：
+ * 转换规则：
  * - number：整数 → long，小数 → double
  * - 数组 → List<T>；空数组 → List<Object>
  * - 对象 → 嵌套 static class

@@ -136,7 +136,7 @@ export class RunHost {
       this.runnerFor(tab) !== null;
     this.runBtn.classList.remove("running");
     this.runBtn.textContent = "▶ 运行";
-    // 有未保存改动仍可运行：点击后先保存再执行（不再要求用户先手动保存）
+    // 有未保存改动也可运行：点击后先保存再执行
     this.runBtn.disabled = !canRun;
     this.runBtn.title = !canRun
       ? "当前文件不支持运行（支持 Python / JS / Java / cURL，且需已保存为磁盘文件）"

@@ -4,42 +4,47 @@
  * 设计要点（见《编辑器Minimap缩略图_技术设计文档》）：
  * - 以 ViewPlugin 承载：view.setState() 会销毁旧 plugin 并重建，天然跟随标签切换；
  * - 作为 #editor 的 flex 兄弟节点（120px 固定列），不覆盖文本、不压住滚动条；
- * - **固定比例**：每逻辑行固定 2px（不随文档规模压缩）；内容高于列高时
- *   minimap 自己滚动（滚轮），但**不显示滚动条**，列的位置与宽度始终固定；
- * - 主体为**伪字符纹理**：按行 token 着色，在 120 列像素格上生成"字块 + 间隙"；
+ * - **固定比例**：每逻辑行固定 2px（不随文档规模压缩），对应 VS Code 的
+ *   `minimap.size: proportional` + `scale: 1`；内容高于列高时 Minimap 窗口随编辑器滚动，
+ *   不显示独立滚动条，列的位置与宽度始终固定；
+ * - 主体为**伪字符纹理**：按行 token 着色，字符格 1px × 2px，生成"字块 + 间隙"；
  * - 颜色优先取语法树 token（与编辑器高亮一致）；未解析到的行才退回逐行扫描，
  *   并采用当前编辑器主题的真实配色；
- * - 视口框只信 scrollTop / scrollHeight 比例；minimap 不跟随编辑器自动滚动，
- *   滚动只由用户在 minimap 上滚动产生，避免"位置一直在动"；
- * - 交互：hover 显示滑块、滚轮滚动 minimap、点击 / 拖拽跳转、悬停行预览、
+ * - 视口滑块按 VS Code 的 `computedSliderRatio` 计算：滑块高度 = 可见行数 × 行高，
+ *   在窗口内按滚动比例移动；Minimap 内容窗口滚动到「视口首行落在滑块下方」的位置；
+ * - 交互：hover 显示滑块、滚轮滚动**编辑器**、点击 / 拖拽跳转、悬停行预览、
  *   选区与搜索命中以叠加层绘制；
- * - 只画容器高度对应的可见行（约 800 行），文档再大绘制成本也不变。
+ * - 只画容器高度对应的可见行（约 400 行），文档再大绘制成本也不变。
  */
 
-import { syntaxTree } from "@codemirror/language";
+import { type HighlightStyle, syntaxTree } from "@codemirror/language";
 import { getSearchQuery, type SearchQuery } from "@codemirror/search";
 import type { Extension, Line } from "@codemirror/state";
 import { ViewPlugin, type EditorView, type PluginValue, type ViewUpdate } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
-import { getStyleTags, tagHighlighter, tags as t } from "@lezer/highlight";
-import { findUserTheme, getConfig } from "../config/settings";
-import { customThemeName } from "../config/userThemes";
+import { getStyleTags, tags as t, type Tag } from "@lezer/highlight";
+import { getConfig } from "../config/settings";
+import { editorHighlightStyle } from "./theme";
 
-/** minimap 列宽（px）：与 VS Code 默认 maxColumn（120）对齐，能多看一截代码 */
-const WIDTH = 120;
+/** minimap 列宽（px）：与 VS Code maxColumn=120 / scale=1 对齐，避免块状放大 */
+const CANVAS_WIDTH = 120;
+/** 每个字符在 minimap 上占的横向像素（1px 字符更像 VS Code 的纹理） */
+const CHAR_WIDTH = 1;
+/** 纹理列数：一行最多显示多少个字符 */
+const COLUMNS = CANVAS_WIDTH / CHAR_WIDTH;
 /** 编辑区正文最小宽度：parent 宽度减去 minimap 后低于该值即隐藏 */
 const MIN_CONTENT_WIDTH = 520;
 /** canvas 高度上限，控制绘制与内存 */
 const MAX_CANVAS_HEIGHT = 1200;
 /** canvas 高度下限（编辑区很矮时仍可点击） */
 const MIN_CANVAS_HEIGHT = 60;
-/** devicePixelRatio 上限：内存 = 80 × h × 4 × dpr² */
+/** devicePixelRatio 上限：内存 = 120 × h × 4 × dpr² */
 const DPR_CAP = 2;
 /** 纹理扫描的字符上限：超长行不该把其余内容压成细线 */
 const CHAR_LIMIT = 120;
 /**
- * 固定缩放：每逻辑行在 minimap 上固定占 2px（与 VS Code scale=1 同量级）。
- * 内容高度 = 行数 × 2；超过列高时 minimap 自己滚动（滚轮），列本身不移动。
+ * 固定缩放：每逻辑行在 minimap 上固定占 2px（VS Code scale=1 的量级）。
+ * 字符格 1px × 2px，保持缩略图纹理感，不放大成块状。
  */
 const LINE_HEIGHT = 2;
 /** 搜索命中在 minimap 上最多标记多少处（大量命中时只标前 N 处） */
@@ -63,54 +68,27 @@ const K_VARIABLE = 5;
 const K_FUNCTION = 6;
 const K_TYPE = 7;
 const K_OPERATOR = 8;
-const K_TAG = 9;
 const K_ATTRIBUTE = 10;
-const K_INVALID = 11;
-const K_ATOM = 12;
-const K_DEFINITION = 13;
 
-/** 各类型在 minimap 上的透明度：普通文本更淡，关键字 / 字符串更明显 */
-const KIND_ALPHA = [
-  0.55, 0.5, 0.75, 0.8, 0.72, 0.68, 0.78, 0.74, 0.6, 0.76, 0.68, 0.9, 0.75, 0.65,
+/** 未走语法树时的逐行扫描分类 → 实际高亮 tag（用于解析当前主题的真实颜色） */
+const FALLBACK_TAGS: (readonly Tag[] | null)[] = [
+  null, // K_PLAIN
+  [t.comment],
+  [t.string],
+  [t.keyword],
+  [t.number],
+  [t.variableName],
+  [t.function(t.variableName)],
+  [t.typeName],
+  [t.operator],
+  [t.tagName],
+  [t.attributeName],
+  [t.invalid],
+  [t.bool],
+  [t.definition(t.variableName)],
 ];
 
 type Rgb = [number, number, number];
-
-/** 深色 / 高对比主题：one-dark 的语法色 */
-const DARK_PALETTE: Rgb[] = [
-  [171, 178, 191], // plain（ivory）
-  [125, 135, 153], // comment（stone）
-  [152, 195, 121], // string（sage）
-  [198, 120, 221], // keyword（violet）
-  [209, 154, 102], // number（whiskey）
-  [224, 108, 117], // variable（coral）
-  [97, 175, 239], // function（malibu）
-  [229, 192, 123], // type / class（chalky）
-  [86, 182, 194], // operator（cyan）
-  [224, 108, 117], // tag（coral）
-  [224, 108, 117], // property / attribute（coral）
-  [255, 255, 255], // invalid
-  [209, 154, 102], // atom / bool（whiskey）
-  [171, 178, 191], // definition（one-dark 的 definition(name) 是 ivory）
-];
-
-/** 浅色主题：CM 默认高亮色（比正文更饱和，缩略图里才看得出来） */
-const LIGHT_PALETTE: Rgb[] = [
-  [31, 35, 40], // plain
-  [153, 68, 0], // comment
-  [170, 17, 17], // string
-  [119, 0, 136], // keyword
-  [17, 102, 68], // number
-  [31, 35, 40], // variable（CM 默认不单独着色）
-  [31, 35, 40], // function（CM 默认不给函数调用单独着色）
-  [0, 136, 85], // type
-  [31, 35, 40], // operator（CM 默认不单独着色）
-  [31, 35, 40], // tag（CM 默认不单独着色）
-  [31, 35, 40], // property / attribute（定义属性名单独走 K_DEFINITION）
-  [255, 0, 0], // invalid
-  [34, 17, 153], // atom / bool
-  [0, 0, 255], // definition（CM 默认 definition(variableName) 是蓝色）
-];
 
 /** 解析 CSS 颜色（主题配色可能是 hex / rgb / rgba） */
 function parseCssColor(value: string): Rgb | null {
@@ -138,41 +116,6 @@ function parseCssColor(value: string): Rgb | null {
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-/**
- * 当前编辑器主题的 minimap 调色板。
- * 内置主题用 one-dark / CM 默认色；自定义主题直接取 theme.syntax，
- * 保证 minimap 与正文的语法色一致。
- */
-function paletteForConfig(): Rgb[] {
-  const setting = getConfig().editorTheme;
-  if (setting === "light") return LIGHT_PALETTE;
-  if (setting === "high-contrast") return DARK_PALETTE;
-  const name = customThemeName(setting);
-  const theme = name ? findUserTheme(name) : null;
-  if (!theme) return DARK_PALETTE;
-  const base = theme.dark ? DARK_PALETTE : LIGHT_PALETTE;
-  const lookup = (value: string | undefined, fallback: Rgb): Rgb => {
-    const parsed = value ? parseCssColor(value) : null;
-    return parsed ?? fallback;
-  };
-  return [
-    lookup(theme.ui.foreground, base[K_PLAIN]),
-    lookup(theme.syntax.comment, base[K_COMMENT]),
-    lookup(theme.syntax.string, base[K_STRING]),
-    lookup(theme.syntax.keyword, base[K_KEYWORD]),
-    lookup(theme.syntax.number, base[K_NUMBER]),
-    lookup(theme.syntax.variableName, base[K_VARIABLE]),
-    lookup(theme.syntax.function, base[K_FUNCTION]),
-    lookup(theme.syntax.typeName, base[K_TYPE]),
-    lookup(theme.syntax.operator, base[K_OPERATOR]),
-    lookup(theme.syntax.tagName, base[K_TAG]),
-    lookup(theme.syntax.attributeName ?? theme.syntax.propertyName, base[K_ATTRIBUTE]),
-    lookup(theme.syntax.invalid, base[K_INVALID]),
-    lookup(theme.syntax.number, base[K_ATOM]),
-    lookup(theme.syntax.variableName, base[K_DEFINITION]),
-  ];
-}
-
 /** 搜索查询签名：查询内容 / 选项变化时重新扫描命中位置 */
 function searchSignature(query: SearchQuery): string {
   if (!query.valid || query.search.length === 0) return "";
@@ -189,92 +132,6 @@ const KEYWORDS = new Set([
   "package", "func", "go", "defer", "select", "range", "end", "then", "local", "insert", "update",
   "delete", "where", "null", "true", "false", "undefined",
 ]);
-
-/**
- * 语法树 → minimap 分类的映射。分类本身仍复用 K_*，
- * 这样调色板可以按「当前编辑器主题」统一取色。
- */
-const MINIMAP_HIGHLIGHTER = tagHighlighter([
-  {
-    tag: [t.keyword, t.controlKeyword, t.definitionKeyword, t.moduleKeyword],
-    class: "mm-kw",
-  },
-  { tag: [t.string, t.processingInstruction, t.inserted], class: "mm-str" },
-  { tag: [t.number], class: "mm-num" },
-  {
-    tag: [
-      t.bool,
-      t.atom,
-      t.null,
-      t.constant(t.name),
-      t.standard(t.name),
-      t.color,
-      t.special(t.variableName),
-    ],
-    class: "mm-atom",
-  },
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], class: "mm-com" },
-  {
-    tag: [t.function(t.variableName), t.function(t.propertyName), t.labelName],
-    class: "mm-fn",
-  },
-  { tag: [t.typeName, t.className, t.namespace, t.modifier, t.self], class: "mm-type" },
-  { tag: [t.propertyName, t.attributeName, t.macroName], class: "mm-prop" },
-  { tag: [t.tagName], class: "mm-tag" },
-  {
-    tag: [t.variableName, t.local(t.variableName), t.deleted, t.character],
-    class: "mm-var",
-  },
-  {
-    tag: [t.definition(t.variableName), t.definition(t.propertyName), t.definition(t.typeName)],
-    class: "mm-def",
-  },
-  {
-    tag: [t.operator, t.operatorKeyword, t.url, t.regexp, t.escape, t.special(t.string)],
-    class: "mm-op",
-  },
-  { tag: [t.link], class: "mm-link" },
-  { tag: [t.heading], class: "mm-head" },
-  { tag: [t.meta], class: "mm-meta" },
-  { tag: [t.invalid], class: "mm-bad" },
-]);
-
-const CLASS_KIND = new Map<string, number>([
-  ["mm-kw", K_KEYWORD],
-  ["mm-str", K_STRING],
-  ["mm-num", K_NUMBER],
-  ["mm-atom", K_ATOM],
-  ["mm-com", K_COMMENT],
-  ["mm-fn", K_FUNCTION],
-  ["mm-type", K_TYPE],
-  ["mm-prop", K_ATTRIBUTE],
-  ["mm-tag", K_TAG],
-  ["mm-var", K_VARIABLE],
-  ["mm-def", K_DEFINITION],
-  ["mm-op", K_OPERATOR],
-  ["mm-link", K_COMMENT],
-  ["mm-head", K_VARIABLE],
-  ["mm-meta", K_COMMENT],
-  ["mm-bad", K_INVALID],
-]);
-
-/** class 字符串 → 分类的缓存（class 组合有限，避免每个节点都 split） */
-const CLASS_KIND_CACHE = new Map<string, number | null>();
-
-function kindFromClasses(classes: string | null): number | null {
-  if (!classes) return null;
-  if (CLASS_KIND_CACHE.has(classes)) return CLASS_KIND_CACHE.get(classes) ?? null;
-  let kind: number | null = null;
-  for (const cls of classes.split(" ")) {
-    const mapped = CLASS_KIND.get(cls);
-    if (mapped !== undefined) {
-      kind = mapped;
-      break;
-    }
-  }
-  CLASS_KIND_CACHE.set(classes, kind);
-  return kind;
-}
 
 function isDigit(code: number): boolean {
   return code >= 48 && code <= 57;
@@ -318,7 +175,7 @@ class MinimapPlugin implements PluginValue {
   /** 装饰层：选区 / 搜索命中单独画一层，避免搜索变化时重绘纹理 */
   private readonly overlay: HTMLCanvasElement;
   private readonly overlayCtx: CanvasRenderingContext2D | null;
-  /** 离屏纹理：先在 80 × 列高 的像素网格上生成字块，再一次性绘制 */
+  /** 离屏纹理：先在 120 × 列高 的像素网格上生成字块，再一次性绘制 */
   private readonly textureCanvas: HTMLCanvasElement;
   private readonly textureCtx: CanvasRenderingContext2D | null;
   private textureImage: ImageData | null = null;
@@ -333,17 +190,24 @@ class MinimapPlugin implements PluginValue {
   private canvasWidth = 0;
   /** 内容高度（固定比例）：行数 × LINE_HEIGHT；可能大于列高 */
   private contentHeight = 0;
-  /** minimap 自身的滚动位置（内容坐标，0 = 文档顶部）；只由用户滚轮改变 */
+  /** Minimap 内容窗口的滚动位置（内容坐标，0 = 文档顶部）；由编辑器滚动驱动 */
   private minimapScroll = 0;
-  /** 当前主题的 minimap 调色板 */
-  private palette: Rgb[] | null = null;
+  /** 当前编辑器主题实际使用的 HighlightStyle（class 名由它生成） */
+  private editorStyle: HighlightStyle | null = null;
+  /** 隐藏探针：把 HighlightStyle 生成的 class 解析成真实 CSS 颜色 */
+  private readonly colorProbe: HTMLSpanElement;
+  /** class 组合 → 颜色槽（0 = 正文色） */
+  private readonly classSlots = new Map<string, number>();
+  private readonly colorSlots: Rgb[] = [];
+  private readonly slotAlpha: number[] = [];
+  /** 逐行扫描分类 → 颜色槽（语法树没覆盖到的行用） */
+  private readonly fallbackSlots = new Array<number>(FALLBACK_TAGS.length).fill(0);
   /** 叠加层配色（--accent / --warning） */
   private overlayAccent = "#6aa6ff";
   private overlayWarning = "#e0b25c";
   private colorsLoaded = false;
   private overlayHeight = 0;
-  /** 上次写入的视口框高度与显隐：滚动时高度不变，避免每帧写 style 触发布局失效 */
-  private vpHeight = -1;
+  /** 上次写入的视口框显隐 */
   private vpVisible: boolean | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
@@ -358,11 +222,14 @@ class MinimapPlugin implements PluginValue {
   private dragFrame = 0;
   private dragY = 0;
   private dragging = false;
-  /** 按下位置在滑块内部时记录偏移：拖拽不再把指针位置当作滑块顶 */
+  /** 按下位置在滑块内部时按位移拖拽（与 VS Code getDesiredScrollTopFromDelta 一致） */
   private draggingSlider = false;
-  private dragOffset = 0;
-  /** 拖拽期间锁定 minimap 滚动基准：避免「跳转 → 指针落在新行」的反馈跑飞 */
+  private dragStartScrollTop = 0;
+  private dragStartY = 0;
+  /** 拖拽 minimap 空白处时锁定内容坐标基准，避免「跳转 → 指针落在新行」的反馈跑飞 */
   private dragBaseScroll = 0;
+  /** 滑块位移 → 编辑器滚动位移的比例（VS Code computedSliderRatio） */
+  private sliderRatio = 0;
   private disposed = false;
 
   /** 搜索命中所在行（升序、去重），只存行号，绘制时再映射到 y */
@@ -401,6 +268,27 @@ class MinimapPlugin implements PluginValue {
     this.hoverEl.className = "cm-minimap-hover";
     this.hoverEl.setAttribute("aria-hidden", "true");
 
+    // 颜色探针：放在 .cm-editor 内，保证主题注入的 HighlightStyle class 规则能命中；
+    // 只读 getComputedStyle，不参与布局。
+    this.colorProbe = document.createElement("span");
+    this.colorProbe.className = "cm-minimap-color-probe";
+    this.colorProbe.setAttribute("aria-hidden", "true");
+    this.colorProbe.style.cssText =
+      "position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;white-space:pre;";
+    this.view.dom.appendChild(this.colorProbe);
+
+    // 单例保护：ViewPlugin 构造抛异常时 CM 不会调用 destroy，DOM 会残留；
+    // 这里先清掉同父容器里的旧 minimap，避免「每打开一个文件多一列」。
+    for (const old of this.parent.querySelectorAll(`:scope > .${DOM_CLASS}`)) {
+      old.remove();
+    }
+    for (const old of document.querySelectorAll(".cm-minimap-hover")) {
+      old.remove();
+    }
+    for (const old of document.querySelectorAll(".cm-minimap-color-probe")) {
+      if (old !== this.colorProbe) old.remove();
+    }
+
     // 与编辑器并排（#editor 为 flex 容器），插在编辑器之后
     this.parent.insertBefore(this.el, view.dom.nextSibling);
     document.body.append(this.hoverEl);
@@ -434,10 +322,13 @@ class MinimapPlugin implements PluginValue {
       });
     }
 
-    // 同步首绘：切标签时 setState 会重建本插件，同步绘制可避免空列闪一帧
     // 先算搜索命中：setState 切标签不触发 update，若新状态里搜索框仍开着，首绘要带上标记
     this.refreshSearchMarks();
-    this.rebuild();
+    // 注意：插件构造发生在 view.setState / Compartment 重配的 update 内部，
+    // 此时 CodeMirror 禁止读取编辑器布局（lineBlockAtHeight 会抛
+    // "Reading the editor layout isn't allowed during an update"）。
+    // 因此首绘延后到当前 update 结束后的宏任务，而不是在构造函数里同步 rebuild。
+    this.scheduleRebuild(true);
   }
 
   update(update: ViewUpdate): void {
@@ -494,6 +385,7 @@ class MinimapPlugin implements PluginValue {
     this.themeObserver?.disconnect();
     this.el.remove();
     this.hoverEl.remove();
+    this.colorProbe.remove();
   }
 
   // ---------------------------------------------------------------- 调度
@@ -532,11 +424,16 @@ class MinimapPlugin implements PluginValue {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
-      if (!this.disposed) this.updateViewport();
+      if (this.disposed) return;
+      // minimap 跟随编辑器滚动：同帧重绘，避免纹理比视口慢一拍
+      if (this.updateViewport()) {
+        this.drawTexture();
+        this.drawOverlay();
+      }
     });
   }
 
-  /** 文本 + 叠加层一起重绘（minimap 自身滚动时用） */
+  /** 文本 + 叠加层一起重绘（搜索 / 解析等非滚动场景用） */
   private scheduleTexture(): void {
     if (this.textureFrame) return;
     this.textureFrame = requestAnimationFrame(() => {
@@ -591,7 +488,7 @@ class MinimapPlugin implements PluginValue {
   /** 宽度不足时整列隐藏（split 模式可拖到编辑区仅剩 15%） */
   private syncVisibility(): void {
     const available = this.parentWidth;
-    const tooNarrow = available > 0 && available - WIDTH < MIN_CONTENT_WIDTH;
+    const tooNarrow = available > 0 && available - CANVAS_WIDTH < MIN_CONTENT_WIDTH;
     this.el.classList.toggle(HIDDEN_CLASS, tooNarrow);
     if (tooNarrow) this.hideHover();
   }
@@ -618,13 +515,13 @@ class MinimapPlugin implements PluginValue {
 
   private ensureCanvasSize(height: number): void {
     const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
-    if (this.canvasHeight !== height || this.canvasWidth !== WIDTH) {
+    if (this.canvasHeight !== height || this.canvasWidth !== CANVAS_WIDTH) {
       this.canvasHeight = height;
-      this.canvasWidth = WIDTH;
-      this.canvas.style.width = `${WIDTH}px`;
+      this.canvasWidth = CANVAS_WIDTH;
+      this.canvas.style.width = `${CANVAS_WIDTH}px`;
       this.canvas.style.height = `${height}px`;
     }
-    const pixelW = Math.round(WIDTH * dpr);
+    const pixelW = Math.round(CANVAS_WIDTH * dpr);
     const pixelH = Math.round(height * dpr);
     if (this.canvas.width !== pixelW || this.canvas.height !== pixelH) {
       this.canvas.width = pixelW;
@@ -634,20 +531,66 @@ class MinimapPlugin implements PluginValue {
 
   private resetColors(): void {
     this.colorsLoaded = false;
-    this.palette = null;
+    this.editorStyle = null;
+    this.classSlots.clear();
+    this.colorSlots.length = 0;
+    this.slotAlpha.length = 0;
+    this.fallbackSlots.fill(0);
   }
 
-  /** 读取叠加层 CSS 配色，并按当前编辑器主题生成 minimap 调色板 */
+  /** 用编辑器实际 HighlightStyle 解析颜色；不再维护一套手工 one-dark / 浅色色板 */
   private loadColors(): void {
     if (this.colorsLoaded) return;
     this.colorsLoaded = true;
-    const style = getComputedStyle(this.el);
-    this.overlayAccent = style.getPropertyValue("--accent").trim() || "#6aa6ff";
-    this.overlayWarning = style.getPropertyValue("--warning").trim() || "#e0b25c";
-    this.palette = paletteForConfig();
+    const ui = getComputedStyle(this.el);
+    this.overlayAccent = ui.getPropertyValue("--accent").trim() || "#6aa6ff";
+    this.overlayWarning = ui.getPropertyValue("--warning").trim() || "#e0b25c";
+
+    this.editorStyle = editorHighlightStyle(getConfig().editorTheme);
+    const editorComputed = getComputedStyle(this.view.dom);
+    const plain =
+      parseCssColor(getComputedStyle(this.view.contentDOM).color) ??
+      parseCssColor(editorComputed.color) ??
+      ([200, 200, 200] as Rgb);
+
+    this.classSlots.clear();
+    this.colorSlots.length = 0;
+    this.colorSlots.push(plain);
+    this.slotAlpha.length = 0;
+    this.slotAlpha.push(0.62);
+
+    // 逐行扫描分类也走同一套 HighlightStyle：颜色与编辑器一致
+    for (let kind = 0; kind < FALLBACK_TAGS.length; kind += 1) {
+      if (kind === K_PLAIN) {
+        this.fallbackSlots[kind] = 0;
+        continue;
+      }
+      const tags = FALLBACK_TAGS[kind];
+      const classes = tags && this.editorStyle ? this.editorStyle.style(tags) : null;
+      this.fallbackSlots[kind] = this.slotForClasses(classes);
+    }
+
     // 缩略图底色跟随编辑器主题（UI 主题与编辑器主题可以不同，用 --bg-panel 会不匹配）
-    const editorBg = getComputedStyle(this.view.dom).backgroundColor;
+    const editorBg = editorComputed.backgroundColor;
     if (editorBg && editorBg !== "rgba(0, 0, 0, 0)") this.el.style.background = editorBg;
+  }
+
+  /** 把 HighlightStyle 生成的 class 组合解析成真实 CSS 颜色槽 */
+  private slotForClasses(classes: string | null): number {
+    if (!classes) return 0;
+    const cached = this.classSlots.get(classes);
+    if (cached !== undefined) return cached;
+    // 槽位上限 255（charKinds 是 Uint8Array；255 留给“空白”）
+    if (this.colorSlots.length >= 255) return 0;
+    this.colorProbe.className = classes;
+    const color =
+      parseCssColor(getComputedStyle(this.colorProbe).color) ?? this.colorSlots[0];
+    const slot = this.colorSlots.length;
+    this.colorSlots.push(color);
+    // 接近不透明：保证色相与正文一致；只比正文略淡，避免抢视觉焦点
+    this.slotAlpha.push(0.92);
+    this.classSlots.set(classes, slot);
+    return slot;
   }
 
   private maxMinimapScroll(): number {
@@ -665,22 +608,21 @@ class MinimapPlugin implements PluginValue {
     const height = this.canvasHeight;
     const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, WIDTH, height);
+    ctx.clearRect(0, 0, CANVAS_WIDTH, height);
     const doc = this.view.state.doc;
     if (!this.hasDoc || doc.lines === 0 || height <= 0) return;
 
     const texture = this.textureCtx;
     if (!texture) return;
     this.loadColors();
-    const palette = this.palette ?? DARK_PALETTE;
 
-    if (this.textureCanvas.width !== WIDTH || this.textureCanvas.height !== height) {
-      this.textureCanvas.width = WIDTH;
+    if (this.textureCanvas.width !== CANVAS_WIDTH || this.textureCanvas.height !== height) {
+      this.textureCanvas.width = CANVAS_WIDTH;
       this.textureCanvas.height = height;
       this.textureImage = null;
     }
     if (!this.textureImage) {
-      this.textureImage = texture.createImageData(WIDTH, height);
+      this.textureImage = texture.createImageData(CANVAS_WIDTH, height);
     }
     const data = this.textureImage.data;
     data.fill(0);
@@ -705,26 +647,29 @@ class MinimapPlugin implements PluginValue {
       if (rowStart >= rowEnd) continue;
 
       const limit = Math.min(text.length, CHAR_LIMIT);
+      let treeMode = false;
       if (hasLanguage && line.from + limit <= treeLength) {
-        // 已解析到的行：直接用语法树 token，颜色与编辑器一致
+        // 已解析到的行：直接用语法树 token 对应的真实颜色槽
         this.fillTreeKinds(tree, line, limit);
+        treeMode = true;
       } else {
         // 未解析 / 无语言：退回逐行 token 扫描（纯文本不把每个词染成变量色）
         this.tokenizeLine(text, limit, !hasLanguage);
       }
 
-      if (text.length <= WIDTH) {
+      if (text.length <= COLUMNS) {
         let col = 0;
-        for (let i = 0; i < text.length && col < WIDTH; i += 1) {
+        for (let i = 0; i < text.length && col < COLUMNS; i += 1) {
           const code = text.charCodeAt(i);
           if (code === 9) {
             col += 4;
             continue;
           }
-          const kind = this.charKinds[i];
-          if (kind !== K_EMPTY && code !== 32) {
+          const raw = this.charKinds[i];
+          if (raw !== K_EMPTY && code !== 32) {
+            const slot = treeMode ? raw : (this.fallbackSlots[raw] ?? 0);
             for (let row = rowStart; row < rowEnd; row += 1) {
-              this.writePixel(data, row, col, palette[kind], kind);
+              this.writeGlyph(data, row, col, slot);
             }
           }
           col += 1;
@@ -733,26 +678,27 @@ class MinimapPlugin implements PluginValue {
       }
 
       // 长行按列等距采样（超长行不把整行压成一条实线）
-      for (let x = 0; x < WIDTH; x += 1) {
-        const i = Math.floor((x * limit) / WIDTH);
+      for (let x = 0; x < COLUMNS; x += 1) {
+        const i = Math.floor((x * limit) / COLUMNS);
         const code = text.charCodeAt(i);
         if (code === 32 || code === 9) continue;
-        const kind = this.charKinds[i];
-        if (kind === K_EMPTY) continue;
+        const raw = this.charKinds[i];
+        if (raw === K_EMPTY) continue;
+        const slot = treeMode ? raw : (this.fallbackSlots[raw] ?? 0);
         for (let row = rowStart; row < rowEnd; row += 1) {
-          this.writePixel(data, row, x, palette[kind], kind);
+          this.writeGlyph(data, row, x, slot);
         }
       }
     }
     texture.putImageData(this.textureImage, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(this.textureCanvas, 0, 0, WIDTH, height);
+    ctx.drawImage(this.textureCanvas, 0, 0, CANVAS_WIDTH, height);
   }
 
-  /** 语法树覆盖的行：把节点 tag 写进 charKinds（内层节点覆盖外层） */
+  /** 语法树覆盖的行：把节点对应的真实颜色槽写进 charKinds（内层覆盖外层） */
   private fillTreeKinds(tree: Tree, line: Line, limit: number): void {
     const out = this.charKinds;
-    out.fill(K_PLAIN, 0, limit);
+    out.fill(0, 0, limit);
     const from = line.from;
     const to = from + limit;
     tree.iterate({
@@ -763,31 +709,35 @@ class MinimapPlugin implements PluginValue {
         if (!style) return;
         // inherit：颜色由父节点决定，子节点不再重复覆盖
         if (style.inherit) return;
-        const kind = kindFromClasses(MINIMAP_HIGHLIGHTER.style(style.tags));
-        if (kind !== null) {
-          const start = Math.max(node.from, from) - from;
-          const end = Math.min(node.to, to) - from;
-          for (let i = start; i < end; i += 1) out[i] = kind;
-        }
+        const classes = this.editorStyle ? this.editorStyle.style(style.tags) : null;
+        const slot = this.slotForClasses(classes);
+        const start = Math.max(node.from, from) - from;
+        const end = Math.min(node.to, to) - from;
+        for (let i = start; i < end; i += 1) out[i] = slot;
         // opaque：内部不再分词（字符串 / 注释等整体同色）
         return style.opaque ? false : undefined;
       },
     });
   }
 
-  private writePixel(
+  /** 写一个字符格：横向 CHAR_WIDTH 像素，纵向由调用方按行高铺满 */
+  private writeGlyph(
     data: Uint8ClampedArray,
     y: number,
-    x: number,
-    color: Rgb | undefined,
-    kind: number,
+    col: number,
+    slot: number,
   ): void {
+    const color = this.colorSlots[slot];
     if (!color) return;
-    const p = (y * WIDTH + x) * 4;
-    data[p] = color[0];
-    data[p + 1] = color[1];
-    data[p + 2] = color[2];
-    data[p + 3] = Math.round((KIND_ALPHA[kind] ?? 0.6) * 255);
+    const alpha = Math.round((this.slotAlpha[slot] ?? 0.72) * 255);
+    const start = (y * CANVAS_WIDTH + col * CHAR_WIDTH) * 4;
+    for (let dx = 0; dx < CHAR_WIDTH; dx += 1) {
+      const p = start + dx * 4;
+      data[p] = color[0];
+      data[p + 1] = color[1];
+      data[p + 2] = color[2];
+      data[p + 3] = alpha;
+    }
   }
 
   /**
@@ -916,10 +866,10 @@ class MinimapPlugin implements PluginValue {
     }
   }
 
-  /** 叠加层：选区 + 搜索命中；坐标随 minimap 自身滚动 */
+  /** 叠加层：选区 + 搜索命中；坐标随 Minimap 内容窗口滚动 */
   private drawOverlay(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
-    const w = WIDTH;
+    const w = CANVAS_WIDTH;
     const height = this.canvasHeight;
     if (height <= 0) return;
     if (this.overlayHeight !== height) {
@@ -1031,10 +981,11 @@ class MinimapPlugin implements PluginValue {
 
   /**
    * 视口框：只信 scrollTop / scrollHeight，折行与折叠都自动正确。
-   * minimap 自身的滚动位置不自动跟随编辑器（位置固定），
-   * 视口框超出当前可见窗口时直接隐藏，用户滚回来看得到。
+   * 与 VS Code 的 proportional Minimap 一致：内容按固定行高排布，
+   * Minimap 窗口跟随编辑器滚动，让视口框尽可能居中（文档首尾处自然贴边）。
+   * @returns Minimap 滚动位置是否变化（调用方据此重绘可见行窗口）
    */
-  private updateViewport(): void {
+  private updateViewport(): boolean {
     const scroller = this.view.scrollDOM;
     const total = scroller.scrollHeight;
     const viewH = scroller.clientHeight;
@@ -1043,39 +994,67 @@ class MinimapPlugin implements PluginValue {
         this.vpVisible = false;
         this.viewportEl.style.display = "none";
       }
-      return;
+      return false;
     }
     const contentH = this.contentHeight;
-    const boxH = Math.max(8, Math.min(contentH, (viewH / total) * contentH));
-    const maxBoxTop = Math.max(0, contentH - boxH);
     const maxScroll = Math.max(0, total - viewH);
-    const boxTop = maxScroll > 0 ? (scroller.scrollTop / maxScroll) * maxBoxTop : 0;
+    // VS Code proportional Minimap：
+    // 滑块高度 = 编辑器可见行数 × minimap 行高；滑块在可见窗口内按滚动比例移动，
+    // 内容窗口则滚动到「视口首行正好落在滑块下方」的位置。
+    const editorLineH = Math.max(1, this.view.defaultLineHeight);
+    const sliderHeight = Math.max(
+      1,
+      Math.min(contentH, (viewH / editorLineH) * LINE_HEIGHT),
+    );
+    const maxSliderTop = Math.max(
+      0,
+      Math.min(this.canvasHeight - sliderHeight, contentH - sliderHeight),
+    );
+    this.sliderRatio = maxScroll > 0 ? maxSliderTop / maxScroll : 0;
+    const sliderTop = Math.max(
+      0,
+      Math.min(maxSliderTop, scroller.scrollTop * this.sliderRatio),
+    );
 
-    const visualTop = boxTop - this.minimapScroll;
-    const visualHeight = Math.min(this.canvasHeight, boxH);
-    if (visualTop + visualHeight <= 0 || visualTop >= this.canvasHeight) {
-      if (this.vpVisible !== false) {
-        this.vpVisible = false;
-        this.viewportEl.style.display = "none";
+    // 编辑器视口首行：用 CM 的真实布局，折行 / 折叠下也准。
+    // 防御：若本方法被同步调到 view.update() 内部，读取布局会被 CM 拒绝；
+    // 此时退回 viewport.from 估算，等之后的 rAF / rebuild 再校正。
+    const doc = this.view.state.doc;
+    let firstLine: number;
+    try {
+      if (this.view.viewportLineBlocks.length > 0) {
+        const firstBlock = this.view.lineBlockAtHeight(scroller.scrollTop);
+        firstLine = doc.lineAt(Math.min(firstBlock.from, doc.length)).number;
+      } else {
+        firstLine = doc.lineAt(Math.min(this.view.viewport.from, doc.length)).number;
       }
-      // 仍记录真实高度，滚回可见窗口时滑块尺寸立即正确
-      if (this.vpHeight !== boxH) this.vpHeight = boxH;
-      return;
+    } catch {
+      firstLine = doc.lineAt(Math.min(this.view.viewport.from, doc.length)).number;
     }
+    const firstLineY = (firstLine - 1) * LINE_HEIGHT;
 
+    // 让首行渲染在 sliderTop 下方；顶部 / 底部越界时 clamp，滑块自然贴边
+    const maxMini = this.maxMinimapScroll();
+    const next = Math.round(
+      Math.max(0, Math.min(maxMini, firstLineY - sliderTop)),
+    );
+    const scrollChanged = next !== this.minimapScroll;
+    this.minimapScroll = next;
+
+    const visualTop = firstLineY - next;
+    const visualHeight = Math.min(this.canvasHeight, sliderHeight);
     if (this.vpVisible !== true) {
       this.vpVisible = true;
       this.viewportEl.style.display = "";
     }
     // 高度写值会作废布局：滚动过程中它其实不变，只在变化时写一次。
-    // 注意隐藏期间 vpHeight 仍会更新，所以显示时不能只看 vpHeight 是否变化。
-    this.vpHeight = boxH;
     const heightText = `${visualHeight}px`;
     if (this.viewportEl.style.height !== heightText) {
       this.viewportEl.style.height = heightText;
     }
     const top = Math.min(this.canvasHeight - visualHeight, Math.max(0, visualTop));
     this.viewportEl.style.transform = `translateY(${top}px)`;
+    return scrollChanged;
   }
 
   // ---------------------------------------------------------------- 交互
@@ -1086,21 +1065,8 @@ class MinimapPlugin implements PluginValue {
     this.hideHover();
   };
 
-  /**
-   * 滚轮在 minimap 上滚动 minimap 自身（内容高于列高时）。
-   * 内容不足一屏时退回滚动编辑器，保持原有便利。
-   */
+  /** 滚轮在 minimap 上滚动的是编辑器；Minimap 跟随滚动并重绘可见行窗口 */
   private onWheel = (e: WheelEvent): void => {
-    const maxMini = this.maxMinimapScroll();
-    if (maxMini > 0) {
-      e.preventDefault();
-      const unit = e.deltaMode === 1 ? 1 : e.deltaMode === 2 ? this.canvasHeight : 1;
-      const next = Math.round(this.minimapScroll + e.deltaY * unit);
-      this.minimapScroll = Math.max(0, Math.min(maxMini, next));
-      this.updateViewport();
-      this.scheduleTexture();
-      return;
-    }
     const scroller = this.view.scrollDOM;
     const maxScroll = scroller.scrollHeight - scroller.clientHeight;
     if (maxScroll <= 0) return;
@@ -1114,12 +1080,13 @@ class MinimapPlugin implements PluginValue {
     if (e.button !== 0) return;
     e.preventDefault();
     const vp = this.viewportEl.getBoundingClientRect();
-    // 按在滑块上：保持按下点与滑块顶的偏移，拖拽不会先跳一下
+    // 按在滑块上：按位移拖拽（VS Code getDesiredScrollTopFromDelta）
     const onSlider = vp.height > 0 && e.clientY >= vp.top && e.clientY <= vp.bottom;
     this.dragging = true;
     this.draggingSlider = onSlider;
     this.dragBaseScroll = this.minimapScroll;
-    this.dragOffset = onSlider ? e.clientY - vp.top : 0;
+    this.dragStartY = e.clientY;
+    this.dragStartScrollTop = this.view.scrollDOM.scrollTop;
     this.el.classList.add("cm-minimap-dragging");
     this.el.setPointerCapture(e.pointerId);
     if (onSlider) {
@@ -1138,7 +1105,6 @@ class MinimapPlugin implements PluginValue {
   private onPointerUp = (): void => {
     this.dragging = false;
     this.draggingSlider = false;
-    this.dragOffset = 0;
     this.el.classList.remove("cm-minimap-dragging");
   };
 
@@ -1158,21 +1124,17 @@ class MinimapPlugin implements PluginValue {
     });
   }
 
-  /** 拖拽视口滑块：按内容坐标换算，保持按下点与滑块顶的偏移 */
+  /** 拖拽视口滑块：按位移换算（VS Code getDesiredScrollTopFromDelta 同款） */
   private dragSliderTo(clientY: number): void {
-    const rect = this.el.getBoundingClientRect();
-    if (rect.height <= 0) return;
-    const boxH = Math.max(1, this.vpHeight);
-    const maxBoxTop = Math.max(1, this.contentHeight - boxH);
-    const contentY = clientY - rect.top + this.dragBaseScroll - this.dragOffset;
-    const ratio = Math.min(1, Math.max(0, contentY / maxBoxTop));
     const scroller = this.view.scrollDOM;
     const maxScroll = scroller.scrollHeight - scroller.clientHeight;
-    if (maxScroll <= 0) return;
-    scroller.scrollTop = ratio * maxScroll;
+    if (maxScroll <= 0 || this.sliderRatio <= 0) return;
+    const next =
+      this.dragStartScrollTop + (clientY - this.dragStartY) / this.sliderRatio;
+    scroller.scrollTop = Math.max(0, Math.min(maxScroll, next));
   }
 
-  /** 点击 minimap 时，把对应逻辑行定位到编辑器视口顶部 */
+  /** 点击 / 拖拽 minimap 空白处：把对应逻辑行放到编辑器视口中央 */
   private jumpToLine(line: number): void {
     const doc = this.view.state.doc;
     const target = Math.max(1, Math.min(doc.lines, line));
@@ -1180,7 +1142,8 @@ class MinimapPlugin implements PluginValue {
     const scroller = this.view.scrollDOM;
     const maxScroll = scroller.scrollHeight - scroller.clientHeight;
     if (maxScroll <= 0) return;
-    scroller.scrollTop = Math.max(0, Math.min(maxScroll, block.top));
+    const centered = block.top - (scroller.clientHeight - block.height) / 2;
+    scroller.scrollTop = Math.max(0, Math.min(maxScroll, centered));
   }
 
   private lineAtClientY(clientY: number, baseScroll = this.minimapScroll): number {
@@ -1201,6 +1164,10 @@ class MinimapPlugin implements PluginValue {
 
   /** 悬停预览：显示指针所在文档行（含缩略内容），避免 minimap 只能靠盲点 */
   private updateHover(): void {
+    if (this.draggingSlider) {
+      this.hideHover();
+      return;
+    }
     if (!this.hasDoc || this.contentHeight <= 0) {
       this.hideHover();
       return;

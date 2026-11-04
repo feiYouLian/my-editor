@@ -183,9 +183,16 @@ function foldingExtensions(): Extension[] {
   ];
 }
 
-/** Minimap：关闭时置空，开启时挂 ViewPlugin（见 minimap.ts） */
+/** Minimap：关闭时置空，开启时挂 ViewPlugin（见 minimap.ts）。
+ *  开启状态复用同一个 extension 对象：打开文件时的动态重配不会反复销毁/重建
+ *  ViewPlugin（Minimap 有 DOM 副作用，反复重建容易留下残影）。 */
+let minimapExtensionCache: Extension[] | null = null;
 function minimapExtensions(): Extension[] {
-  return settings.minimap ? [minimapExtension()] : [];
+  if (!settings.minimap) {
+    minimapExtensionCache = null;
+    return [];
+  }
+  return (minimapExtensionCache ??= [minimapExtension()]);
 }
 
 /** 各 Compartment 的初始内容 */

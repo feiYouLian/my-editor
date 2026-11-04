@@ -1,6 +1,6 @@
 /* ---------------------------------------------------------------------------
    模块：搜索视图、大纲、文件树、右键菜单、标签、面包屑、命令面板
-   由原 main.css 按原始规则顺序拆分；导入顺序变化会影响 CSS 级联，请勿随意调整。
+   通过 main.css 的 @import 引入；导入顺序影响 CSS 级联，请勿随意调整。
    --------------------------------------------------------------------------- */
 /* ---------- 文件树 Git 状态（文件与上级目录） ---------- */
 /* 状态只用颜色表达，不加字重：混排时半粗的行会让整列文字看起来「忽粗忽细」。 */
@@ -681,9 +681,12 @@ body.tree-dragging {
   transform: translateY(1px);
 }
 
-/* 激活标签：与编辑器底色接近的浮起面 + 顶部强调线（box-shadow 不额外占高度） */
+/* 激活标签：浮起面 + 少量强调底色 + 顶部强调线。
+   标签多且宽度相近时，单靠高度差认不出当前项；带一点强调色才能一眼定位。
+   box-shadow 画线不额外占高度，避免切换标签时整栏抖动。 */
 .tab.active {
   background: var(--bg-elevated);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
   color: var(--text-primary);
   border-color: var(--border-subtle);
   border-bottom-color: transparent;

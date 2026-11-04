@@ -88,7 +88,7 @@ export class WelcomePanel {
     tips.textContent =
       "命令面板 Ctrl+Shift+P · 设置 Ctrl+, · 终端 Ctrl+` · 全部保存 Ctrl+Alt+S";
 
-    // 次级入口：不抢主按钮的权重，但首屏就能看见（原先埋在设置菜单与命令面板里）
+    // 次级入口：不抢主按钮的权重，但首屏可见
     const links = document.createElement("div");
     links.className = "welcome-links";
     for (const [label, run] of [

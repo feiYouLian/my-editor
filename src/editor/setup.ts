@@ -138,8 +138,8 @@ export interface EditorHandle {
 export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): EditorHandle {
   const c: EditorCompartments = createCompartments();
 
-  /** loadDocument 重入计数：并发加载期间抑制 dirty 回调（替代单布尔量，
-   *  避免快速连点标签时先到的 finally 提前释放抑制状态） */
+  /** loadDocument 重入计数：并发加载期间抑制 dirty 回调。
+   *  用计数而不是布尔量，避免快速连点标签时先到的 finally 提前释放抑制状态。 */
   let loadingDepth = 0;
   /** 载入代号：每次 loadDocument 递增，await 后校验，过期载入不得再写任何状态 */
   let docLoadSeq = 0;
@@ -409,8 +409,7 @@ export function createEditor(parent: HTMLElement, callbacks: EditorCallbacks): E
           activeRevision = revision;
           // 没有可复用的缓存状态。只在**确实丢了历史**时提示：
           // 超大文档切走时拒绝缓存、或缓存超 8 条被淘汰（见 DocumentStateCache.lost）。
-          // 首次打开文件时缓存里当然没有，那不是"丢失"——此前这里按 `!cached` 判断，
-          // 导致每次打开文件都刷一条「撤销历史已释放」。
+          // 首次打开本来就没有缓存，不算丢失。
           if (key !== null && stateCache.takeLost(key) && !undoLostWarned.has(key)) {
             undoLostWarned.add(key);
             callbacks.onUndoHistoryLost?.();

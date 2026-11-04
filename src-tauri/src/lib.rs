@@ -45,6 +45,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::association::file_association_status,
+            commands::association::set_file_association,
+            commands::association::scan_legacy_associations,
+            commands::association::clear_legacy_associations,
             commands::cli::take_pending_files,
             commands::file::open_text_file,
             commands::file::probe_file,

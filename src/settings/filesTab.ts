@@ -5,9 +5,19 @@
  * 不重复编辑器显示与增强开关。
  */
 
-import { getConfig, getWorkspaceOverrides } from "../config/settings";
+import {
+  applyFileAssociation,
+  clearLegacyAssociations,
+  fileAssociationStatus,
+  getConfig,
+  getWorkspaceOverrides,
+  scanLegacyAssociations,
+  updateSettings,
+} from "../config/settings";
+import { firstLine } from "../core/errors";
 import { basenameOf } from "../core/paths";
-import { checkRow, numberRow, section, textRow } from "../ui/formControls";
+import { confirmAction } from "../ui/dialogs";
+import { buttonRow, checkRow, numberRow, section, textRow } from "../ui/formControls";
 import {
   saveExternal,
   saveSettings,
@@ -41,6 +51,99 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
     }),
   );
   main.append(openSection.el);
+
+  // 系统集成：开关只登记「打开方式」候选，绝不改写 `.ext` 默认值（见 commands/association.rs）
+  const integrationSection = section(
+    "Windows 系统集成",
+    "把 my-editor 登记为文本类文件的「打开方式」候选。",
+  );
+  const associationRow = checkRow(
+    "在「打开方式」中显示 my-editor",
+    cfg.system.fileAssociation,
+    (value) => {
+      const previous = getConfig().system.fileAssociation;
+      // 顺序：先改系统、再落配置；任一步失败都把系统状态恢复到与配置一致
+      void (async () => {
+        try {
+          await applyFileAssociation(value);
+          await updateSettings({ system: { ...getConfig().system, fileAssociation: value } });
+          ctx.callbacks.onMessage(
+            value
+              ? "已登记到「打开方式」候选（系统默认程序未改动）"
+              : "已从「打开方式」撤销 my-editor",
+          );
+        } catch (e) {
+          console.error("[settings] 文件关联切换失败", e);
+          ctx.callbacks.onMessage(`文件关联切换失败：${firstLine(e)}`);
+          await applyFileAssociation(previous).catch(() => {});
+        }
+        ctx.rerender();
+      })();
+    },
+  );
+  const associationStatusEl = document.createElement("div");
+  associationStatusEl.className = "settings-section-desc";
+  associationStatusEl.textContent = "正在读取系统状态…";
+  integrationSection.body.append(associationRow, associationStatusEl);
+  main.append(integrationSection.el);
+
+  // 旧版安装器写下的默认关联：只在检测到时出现「一键恢复」，不自动改
+  void scanLegacyAssociations()
+    .then((legacy) => {
+      if (legacy.length === 0 || !integrationSection.el.isConnected) return;
+      const restorable = legacy.filter(
+        (item) => item.backup !== null && item.backup !== "",
+      ).length;
+      integrationSection.body.append(
+        buttonRow(`旧版默认关联（${legacy.length} 个扩展名）`, [
+          {
+            text: "一键恢复",
+            title:
+              restorable > 0
+                ? `其中 ${restorable} 个恢复到安装前的默认程序，其余 ${legacy.length - restorable} 个去掉默认关联`
+                : "没有安装前的备份，将去掉这些扩展名的默认关联",
+            onClick: () => {
+              const message =
+                restorable > 0
+                  ? `恢复 ${restorable} 个扩展名的原默认程序，并去掉其余 ${legacy.length - restorable} 个的默认关联？`
+                  : `去掉 ${legacy.length} 个扩展名的默认关联？（之后双击由系统询问用什么打开）`;
+              void confirmAction(message, "恢复").then((ok) => {
+                if (!ok) return;
+                saveExternal(async () => {
+                  const outcome = await clearLegacyAssociations();
+                  ctx.callbacks.onMessage(
+                    `已恢复 ${outcome.restored} 个扩展名的原默认程序，` +
+                      `${outcome.cleared} 个已去掉默认关联`,
+                  );
+                  ctx.rerender();
+                });
+              });
+            },
+          },
+        ]),
+      );
+    })
+    .catch(() => {});
+
+  // 以注册表为准校正开关：config 只是意图，真实状态可能被系统 / 其它工具改动
+  void fileAssociationStatus()
+    .then((status) => {
+      const input = associationRow.querySelector<HTMLInputElement>("input");
+      if (input) {
+        input.checked = status.registered;
+        input.disabled = !status.supported;
+      }
+      if (!status.supported) {
+        associationStatusEl.textContent = "仅 Windows 支持";
+        return;
+      }
+      associationStatusEl.textContent = status.registered
+        ? `已登记 ${status.extensions} 种扩展名：${status.executable}`
+        : "未登记";
+    })
+    .catch((e: unknown) => {
+      associationStatusEl.textContent = `读取系统状态失败：${firstLine(e)}`;
+    });
 
   // 工作区覆盖：只影响当前工作区，存于应用配置目录（不写进用户仓库）
   const hooks = workspaceOverrideHooks();

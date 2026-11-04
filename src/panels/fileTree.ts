@@ -673,7 +673,7 @@ export class FileTree {
    */
   private loadTokens = new Map<string, number>();
 
-  /** 外层包装：登记"这一层正在加载"，供 revealPath 等待（替代轮询） */
+  /** 外层包装：登记"这一层正在加载"，供 revealPath 等待 */
   private async loadChildren(dir: string, container: HTMLElement, depth: number): Promise<void> {
     const task = this.loadChildrenInner(dir, container, depth);
     this.pendingLoads.set(dir, task);
@@ -904,9 +904,9 @@ export class FileTree {
    * 展开到指定文件的所有祖先目录并高亮（标签页切换联动）。
    *
    * 子目录是懒加载的，`render()` 之后行要等逐层 list_dir 完成才存在；
-   * 原来只等「父目录」那一层（且 render 刚发起时这一层还没注册），
-   * 结果树被重建 / 分区收起时必然落空——表现为「点标签不定位」。
-   * 现在把目标记在 pendingReveal，每层加载完成后重试（见 tryReveal）。
+   * 只等「父目录」那一层不够：render 刚发起时这层还没注册，树被重建 /
+   * 分区收起时必然落空（表现为「点标签不定位」）。因此把目标记在
+   * pendingReveal，每层加载完成后重试（见 tryReveal）。
    */
   revealPath(path: string): void {
     const root = this.root;
@@ -1291,7 +1291,7 @@ export class FileTree {
       await invoke("create_entry", { path: target, isDir });
       const wasExpanded = this.expanded.has(dir);
       this.expanded.add(dir);
-      // 已展开：只重建这一层；原本折叠（含新建目录后要露出来）才退回全量
+      // 已展开：只重建这一层；折叠态（含新建目录后要露出来）退回全量
       if (wasExpanded && !isDir) this.refreshDir(dir);
       else this.render();
       // 新建文件后直接打开：省掉“建完还要在树里找一次”的多余操作
@@ -1311,7 +1311,7 @@ export class FileTree {
       this.callbacks.onPathMoved?.(entry.path, target);
       // 目录改名：旧路径下的展开态 / 子节点缓存全部失效
       if (entry.is_dir) this.forgetSubtree(entry.path);
-      // 只重建父目录这一层，再等它加载完选中新名称（原来走 revealPath 会全树重建）
+      // 只重建父目录这一层，再等它加载完选中新名称（走 revealPath 会整树重建）
       const parent = dirnameOf(target);
       this.refreshDir(parent);
       const pending = this.pendingLoads.get(parent);

@@ -184,9 +184,9 @@ export class PreviewController {
   /**
    * 预览滚动 → 编辑器滚动（双栏 Markdown）。
    *
-   * 历史问题：coordsAtPos 对"当前未渲染的行"返回 null，快速拖动预览滚动条时
-   * 编辑器完全不动，双栏偏移持续放大。改用 EditorView.scrollIntoView 效应：
-   * CM6 会先把目标行纳入渲染范围再定位，视口外同样可滚。
+   * 用 EditorView.scrollIntoView 效应而不是 coordsAtPos：后者对未渲染的行
+   * 返回 null（快速拖动预览滚动条时目标行往往在视口外），CM6 的效应会先把
+   * 目标行纳入渲染范围再定位。
    */
   private scrollEditorToLine(line: number): void {
     const view = this.deps.getView();

@@ -3,6 +3,7 @@
 //! 进程类命令统一走 [`no_console`]：GUI 子系统进程（本应用）spawn 控制台程序时，
 //! Windows 会为子进程新建一个控制台窗口——表现为桌面不断闪烁黑框。
 
+pub mod association;
 pub mod batch;
 pub mod cli;
 pub mod clipboard;

@@ -261,7 +261,7 @@ export class SessionHost {
       activeFile: active?.path ?? null,
       // 未命名标签不进 openFiles（没有路径）：单独记名字，草稿恢复后据此选中
       activeUntitledName: active && !active.path ? active.name : null,
-      // 分栏比例已收敛到 config.json：会话不再保存/覆盖，旧字段保持 null 兼容旧 session
+      // 分栏比例归 config.json：会话此项恒为 null（旧 session 里的值不读）
       splitRatio: null,
     };
   }
@@ -645,7 +645,7 @@ export class SessionHost {
   }
 
   /**
-   * 启动时自动恢复全部草稿：不再询问（去掉了「稍后处理 / 全部丢弃」的选择）。
+   * 启动时自动恢复全部草稿，不询问用户。
    * 原文件已变化的草稿另存为副本；恢复过程只留一条状态栏结果消息。
    */
   async autoRestoreDrafts(activeName?: string | null): Promise<{

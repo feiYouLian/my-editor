@@ -5,8 +5,8 @@
  * 主键取 e.code 归一值（KeyA→A、Comma→,、ArrowUp→Up、F2→F2）。
  * 内部存储、比较、录制输出一律用归一化形式。
  *
- * 本模块从 config/keybindings.ts 下沉（Phase 1），使 core/commands.ts
- * 可以在不违反依赖方向的前提下复用展示格式化。
+ * 放在 core 层：core/commands.ts 与 config/keybindings.ts 都要做展示格式化，
+ * 而 core 不能反向依赖上层。
  */
 
 const IS_MAC =

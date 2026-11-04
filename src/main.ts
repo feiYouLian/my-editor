@@ -64,6 +64,7 @@ import { onOpenExternalFiles, takePendingFiles } from "./services/launch";
 import {
   settings,
   effectiveIgnoreDirs,
+  applyFileAssociation,
   findUserTheme,
   getConfig,
   getWorkspaceOverrides,
@@ -651,7 +652,7 @@ const fileTree = new FileTree(fileTreeEl, {
   onNotify: (message) => statusBar.showMessage(message),
   // 过滤框与快速打开共用同一份忽略目录，避免两处搜出来的文件不一致
   getIgnoreDirs: () => effectiveIgnoreDirs(),
-  // 空状态里的「打开目录」按钮（原来只有一行文字）
+  // 空状态里的「打开目录」按钮
   onOpenFolder: () => void openWorkspaceDir(),
   // 删除文件/目录后同步右侧：干净标签直接关（否则一按保存就把文件"复活"），脏标签保留并说明
   onPathDeleted: (path, isDir) => {
@@ -1154,7 +1155,7 @@ function toggleInlineBlame(): void {
   }
 }
 
-/** 命令面板入口：逐行 Blame 对话框（左侧按钮已移除） */
+/** 命令面板入口：逐行 Blame 对话框 */
 function openBlameDialog(): void {
   const tab = activeTab();
   if (!tab || tab.kind !== "text" || !tab.path) {
@@ -1307,7 +1308,7 @@ function scheduleRunButtonRefresh(): void {
  * 「重载当前标签」的迟绑定入口。
  * largeHost / diffService / sessionHost 构造时 tabSwitcher 还不存在
  * （它的依赖又包含这些宿主，构成构造环）；装配完成后由下方赋值，
- * 运行期所有调用都走这里，不再有模块级可变状态散落各处。
+ * 运行期所有调用都走这里，避免模块级可变状态。
  */
 let reloadActiveTab: () => Promise<void> = async () => {};
 
@@ -2164,6 +2165,13 @@ window.addEventListener(
 async function bootstrap(): Promise<void> {
   // 1) 载入配置：编辑器扩展与语言映射依赖它（订阅回调会热更新编辑器 + 应用主题/状态栏）
   await loadSettings();
+  // 1.0) 文件关联：只在用户开过开关时登记「打开方式」候选（不 await，不拖慢首屏）；
+  //      命令内部会比对当前 exe 路径，已登记则立即返回，只有升级换目录才重写
+  if (getConfig().system.fileAssociation) {
+    void applyFileAssociation(true).catch((e: unknown) => {
+      statusBar.showMessage(`文件关联登记失败：${firstLine(e)}`);
+    });
+  }
   // 1.1) 自定义主题文件：必须在首次渲染前载入，否则 config.json 里的 custom:xxx
   //      会先按深色画一帧再跳变。坏文件不阻塞启动，只汇总提示一次。
   const themeReport = await loadUserThemes();
@@ -2313,9 +2321,9 @@ async function bootstrap(): Promise<void> {
   await openPendingExternalFiles();
 }
 
-// ---- 全局异常兜底（H12）----
-// 任何未被捕获的 Promise 拒绝都不能静默：IPC 失败（保存 / 读写 / 进程）此前
-// 只会进控制台，用户看到的是"点了没反应"。
+// ---- 全局异常兜底 ----
+// 未捕获的 Promise 拒绝不能静默：IPC 失败（保存 / 读写 / 进程）只进控制台的话，
+// 用户看到的是"点了没反应"。
 // 注意白名单：用户取消对话框产生的 AbortError 属预期流程，不弹窗。
 const IGNORED_REJECTIONS = [/AbortError/i, /user canceled/i, /已取消/];
 

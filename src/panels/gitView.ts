@@ -343,7 +343,7 @@ export class GitView {
       }
     }
 
-    // 刷新按钮常显：原来只藏在组头右键菜单里，用户不知道能刷新
+    // 刷新按钮常显：藏进组头右键菜单会让人不知道有刷新
     const refreshBtn = document.createElement("button");
     refreshBtn.type = "button";
     refreshBtn.className = "git-group-action";

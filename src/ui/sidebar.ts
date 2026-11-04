@@ -33,13 +33,12 @@ const LOCKED_VIEWS: readonly SidebarView[] = ["open", "files"];
 /**
  * 分区标题行高度的兜底值（CSS 里由 `--section-head-h` 定义）。
  *
- * 这里**不再写死一个常量**：历史上 CSS 与 JS 各写一份（30px / 24px 不同步），
- * 结果是收起的分区多出一段空白、总高溢出还多出滚动条。现在实际高度从 DOM 量，
- * 常量只用于"侧栏当前不可见、量不到"的兜底。
+ * 高度优先从 DOM 实测，侧栏不可见、量不到时才用这个值：
+ * 与 CSS 不同步会让收起的分区多出空白，总高溢出还多出滚动条。
  */
 const HEAD_H_FALLBACK = 24;
 
-/** 分隔线高度（与 main.css 的 .sidebar-sash 一致，改动必须两边同步） */
+/** 分隔线高度（与 styles/shell.css 的 .sidebar-sash 一致，改动必须两边同步） */
 const SASH_H = 2;
 
 /** 可拖分区最小高度：标题行 + 至少一行内容 */

@@ -51,8 +51,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   // 具体是日志还是普通大文件由 open() 按扩展名覆盖
   title.textContent = "大文件视图";
 
-  // 文件名 / 体积 / 行数 / 编码 / 换行 一律由**状态栏**承载：
-  // 早先这里也有一段 meta 文案，与右侧状态栏完全重复，且索引未完成时行数还是旧值。
+  // 文件名 / 体积 / 行数 / 编码 / 换行一律由**状态栏**承载，这里不重复展示
 
   const filterInput = document.createElement("input");
   filterInput.className = "lv-filter";

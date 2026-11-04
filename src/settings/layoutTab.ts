@@ -245,13 +245,6 @@ export function renderLayout(main: HTMLElement, ctx: SettingsTabContext): void {
   langNote.textContent = `已注册 ${userLanguageCount()} 个自定义语言。新增后新打开的文件自动生效，已打开的标签请在状态栏「语言」里重选。`;
   langSection.body.append(langNote);
   main.append(langSection.el);
-
-  const reservedSection = section("预留", "以下能力已设计、暂未实现，标记为预留。");
-  const note = document.createElement("div");
-  note.className = "settings-note";
-  note.textContent = "面板停靠（查找 / 输出 / 预览停靠到右侧或底部）：排期 v2。";
-  reservedSection.body.append(note);
-  main.append(reservedSection.el);
 }
 
 /** 语言文件重读：注册新语言 → 重绘设置页 → 反馈结果 */

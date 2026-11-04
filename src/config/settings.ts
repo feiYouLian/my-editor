@@ -145,6 +145,12 @@ export interface FileSettings {
   notifyOnSave: boolean;
 }
 
+/** 系统集成：只做「打开方式」候选，不改系统默认程序 */
+export interface SystemSettings {
+  /** 在 Windows 资源管理器的「打开方式」中登记 my-editor（默认关） */
+  fileAssociation: boolean;
+}
+
 export interface FormatterEntry {
   tool: string;
   args: string[];
@@ -174,6 +180,8 @@ export interface AppConfig {
   terminal: TerminalSettings;
   globalReplace: GlobalReplaceSettings;
   files: FileSettings;
+  /** 系统集成（文件关联等） */
+  system: SystemSettings;
   /** Git 行为：只读模式下禁止一切写入类 Git 操作（后端同样校验） */
   git: GitSettings;
   ignoreDirs: string[];
@@ -307,6 +315,8 @@ export function defaultConfig(): AppConfig {
       encodeMemory: true,
       notifyOnSave: true,
     },
+    // 默认关：安装包与启动都不应直接改写系统的文件类型关联
+    system: { fileAssociation: false },
     git: { readOnly: false },
     ignoreDirs: ["node_modules", ".git", "dist"],
     fileEncodingMemory: {},
@@ -459,4 +469,56 @@ export async function updateSettings(patch: Partial<AppConfig>): Promise<AppConf
   await invoke("save_config", { config: next });
   applyConfig(next);
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// 系统集成：文件关联（仅 Windows 有实际动作）
+// ---------------------------------------------------------------------------
+
+export interface FileAssociationStatus {
+  /** 当前平台是否支持（仅 Windows） */
+  supported: boolean;
+  /** 注册表里的真实状态（配置只是意图，可能与系统不一致） */
+  registered: boolean;
+  executable: string;
+  extensions: number;
+}
+
+/** 读取注册表里的真实登记状态（设置页用它校正开关，不信配置） */
+export async function fileAssociationStatus(): Promise<FileAssociationStatus> {
+  return invoke<FileAssociationStatus>("file_association_status");
+}
+
+/**
+ * 登记 / 撤销「用 my-editor 打开」的候选。
+ * 只写 HKCU 下自己的键与 `.ext\OpenWithProgids` 值，不改 `.ext` 默认值，
+ * 也不写 UserChoice —— 系统默认程序保持用户原来的选择。
+ */
+export async function applyFileAssociation(enabled: boolean): Promise<void> {
+  await invoke("set_file_association", { enabled });
+}
+
+/** 旧版安装器留下的默认关联（新版只登记候选，不会产生这种项） */
+export interface LegacyAssociation {
+  ext: string;
+  progid: string;
+  /** 安装前备份的原默认 ProgID；null = 没有备份，恢复后只能去掉默认 */
+  backup: string | null;
+}
+
+export interface LegacyClearOutcome {
+  /** 恢复为原默认程序的扩展名数 */
+  restored: number;
+  /** 无备份、已去掉默认关联的扩展名数 */
+  cleared: number;
+}
+
+/** 扫描旧版默认关联（只读） */
+export async function scanLegacyAssociations(): Promise<LegacyAssociation[]> {
+  return invoke<LegacyAssociation[]>("scan_legacy_associations");
+}
+
+/** 一键恢复旧版默认关联；有备份的写回原程序，没有备份的去掉默认值 */
+export async function clearLegacyAssociations(): Promise<LegacyClearOutcome> {
+  return invoke<LegacyClearOutcome>("clear_legacy_associations");
 }

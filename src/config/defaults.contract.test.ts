@@ -15,4 +15,8 @@ describe("前后端默认值契约（与 Rust 共用同一夹具）", () => {
   it("大文件视图编码与后端候选（去掉 UTF-16）一致", () => {
     expect(ENCODINGS).toEqual(fixture.largeViewEncodings);
   });
+
+  it("文件关联默认关闭：安装与启动都不直接改写系统关联", () => {
+    expect(defaultConfig().system.fileAssociation).toBe(false);
+  });
 });

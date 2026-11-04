@@ -154,8 +154,10 @@
 - 自定义语言：`languages/` 目录放 JSON 即可新增关键字级高亮语言（注释 / 字符串 / 数字 / 关键字 / 括号），与内置语言重名或扩展名冲突会提示并忽略；格式见 [`docs/USER-GUIDE.md` §5.2](./docs/USER-GUIDE.md#52-自定义语言关键字级高亮)
 - 快捷键注册表：可视化查看、录制重绑定、冲突检测、恢复默认（覆盖存 `config.json`）
 - 页面布局：侧栏显隐、默认视图、分栏比例、编辑器显示项（含右侧 Minimap 缩略图，`Ctrl/Cmd+Shift+M` 快捷切换）、状态栏字段显隐与排序
-- 设置中心四页：外观主题 / 编辑器与布局 / 文件与会话（打开方式：单击 / 双击、会话草稿、大文件日志扩展名、忽略目录、**工作区覆盖**、网页抓取私网开关、终端、替换历史、Git）/ 快捷键；配置保存失败时控件回滚到真实值
-- 系统集成：安装后为 40 种文本类扩展名（txt / log / md / json / yaml / toml / xml / html / css / js / ts / rs / py / go / java / c / cpp / cs / php / rb / sh / bat / ps1 / sql / csv / diff / patch 等）登记文件关联，可在资源管理器右键「打开方式」或直接双击打开
+- 设置中心四页：外观主题 / 编辑器与布局 / 文件与会话（打开方式：单击 / 双击、**Windows 系统集成**、会话草稿、大文件日志扩展名、忽略目录、**工作区覆盖**、网页抓取私网开关、终端、替换历史、Git）/ 快捷键；配置保存失败时控件回滚到真实值
+- 系统集成：设置 →「文件与会话 → Windows 系统集成」打开开关后，为 40 种文本类扩展名
+  （txt / log / md / json / yaml / toml / xml / html / css / js / ts / rs / py / go / java / c / cpp / cs / php / rb / sh / bat / ps1 / sql / csv / diff / patch 等）
+  登记「打开方式」候选（默认关，关闭开关即撤销）；检测到旧版安装包留下的默认关联时，同处提供「一键恢复」
 - 帮助（菜单「帮助」）：用户指南 / 常见问题 / 快捷键速查 / 关于；内容取自仓库 `docs/`（与应用外文档同源），随安装包内联、**离线可看**，渲染走 markdown-it + DOMPurify 且按需加载（不进首屏 chunk）
 - 日志与诊断：本地滚动日志（2MB × 3）、panic hook、`log_event`、「打开日志目录」与「导出诊断包」；前端未捕获异常与保存失败会落日志
 - 消息历史：状态栏常驻入口（时钟图标）打开消息面板；通知按 `key` 去重（同一来源只保留最新一条）
@@ -464,6 +466,7 @@ src-tauri/src/                # Rust 后端
     ├── regex.rs              # 正则测试与替换预览（Rust `regex` 双引擎统一）
     ├── git.rs                # Git 状态 / 暂存 / 提交 / 历史 / 分支 / Blame / hunk 暂存；`ensure_writable()` 只读拦截
     ├── cli.rs                # 命令行参数接收（文件关联双击打开）
+    ├── association.rs        # 「打开方式」候选登记（HKCU，需显式开关；不改默认程序）
     ├── logging.rs            # 滚动日志（2MB × 3）、panic hook、`log_event`、诊断包
     ├── startup.rs            # 启动耗时采样（覆盖写 `startup.json`）
     └── config.rs             # config.json 读写与版本迁移、主题/语言目录、只读快照

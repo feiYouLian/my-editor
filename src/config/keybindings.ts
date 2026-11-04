@@ -4,7 +4,7 @@
  * 键位解析（core/keyNotation.ts）、覆盖存储、冲突检测与匹配分发。
  *
  * - 解析：config.json 的 keybindings 覆盖默认键（用户自定义优先）
- * - 派发：单一 window 捕获阶段分发器（main.ts 挂载），替代原硬编码 if-else
+ * - 派发：单一 window 捕获阶段分发器（main.ts 挂载）
  * - 固定绑定（CM6 内置，如撤销/注释/书签）仅展示不可重绑，走 fixed 标记
  */
 

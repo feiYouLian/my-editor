@@ -21,7 +21,7 @@ describe("noticeStore 去重", () => {
     expect(listNotices()).toHaveLength(2);
   });
 
-  it("没有 dedupeKey 时保留历史行为（同文案也各自保留）", () => {
+  it("没有 dedupeKey 时同文案也各自保留", () => {
     addNotice("gitFail", "push 失败");
     addNotice("gitFail", "push 失败");
 

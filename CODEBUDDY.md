@@ -63,7 +63,10 @@ Rust 侧约束：
 - 全局代码审查与优化（保存基线、载入代际、热路径、Rust 阻塞命令、CSP、路径守卫）：已完成（2026-10-25），
   记录见 `.doc/全局代码审查与优化-2026-10-25.md`
 - V1 能力补齐（Git 源代码管理全家桶与只读模式 / 书签 / 工作区覆盖 / 结构化视图 / Markdown 目录与公式与 Mermaid / 设计令牌与无障碍）：已完成并发版至 **0.6.1**（2026-11-01）
-- 测试基线（2026-11-01）：`npm test` 130 项、`cargo test --lib` 178 项
-- **打包约束**：安装包文案（`fileAssociations.description` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
+- 文件关联改为应用内显式开关（2026-11-04）：安装包不再声明 `bundle.fileAssociations`；
+  设置 →「文件与会话 → Windows 系统集成」只向 HKCU 登记「打开方式」候选，不改 `.ext` 默认值（见 `commands/association.rs`）；
+  旧版安装器留下的默认关联可在此处「一键恢复」（有 `_backup` 的恢复原程序，无备份的去掉默认）
+- 测试基线（2026-11-04）：`npm test` 131 项、`cargo test --lib` 184 项（+2 条默认 ignore 的真实注册表往返）
+- **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
 - 未达项：E2E（Playwright + tauri-driver）尚未接入；自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名

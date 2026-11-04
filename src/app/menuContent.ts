@@ -83,8 +83,8 @@ export function buildEditorMenu(
   const view = deps.getView();
   const readonly = view.state.readOnly;
   const tab = deps.getActiveTab();
-  // 行号区（含折叠标记列）右键：行 / 书签 / 折叠相关的精简菜单；
-  // 内容区右键才是编辑菜单。分开后两边都不再堆十几项。
+  // 行号区（含折叠标记列）右键只给行 / 书签 / 折叠的精简菜单，
+  // 内容区右键才是编辑菜单：两处都不必堆十几项。
   if (at && isGutterPoint(at)) return buildGutterMenu(deps, view, readonly, tab);
   const lang = tab ? effectiveLanguage(tab) : null;
   const hasSelection = !view.state.selection.main.empty;
@@ -221,8 +221,8 @@ export function buildEditorMenu(
     top.push({ label: "格式转换", submenu: convertItems });
   }
 
-  // 「行操作」不再放内容区菜单：移到行号区右键（见 buildGutterMenu），
-  // 内容区只保留"对文本/文档做的事"，条目数回到一屏以内。
+  // 「行操作」只在行号区右键提供（见 buildGutterMenu），
+  // 内容区只保留"对文本 / 文档做的事"，条目控制在一屏以内。
 
   // 文本转换（子菜单，需选中文本）
   if (!readonly && hasSelection) {

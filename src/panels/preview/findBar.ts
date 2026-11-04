@@ -255,7 +255,7 @@ export class PreviewFindBar {
 
   /**
    * iframe 文档没有宿主的样式表：把 `::highlight()` 规则注入它的 head。
-   * Markdown 场景的规则写在本文件的 main.css 里，这里跳过。
+   * 主窗口（Markdown 预览）的规则在 styles/preview.css，这里不重复。
    */
   private ensureScopeStyle(scope: PreviewFindScope): void {
     if (scope.win === window) return;

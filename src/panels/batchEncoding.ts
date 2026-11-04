@@ -254,8 +254,7 @@ export class BatchEncodingPanel {
         console.warn("[batch] 转换失败明细", report.failures);
       }
       this.setResult(lines, report.failures.length > 0);
-      // 只移除成功的条目：失败文件保留在列表里，用户可修正后重试
-      // （原来「有成功就清空全部」会让失败项也消失，无从针对性重试）
+      // 只移除成功的条目：失败文件留在列表里，用户可修正后重试
       if (report.written.length > 0) {
         const done = new Set(report.written);
         this.files = this.files.filter((f) => !done.has(f));

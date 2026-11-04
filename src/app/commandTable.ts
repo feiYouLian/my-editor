@@ -93,7 +93,7 @@ export interface CommandTableCtx {
   gitPickBranch: () => void;
   /** Git 只读开关：只查看 vs 可写（保护正在用的仓库） */
   gitToggleReadOnly: () => void;
-  /** 查看提交历史（底部面板；SCM 面板按钮已收敛进右键/分支面板，命令面板兜底） */
+  /** 查看提交历史（底部面板；入口在 Git 菜单与分支面板） */
   gitOpenHistory: () => void;
   gitPull: () => void;
   gitPush: () => void;
@@ -298,7 +298,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     { id: "search.toggleBookmark", title: "切换书签", section: "查找", defaultKey: "Mod-F2", fixed: true, run: () => toggleBookmark(getView()) },
     { id: "search.nextBookmark", title: "下一个书签", section: "查找", defaultKey: "F2", fixed: true, menu: "go", menuLabel: "下一个书签", menuOrder: 10, run: () => gotoBookmark(getView(), 1) },
     { id: "search.prevBookmark", title: "上一个书签", section: "查找", defaultKey: "Shift-F2", fixed: true, menu: "go", menuLabel: "上一个书签", menuOrder: 20, hidden: true, run: () => gotoBookmark(getView(), -1) },
-    // 转到定义：文本级定位（复用工作区搜索的遍历，不是 LSP）。F12 此前空闲，可重绑。
+    // 转到定义：文本级定位（复用工作区搜索的遍历，不是 LSP）。F12 可重绑。
     { id: "go.definition", title: "转到定义（工作区文本定位）", section: "查找", defaultKey: "F12", menu: "go", menuLabel: "转到定义（文本级）", menuOrder: 5, run: () => void symbolHost.jumpToDefinition() },
     // ---- 查找 / 替换（CM6 面板；仅菜单与快捷键，不进命令面板）----
     { id: "search.find", title: "查找（当前文档）", section: "查找", defaultKey: "Mod-F", menu: "edit", menuLabel: "查找…", menuOrder: 60, menuSeparatorBefore: true, hidden: true, run: () => {
@@ -326,7 +326,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
         view.dom.querySelector<HTMLInputElement>('input[name="replace"]')?.focus();
       } },
     // ---- 视图 ----
-    // 命令面板固定为「视图」第一项（VS Code 惯例），不再混在「编辑」里
+    // 命令面板固定为「视图」第一项（VS Code 惯例）
     { id: "view.commandPalette", title: "命令面板", section: "视图", defaultKey: "Mod-Shift-P", menu: "view", menuLabel: "命令面板…", menuOrder: 5, hidden: true, run: () => palette.toggle() },
     { id: "view.toggleSidebar", title: "切换侧栏", section: "视图", defaultKey: "Mod-B", menu: "view", menuLabel: "切换侧栏", menuOrder: 10, hidden: true, menuChecked: () => layout.isSidebarVisible, run: () => layout.toggleSidebar() },
     { id: "view.toggleMinimap", title: "切换 Minimap 缩略图", section: "视图", defaultKey: "Mod-Shift-M", menu: "view", menuLabel: "切换 Minimap 缩略图", menuOrder: 40, menuSeparatorBefore: true, menuChecked: () => getConfig().layout.minimap, run: () => {
@@ -381,7 +381,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
     // 结构化只读视图（不改文件，只换一种看法）；再点同一模式即关闭
     { id: "view.structuredCsv", title: "以表格查看（CSV / TSV）", section: "视图", menu: "view", menuLabel: "表格视图（CSV）", menuOrder: 60, menuSeparatorBefore: true, menuChecked: () => isStructuredViewOpen("csv"), run: () => showStructuredView("csv") },
     { id: "view.structuredJson", title: "以树查看（JSON）", section: "视图", menu: "view", menuLabel: "JSON 树视图", menuOrder: 62, menuChecked: () => isStructuredViewOpen("json"), run: () => showStructuredView("json") },
-    // ---- Git（独立顶级菜单：Git 是本产品的一等能力，不再挤在「视图」里）----
+    // ---- Git（独立顶级菜单：Git 是一等能力）----
     { id: "git.pull", title: "拉取（快进合并）", section: "Git", menu: "git", menuLabel: "拉取（快进合并）", menuOrder: 10, run: () => gitPull() },
     { id: "git.push", title: "推送", section: "Git", menu: "git", menuLabel: "推送", menuOrder: 20, run: () => gitPush() },
     { id: "git.pickBranch", title: "切换分支…", section: "Git", menu: "git", menuLabel: "切换分支…", menuOrder: 30, menuSeparatorBefore: true, run: () => gitPickBranch() },

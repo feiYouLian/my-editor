@@ -19,14 +19,14 @@ import { language as languageFacet, syntaxTree } from "@codemirror/language";
  * - 行数超过 maxLines（默认 50000，与高亮降级阈值一致）时整体禁用；
  * - 仅在 docChanged / viewportChanged / 语言 facet 变化时重建，选择变化不触发。
  *
- * 配色（main.css --rb-0..5）：6 色相在色轮上 60° 均分，并按「暖 → 冷 → 暖 → 冷」
+ * 配色（styles/tokens.css 的 --rb-0..5）：6 色相在色轮上 60° 均分，并按「暖 → 冷 → 暖 → 冷」
  * 交替排序（红 → 青 → 琥珀 → 蓝 → 绿 → 紫），保证相邻嵌套层级的色相差 ≥90°
  * （光谱顺序排列时红/橙/黄相邻仅差 ~30°，无法区分）；各色亮度/饱和度经调校
  * 使其在对应底色上视觉重量一致。颜色经 CSS 变量按主题分 palette 提供，
  * 装饰类仅作 `color: var(--rb-N)`，主题切换自动跟随。
  */
 
-/** 颜色档位数（须与 main.css 中 .rbk-0..5 对应） */
+/** 颜色档位数（须与 styles/status.css 的 .rbk-0..5 对应） */
 const LEVELS = 6;
 
 const OPEN_BRACKETS = "([{";

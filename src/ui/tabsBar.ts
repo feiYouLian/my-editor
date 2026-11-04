@@ -1,6 +1,6 @@
 /**
- * 标签栏：标签渲染（签名优化）、滚轮横向滚动、双击空白新建、
- * 标签右键菜单（比较 / 关闭当前 / 左右 / 其他 / 全部）。
+ * 标签栏：标签渲染（签名优化）、激活标签自动滚入视野、滚轮横向滚动、
+ * 双击空白新建、标签右键菜单（比较 / 关闭当前 / 左右 / 其他 / 全部）。
  *
  * 数据直接读 store/tabs（ui → store 允许）；跨模块动作
  * （比较、批量关闭前的草稿清理）经 callbacks 交回 main.ts。
@@ -8,6 +8,9 @@
 
 import { tabStore } from "../store/tabs";
 import { placeMenu } from "./menu";
+
+/** 激活标签与标签条可视边缘的留白：贴边时看起来像被裁掉 */
+const ACTIVE_TAB_MARGIN = 8;
 
 export interface TabsBarCallbacks {
   onActivate: (tabId: string) => void;
@@ -71,8 +74,6 @@ export class TabsBar {
     });
     this.container.after(btn);
     this.overflowBtn = btn;
-    // 窗口宽度变化会改变是否溢出
-    window.addEventListener("resize", () => this.syncOverflowVisibility());
   }
 
   private syncOverflowVisibility(): void {
@@ -93,6 +94,7 @@ export class TabsBar {
     menu.className = "menu-dropdown tab-overflow-menu";
     menu.setAttribute("role", "menu");
     const activeId = tabStore.active()?.id ?? "";
+    let activeItem: HTMLElement | null = null;
     for (const tab of tabStore.list()) {
       const item = document.createElement("div");
       item.className = "menu-item";
@@ -110,7 +112,10 @@ export class TabsBar {
         e.stopPropagation();
         this.closeOverflow();
         this.callbacks.onActivate(tab.id);
+        // 点的就是当前标签时不会触发重渲染，这里直接把它带回视野
+        this.scrollActiveIntoView();
       });
+      if (tab.id === activeId) activeItem = item;
       menu.append(item);
     }
     document.body.append(menu);
@@ -123,6 +128,13 @@ export class TabsBar {
     const menuRect = menu.getBoundingClientRect();
     if (menuRect.right > window.innerWidth - 8) {
       menu.style.left = `${window.innerWidth - menuRect.width - 8}px`;
+    }
+    // 标签多到需要滚动时，打开菜单就直接定位到当前标签
+    if (activeItem) {
+      menu.scrollTop = Math.max(
+        0,
+        activeItem.offsetTop - (menu.clientHeight - activeItem.offsetHeight) / 2,
+      );
     }
     menu.addEventListener("click", (e) => e.stopPropagation());
     this.overflowMenu = menu;
@@ -158,6 +170,13 @@ export class TabsBar {
 
     this.ensureAddButton();
     this.ensureOverflowButton();
+
+    // 窗口缩放 / 侧栏开合 / 预览按钮显隐都会改变标签条可视宽度，
+    // 变窄后激活标签可能被裁到视野外：尺寸一变就重新对齐。
+    new ResizeObserver(() => {
+      this.scrollActiveIntoView();
+      this.syncOverflowVisibility();
+    }).observe(container);
 
     document.addEventListener("click", () => {
       this.closeMenu();
@@ -291,23 +310,48 @@ export class TabsBar {
   /** 只切激活类：切标签时整栏重建会闪一下，并丢掉鼠标 hover 状态 */
   private syncActive(): void {
     const activeId = tabStore.active()?.id ?? "";
-    if (activeId === this.activeId) return;
-    this.activeId = activeId;
-    this.container.querySelectorAll<HTMLElement>(".tab").forEach((el) => {
-      const on = el.dataset.tabId === activeId;
-      el.classList.toggle("active", on);
-      el.setAttribute("aria-selected", String(on));
-      // 焦点跟随当前标签的漫游位（否则键盘 Tab 会停在旧标签上）
-      el.tabIndex = on ? 0 : -1;
-    });
+    if (activeId !== this.activeId) {
+      this.activeId = activeId;
+      this.container.querySelectorAll<HTMLElement>(".tab").forEach((el) => {
+        const on = el.dataset.tabId === activeId;
+        el.classList.toggle("active", on);
+        el.setAttribute("aria-selected", String(on));
+        // 焦点跟随当前标签的漫游位（否则键盘 Tab 会停在旧标签上）
+        el.tabIndex = on ? 0 : -1;
+      });
+    }
+    // 激活项没变也要保证可见：标签条可能被滚到别处，或刚刚又打开了同一个文件
     this.scrollActiveIntoView();
   }
 
-  /** 标签过多溢出时，将激活标签滚入视野 */
+  /**
+   * 把激活标签完整滚入视野（左右各留 ACTIVE_TAB_MARGIN）。
+   * 不用 scrollIntoView：它会连带滚动祖先容器，且对齐语义依赖具体实现，
+   * 标签只露出一半时无法保证看全。这里直接按可视区算 scrollLeft。
+   */
   private scrollActiveIntoView(): void {
-    this.container
-      .querySelector<HTMLElement>(".tab.active")
-      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    const box = this.container;
+    const el = box.querySelector<HTMLElement>(".tab.active");
+    if (!el) return;
+    // overflow-y 是 hidden，但程序化滚动仍可能把整行标签推上去（顶部强调线消失）
+    box.scrollTop = 0;
+    const maxScroll = box.scrollWidth - box.clientWidth;
+    if (maxScroll <= 0) return;
+    const boxRect = box.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const visibleLeft = boxRect.left + box.clientLeft;
+    const visibleRight = visibleLeft + box.clientWidth;
+    if (elRect.left < visibleLeft + ACTIVE_TAB_MARGIN) {
+      box.scrollLeft = Math.max(
+        0,
+        box.scrollLeft - (visibleLeft + ACTIVE_TAB_MARGIN - elRect.left),
+      );
+    } else if (elRect.right > visibleRight - ACTIVE_TAB_MARGIN) {
+      box.scrollLeft = Math.min(
+        maxScroll,
+        box.scrollLeft + elRect.right - (visibleRight - ACTIVE_TAB_MARGIN),
+      );
+    }
   }
 
   render(): void {
@@ -320,6 +364,8 @@ export class TabsBar {
     this.signature = signature;
     this.activeId = tabStore.active()?.id ?? "";
 
+    // 重建会清空滚动位置：先记下，重建后还原，避免整栏跳回最左端
+    const prevScrollLeft = this.container.scrollLeft;
     this.container.innerHTML = "";
     // 无障碍：标签栏是 tablist，标签支持 ←/→/Home/End 切换、Delete 关闭
     this.container.setAttribute("role", "tablist");
@@ -403,6 +449,7 @@ export class TabsBar {
     }
     this.knownIds = new Set(tabStore.list().map((t) => t.id));
     this.container.classList.toggle("hidden", tabStore.list().length === 0);
+    this.container.scrollLeft = prevScrollLeft;
     this.scrollActiveIntoView();
     this.syncOverflowVisibility();
   }
