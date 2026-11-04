@@ -468,11 +468,18 @@ fn default_formatters() -> BTreeMap<String, FormatterEntry> {
 // 读写与迁移
 // ---------------------------------------------------------------------------
 
-fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?;
+/// 应用配置目录（config / session / drafts / 备份都落在它下面）。
+///
+/// 调试构建可用 `MY_EDITOR_CONFIG_DIR` 指到别处：E2E 因此能跑在独立目录里，
+/// 不会把测试标签写进用户真实的 session.json。正式构建忽略该变量。
+pub fn app_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = match std::env::var("MY_EDITOR_CONFIG_DIR") {
+        Ok(v) if cfg!(debug_assertions) && !v.trim().is_empty() => PathBuf::from(v),
+        _ => app
+            .path()
+            .app_config_dir()
+            .map_err(|e| format!("获取配置目录失败: {e}"))?,
+    };
     fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
     Ok(dir)
 }
@@ -483,12 +490,12 @@ fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// （PathGuard 限制的是"可写文件的作用域"，配置目录不属于工作区）。
 #[tauri::command]
 pub fn reveal_config_dir(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = config_dir(&app)?;
+    let dir = app_config_dir(&app)?;
     crate::commands::fs::reveal_path(&dir, false)
 }
 
 fn config_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(config_dir(app)?.join("config.json"))
+    Ok(app_config_dir(app)?.join("config.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -562,11 +569,11 @@ const SAMPLE_LANGUAGE: &str = r##"{
 "##;
 
 fn themes_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(config_dir(app)?.join("themes"))
+    Ok(app_config_dir(app)?.join("themes"))
 }
 
 fn languages_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(config_dir(app)?.join("languages"))
+    Ok(app_config_dir(app)?.join("languages"))
 }
 
 /// 列出 themes/*.json。目录不存在返回空表（= 没有自定义主题），不是错误。

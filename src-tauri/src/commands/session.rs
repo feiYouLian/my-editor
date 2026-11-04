@@ -11,8 +11,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
-
 /// 草稿指纹计算内容哈希的体量上限：超过则只用 mtime + 大小判定过期，
 /// 避免启动扫描时读取大文件
 const HASH_MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -270,12 +268,7 @@ pub fn cleanup_drafts(app: tauri::AppHandle, retention_days: u32) -> Result<u32,
 // ---------------------------------------------------------------------------
 
 fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?;
-    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    Ok(dir)
+    crate::commands::config::app_config_dir(app)
 }
 
 fn atomic_write(path: &Path, json: &str) -> Result<(), String> {

@@ -692,14 +692,10 @@ pub async fn git_discard(
     paths: Vec<String>,
 ) -> Result<DiscardOutcome, String> {
     ensure_writable(&app)?;
-    use tauri::Manager;
     state.ensure_file_scope(&root)?;
     let relatives = normalize_relatives(&paths)?;
-    let backup_root = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?
-        .join("discard-backup");
+    let backup_root =
+        crate::commands::config::app_config_dir(&app)?.join("discard-backup");
     tauri::async_runtime::spawn_blocking(move || {
         fs::create_dir_all(&backup_root).map_err(|e| format!("创建备份目录失败: {e}"))?;
         prune_discard_backups(&backup_root);

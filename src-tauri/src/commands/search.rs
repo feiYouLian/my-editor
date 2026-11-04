@@ -14,8 +14,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ignore::WalkBuilder;
-use tauri::Manager;
-
 use crate::commands::encoding;
 use crate::commands::file::atomic_write;
 use crate::commands::paths::PathGuard;
@@ -186,11 +184,7 @@ fn new_history_id() -> String {
 }
 
 fn history_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?
-        .join("replace-history");
+    let dir = crate::commands::config::app_config_dir(app)?.join("replace-history");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建替换历史目录失败: {e}"))?;
     Ok(dir)
 }

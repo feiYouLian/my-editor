@@ -26,13 +26,7 @@ pub fn elapsed_ms() -> u64 {
 }
 
 fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    Ok(dir)
+    crate::commands::config::app_config_dir(app)
 }
 
 /// 前端就绪：覆盖写 `startup.json`，返回耗时（毫秒）。

@@ -12,8 +12,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
-
 const LOG_DIR_NAME: &str = "logs";
 const LOG_FILE: &str = "app.log";
 /// 单文件上限；超过后 app.log → app.log.1 → app.log.2
@@ -40,7 +38,7 @@ fn sanitize(value: &str) -> String {
 
 /// 应用启动时调用一次：确定日志目录并安装 panic hook。
 pub fn init(app: &tauri::AppHandle) {
-    let Ok(config_dir) = app.path().app_config_dir() else {
+    let Ok(config_dir) = crate::commands::config::app_config_dir(app) else {
         return;
     };
     let dir = config_dir.join(LOG_DIR_NAME);
@@ -59,11 +57,7 @@ pub fn init(app: &tauri::AppHandle) {
 }
 
 fn logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("获取配置目录失败: {e}"))?
-        .join(LOG_DIR_NAME);
+    let dir = crate::commands::config::app_config_dir(app)?.join(LOG_DIR_NAME);
     fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
     Ok(dir)
 }
@@ -150,7 +144,9 @@ pub fn export_diagnostics(app: tauri::AppHandle) -> Result<String, String> {
         "version": app.package_info().version.to_string(),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
-        "configDir": app.path().app_config_dir().map(|p| p.to_string_lossy().to_string()).ok(),
+        "configDir": crate::commands::config::app_config_dir(&app)
+            .map(|p| p.to_string_lossy().to_string())
+            .ok(),
         "logTail": String::from_utf8_lossy(&tail),
     });
     let out = dir.join(format!("diagnostics-{}.json", now_ms()));
