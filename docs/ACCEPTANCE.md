@@ -11,15 +11,15 @@
 
 | # | 门禁 | 命令 | 判据 | 层级 | 批次 | 记录 |
 | --- | --- | --- | --- | --- | --- | --- |
-| A-1 | 类型检查与生产构建 | `npm run verify` | 退出码 0，0 个类型错误 | 自动 | 既有 | |
-| A-2 | 前端单测 | `npm test` | 全绿；断言数只增不减（基线 131） | 自动 | 既有 | |
+| A-1 | 类型检查与生产构建 | `npm run verify && npm run typecheck:e2e` | 退出码 0，0 个类型错误（含 E2E） | 自动 | 既有 / S2 | |
+| A-2 | 前端单测 | `npm test` | 全绿；断言数只增不减（基线 131 项 + 渲染层 13 项） | 自动 | 既有 / S2 | |
 | A-3 | Rust 单测 | `cd src-tauri && cargo test --lib` | 全绿（基线 184 passed / 2 ignored） | 自动 | 既有 | |
 | A-4 | IPC 参数契约 | `node scripts/check-ipc-contract.mjs` | 输出「错误 0」；命令定义 99 / 注册 99 | 自动 | S1 | |
 | A-5 | 生产代码 panic 点 | `node scripts/scan-unsafe.mjs` | 输出「生产代码 panic 点: 0」 | 自动 | S1 | |
 | A-6 | DOM 注入面 | `node scripts/scan-innerhtml.mjs` | S1–S2：`≤ 基线 14`；S3 起：`= 0` | 自动 | S1 / S3 | |
 | A-7 | 默认值契约 | 随 A-2 / A-3（`defaults.contract.test.ts`、`defaults_match_frontend_contract`） | 两侧同时通过；新增键只改一端即失败 | 自动 | S1 | |
-| A-8 | E2E 关键路径 | `npx playwright test` | 12 条全绿，每条含 ≥1 条可定位面板的断言 | 自动 | S2 | |
-| A-9 | 面板渲染层测试 | 随 A-2（happy-dom project） | `searchView` / `quickOpen` / `tabsBar` / `gitView` 状态渲染有断言 | 自动 | S2 | |
+| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 12 条全绿；当前已接入 1 条空基线 | 自动 | S2 | |
+| A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | `searchView` / `quickOpen` / `tabsBar` / `gitView` 共 13 条断言 | 自动 | S2 | |
 | A-10 | 空白错误 | `git diff --check` | 无输出、退出码 0 | 自动 | S0 | |
 
 ## B. 半自动层（脚本产出 + 人工判读）

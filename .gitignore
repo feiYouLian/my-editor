@@ -11,3 +11,7 @@ target/
 # 本地临时产物（截图导出、AI 会话临时脚本）
 .screenshots/
 .trae-html-share-packages/
+
+# E2E 产物
+test-results/
+playwright-report/

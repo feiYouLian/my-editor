@@ -9,7 +9,11 @@
     "build": "tsc --noEmit && vite build",
     "verify": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.render.config.ts",
+    "test:node": "vitest run",
+    "test:render": "vitest run --config vitest.render.config.ts",
+    "test:e2e": "playwright test",
+    "typecheck:e2e": "tsc -p tsconfig.e2e.json --noEmit",
     "test:watch": "vitest",
     "bump": "node scripts/bump-version.mjs",
     "tauri": "tauri"
@@ -57,9 +61,11 @@
     "xml-formatter": "^3.7.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2",
     "@types/markdown-it": "^14.2.0",
     "@types/turndown": "^5.0.6",
+    "happy-dom": "^21.0.4",
     "typescript": "^5.6",
     "vite": "^6",
     "vitest": "^5.0.5"
