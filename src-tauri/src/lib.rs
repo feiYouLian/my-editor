@@ -48,6 +48,12 @@ pub fn run() {
         .manage(commands::paths::PathGuard::new())
         .setup(|app| {
             commands::logging::init(app.handle());
+            // 配置目录无条件保护：即使 WebView 内伪造 register_paths，
+            // 也不能通过写 / 删类命令改动 config.json / session / 草稿
+            if let Ok(dir) = commands::config::app_config_dir(app.handle()) {
+                app.state::<commands::paths::PathGuard>()
+                    .protect_dir(&dir.to_string_lossy());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

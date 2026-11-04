@@ -21,12 +21,17 @@ use std::sync::RwLock;
 
 /// 作用域校验失败的统一提示
 const SCOPE_ERR: &str = "路径不在已打开的工作区/文件范围内，操作已被阻止（安全策略）";
+/// 受保护目录（应用配置目录）的提示
+const PROTECTED_ERR: &str = "该位置属于应用配置目录，不允许修改（安全策略）";
 
 /// 已登记路径集合：roots 为目录（含工作区根），files 为文件
 #[derive(Default)]
 pub struct PathGuard {
     roots: RwLock<HashSet<PathBuf>>,
     files: RwLock<HashSet<PathBuf>>,
+    /// 无条件保护区（应用配置目录）：即使被前端登记也不允许写 / 删。
+    /// `register_paths` 可被 WebView 内脚本伪造，这一层不依赖任何前端登记。
+    protected: RwLock<HashSet<PathBuf>>,
 }
 
 impl PathGuard {
@@ -137,10 +142,30 @@ impl PathGuard {
         dirs.into_iter().next()
     }
 
+    /// 登记受保护目录（应用配置目录等）：内部写 / 删一律拒绝。
+    /// 与 `register_paths` 无关——伪造登记也无法把配置目录变成可写作用域。
+    pub fn protect_dir(&self, raw: &str) {
+        if let Ok(p) = Self::normalize(Path::new(raw)) {
+            self.protected
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(p);
+        }
+    }
+
+    /// 路径是否落在受保护目录内（含目录本身）
+    fn is_protected(&self, p: &Path) -> bool {
+        let protected = self.protected.read().unwrap_or_else(|e| e.into_inner());
+        protected.iter().any(|dir| p == dir || p.starts_with(dir))
+    }
+
     /// 目录树操作（新建 / 重命名 / 删除 / 定位）：仅允许已登记根目录之内。
     /// 文件树 UI 本身也只展示工作区内的条目，零误伤。
     pub fn ensure_root_scope(&self, raw: &str) -> Result<PathBuf, String> {
         let p = Self::normalize(Path::new(raw))?;
+        if self.is_protected(&p) {
+            return Err(PROTECTED_ERR.to_string());
+        }
         let roots = self.roots.read().unwrap_or_else(|e| e.into_inner());
         if roots.iter().any(|r| p.starts_with(r)) {
             return Ok(p);
@@ -155,6 +180,9 @@ impl PathGuard {
     /// 但只放行一层，不把目录本身变成可递归操作的作用域根。
     pub fn ensure_file_scope(&self, raw: &str) -> Result<PathBuf, String> {
         let p = Self::normalize(Path::new(raw))?;
+        if self.is_protected(&p) {
+            return Err(PROTECTED_ERR.to_string());
+        }
         {
             let roots = self.roots.read().unwrap_or_else(|e| e.into_inner());
             if roots.iter().any(|r| p.starts_with(r)) {
@@ -276,5 +304,44 @@ mod tests {
             .is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 受保护目录（应用配置目录）：即使伪造 add_root / add_path 也不允许写 / 删
+    #[test]
+    fn protected_dir_rejects_even_registered_paths() {
+        let guard = PathGuard::new();
+        let dir = std::env::temp_dir().join("my_editor_paths_protected");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let inside = dir.join("config.json");
+        std::fs::write(&inside, b"{}").unwrap();
+
+        guard.protect_dir(dir.to_str().unwrap());
+        // 模拟被伪造的前端登记
+        guard.add_root(dir.to_str().unwrap());
+        guard.add_path(inside.to_str().unwrap());
+
+        for target in [dir.to_str().unwrap(), inside.to_str().unwrap()] {
+            assert!(
+                guard.ensure_file_scope(target).is_err(),
+                "保护区内的 {target} 不应被写入"
+            );
+            assert!(
+                guard.ensure_root_scope(target).is_err(),
+                "保护区内的 {target} 不应被删除 / 重命名"
+            );
+        }
+
+        // 保护区之外的同级目录不受影响
+        let sibling = std::env::temp_dir().join("my_editor_paths_sibling");
+        let _ = std::fs::remove_dir_all(&sibling);
+        std::fs::create_dir_all(&sibling).unwrap();
+        guard.add_root(sibling.to_str().unwrap());
+        assert!(guard
+            .ensure_root_scope(sibling.to_str().unwrap())
+            .is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sibling);
     }
 }

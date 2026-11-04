@@ -8,10 +8,9 @@
 //! - 目标路径必须过 `PathGuard::ensure_file_scope`，落盘复用
 //!   `file::atomic_write`（临时文件 → fsync → rename）；
 //! - 响应体积上限 10MB（Content-Length 预检 + 读后复检）、总超时 15s、
-//!   重定向上限 10 跳。
-//!
-//! 已知限制（v1）：reqwest 的 redirect policy 不暴露中间 URL，
-//! 重定向后的最终地址不复查；私网默认拦截 + CSP 仍是主防线。
+//!   重定向上限 10 跳；
+//! - 重定向**逐跳复查**：每一跳都按首跳同一套规则判 scheme / userinfo / 私网，
+//!   避免公网地址 302 到 `127.0.0.1` 或云元数据地址（169.254.169.254）绕过首跳校验。
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::Path;
@@ -107,9 +106,8 @@ fn is_private_host(host: &str, port: u16) -> Result<bool, String> {
     Ok(false)
 }
 
-/// URL 校验：scheme 白名单 + 拒绝 userinfo + 私网拦截（可配置放开）
-pub fn validate_fetch_url(raw: &str, allow_private: bool) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(raw).map_err(|e| format!("URL 无效：{e}"))?;
+/// 已解析 URL 的校验：首跳与每一跳重定向共用同一套规则。
+fn check_url_parts(url: &reqwest::Url, allow_private: bool) -> Result<(), String> {
     match url.scheme() {
         "http" | "https" => {}
         other => return Err(format!("仅支持 http/https 链接（当前：{other}）")),
@@ -124,7 +122,52 @@ pub fn validate_fetch_url(raw: &str, allow_private: bool) -> Result<reqwest::Url
             "已拦截内网 / 本机地址：{host}（确需抓取请在 config.json 设置 fetch.allowPrivateNetwork: true）"
         ));
     }
+    Ok(())
+}
+
+/// URL 校验：scheme 白名单 + 拒绝 userinfo + 私网拦截（可配置放开）
+pub fn validate_fetch_url(raw: &str, allow_private: bool) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("URL 无效：{e}"))?;
+    check_url_parts(&url, allow_private)?;
     Ok(url)
+}
+
+/// 重定向被拒时的错误前缀：`map_err` 里据此从错误链还原用户可读的一句话
+const REDIRECT_BLOCKED: &str = "重定向目标被拒绝";
+
+/// 重定向策略：每一跳都复查（scheme / userinfo / 私网）。
+///
+/// reqwest 的 `Policy::limited` 只看跳数，落地前不重新校验目标地址；
+/// 公网页面 302 到 `127.0.0.1` 就能绕过首跳校验，故改为自定义策略。
+fn redirect_policy(allow_private: bool) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("重定向次数超过 {MAX_REDIRECTS} 跳，已停止"),
+            ));
+        }
+        match check_url_parts(attempt.url(), allow_private) {
+            Ok(()) => attempt.follow(),
+            Err(reason) => attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{REDIRECT_BLOCKED}：{reason}"),
+            )),
+        }
+    })
+}
+
+/// 从 reqwest 错误链里找出重定向被拒的原因（文本由 redirect_policy 写入）
+fn redirect_blocked_reason(err: &reqwest::Error) -> Option<String> {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if let Some(idx) = text.find(REDIRECT_BLOCKED) {
+            return Some(text[idx..].to_string());
+        }
+        source = cause.source();
+    }
+    None
 }
 
 /// 百分号解码（路径段）：非法序列原样保留，非 UTF-8 以替换字符回退
@@ -257,7 +300,8 @@ pub async fn fetch_url(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        // 逐跳复查，避免公网 302 到内网绕过首跳校验
+        .redirect(redirect_policy(allow_private))
         .user_agent(format!("my-editor/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| format!("初始化网络客户端失败: {e}"))?;
@@ -265,6 +309,8 @@ pub async fn fetch_url(
     let resp = client.get(url).send().await.map_err(|e| {
         if e.is_timeout() {
             format!("抓取超时（{FETCH_TIMEOUT_SECS}s）：目标站点未在限时内响应")
+        } else if let Some(reason) = redirect_blocked_reason(&e) {
+            reason
         } else if e.is_redirect() {
             format!("重定向次数超过 {MAX_REDIRECTS} 跳，已停止")
         } else {
@@ -379,6 +425,42 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/");
         assert!(validate_fetch_url(&url, false).is_err());
         assert!(validate_fetch_url(&url, true).is_ok());
+    }
+
+    /// 302 跳到本机 / 内网：首跳校验挡不住重定向目标，每一跳必须复查
+    #[test]
+    fn redirect_target_to_private_is_blocked() {
+        for raw in [
+            "http://127.0.0.1:8080/secret",
+            "http://localhost:8080/secret",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.5/",
+            "http://[::1]/",
+        ] {
+            let url = reqwest::Url::parse(raw).expect("测试 URL 应合法");
+            let err = check_url_parts(&url, false).expect_err(raw);
+            assert!(err.contains("内网"), "{raw} 的拒绝原因应说明内网：{err}");
+            assert!(
+                check_url_parts(&url, true).is_ok(),
+                "{raw} 在放开开关下应可跟随"
+            );
+        }
+    }
+
+    /// 重定向目标同样受 scheme / userinfo 规则约束
+    #[test]
+    fn redirect_target_keeps_scheme_and_userinfo_rules() {
+        let ftp = reqwest::Url::parse("ftp://93.184.216.34/x").unwrap();
+        assert!(check_url_parts(&ftp, true).is_err());
+        let userinfo = reqwest::Url::parse("https://user@93.184.216.34/").unwrap();
+        assert!(check_url_parts(&userinfo, false).is_err());
+    }
+
+    /// 公网地址之间的重定向仍可跟随（不误伤正常站点）
+    #[test]
+    fn redirect_target_to_public_is_allowed() {
+        let url = reqwest::Url::parse("https://93.184.216.34/next").unwrap();
+        assert!(check_url_parts(&url, false).is_ok());
     }
 
     #[test]
