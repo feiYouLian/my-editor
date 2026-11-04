@@ -242,6 +242,15 @@ impl Indexer {
     }
 }
 
+/// 打开文件并把读指针定位到已索引位置：续扫（后台补齐 / 外部增长后刷新）共用。
+/// 少了这一步会把文件头当成 `pos` 之后的内容重复扫描。
+fn reopen_at(path: &Path, pos: u64) -> Result<File, String> {
+    let mut file = File::open(path).map_err(|e| format!("读取失败: {e}"))?;
+    file.seek(SeekFrom::Start(pos))
+        .map_err(|e| format!("定位失败: {e}"))?;
+    Ok(file)
+}
+
 /// UTF-16 家族的换行符为双字节，字节级行扫描不成立，故虚拟视图不支持
 fn is_utf16_bom(head: &[u8]) -> bool {
     matches!(head, [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..])
@@ -342,12 +351,14 @@ fn open_large_file_blocking(
         let shared_bg = shared.clone();
         let id = path.clone();
         std::thread::spawn(move || {
-            let file = match File::open(&p) {
+            let mut idx = indexer;
+            // 初始扫描已读过 idx.pos 个字节：新句柄必须定位到同一位置，
+            // 否则会把文件头当成 pos 之后的内容再扫一遍——行数翻倍、锚点越过 EOF，
+            // 缩略图按字节摊桶时就会算出负区间（曾导致 usize 下溢 panic）。
+            idx.file = match reopen_at(&p, idx.pos) {
                 Ok(f) => f,
                 Err(_) => return,
             };
-            let mut idx = indexer;
-            idx.file = file;
             let mut last_emit = Instant::now();
             loop {
                 match idx.step() {
@@ -742,6 +753,36 @@ pub fn cancel_large_task(state: tauri::State<LargeState>) {
     }
 }
 
+/// 缩略图行密度：把锚点区间的行数摊到各桶。
+///
+/// 锚点偏移理论上不超过 `size`，但外部截断 / 续扫竞态下仍可能越界；
+/// 两端都夹到 `[0, buckets-1]`，避免 `b1 - b0` 的 usize 下溢。
+fn accumulate_minimap(anchors: &[(u64, usize)], size: u64, buckets: usize) -> Vec<u32> {
+    let mut out = vec![0u32; buckets];
+    if size == 0 {
+        return out;
+    }
+    let last = buckets - 1;
+    let scale = buckets as f64 / size as f64;
+    for pair in anchors.windows(2) {
+        let (p0, l0) = pair[0];
+        let (p1, l1) = pair[1];
+        let lines = l1.saturating_sub(l0);
+        if lines == 0 {
+            continue;
+        }
+        let b0 = ((p0 as f64 * scale) as usize).min(last);
+        let b1 = ((p1 as f64 * scale) as usize).min(last);
+        let (lo, hi) = if b0 <= b1 { (b0, b1) } else { (b1, b0) };
+        let span = hi - lo + 1;
+        let per = (lines / span).max(1) as u32;
+        for b in lo..=hi {
+            out[b] = out[b].saturating_add(per);
+        }
+    }
+    out
+}
+
 /// 缩略图行密度：按字节区间把行数摊到各桶
 #[tauri::command]
 pub fn large_minimap(
@@ -751,28 +792,11 @@ pub fn large_minimap(
 ) -> Result<Vec<u32>, String> {
     let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
     let entry = map.get(&id).ok_or("大文件会话已关闭")?;
-    let buckets = buckets.clamp(1, 2000);
-    let mut out = vec![0u32; buckets];
-    if entry.size == 0 {
-        return Ok(out);
-    }
-    let scale = buckets as f64 / entry.size as f64;
-    for pair in entry.anchors.windows(2) {
-        let (p0, l0) = pair[0];
-        let (p1, l1) = pair[1];
-        let lines = l1.saturating_sub(l0);
-        if lines == 0 {
-            continue;
-        }
-        let b0 = (p0 as f64 * scale) as usize;
-        let b1 = ((p1 as f64 * scale) as usize).min(buckets - 1);
-        let span = b1 - b0 + 1;
-        let per = (lines / span).max(1) as u32;
-        for b in b0..=b1 {
-            out[b] = out[b].saturating_add(per);
-        }
-    }
-    Ok(out)
+    Ok(accumulate_minimap(
+        &entry.anchors,
+        entry.size,
+        buckets.clamp(1, 2000),
+    ))
 }
 
 /// 切换解码编码：单字节家族（UTF-8 / GBK / Big5…）字节偏移不变，无需重建索引
@@ -900,10 +924,8 @@ fn refresh_large_blocking(
     };
 
     let target = new_size.min(indexed.saturating_add(MAX_REFRESH_BYTES));
-    let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
     // step() 顺序读文件：续扫必须先把句柄定位到已索引位置
-    file.seek(SeekFrom::Start(indexed))
-        .map_err(|e| format!("定位失败: {e}"))?;
+    let file = reopen_at(&path, indexed)?;
     let mut idx = Indexer::new(file, anchor_bytes);
     idx.anchors = anchors;
     idx.last_anchor = idx.anchors.last().map(|a| a.0).unwrap_or(0);
@@ -974,6 +996,33 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         file.write_all(content).unwrap();
         path
+    }
+
+    /// 续扫必须从已索引位置开始（少 seek 会把文件头再扫一遍）
+    #[test]
+    fn reopen_at_seeks_to_saved_offset() {
+        let path = temp_file("reopen_at", b"0123456789");
+        let mut file = reopen_at(&path, 4).expect("按偏移打开");
+        let mut rest = String::new();
+        file.read_to_string(&mut rest).expect("读取剩余内容");
+        assert_eq!(rest, "456789");
+    }
+
+    /// 锚点偏移越过文件末尾时不得下溢：整体夹到最后一个桶
+    #[test]
+    fn minimap_clamps_anchor_past_size() {
+        // 取 E2E 崩溃现场的量级：size 与末尾锚点
+        let anchors = [(0u64, 0usize), (21_702_706, 200_000), (21_768_324, 200_100)];
+        let out = accumulate_minimap(&anchors, 21_688_894, 240);
+        assert_eq!(out.len(), 240);
+        assert!(out[239] > 0);
+    }
+
+    /// 正常区间按行数均匀摊到各桶
+    #[test]
+    fn minimap_spreads_lines_across_buckets() {
+        let out = accumulate_minimap(&[(0, 0), (100, 100)], 100, 10);
+        assert_eq!(out.iter().sum::<u32>(), 100);
     }
 
     /// 跑完整索引，返回 Indexer 终态
