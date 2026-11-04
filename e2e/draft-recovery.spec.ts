@@ -1,9 +1,9 @@
 import { chromium, expect, test } from "@playwright/test";
 import type { ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killApp, launchApp, PORT, waitForPortFree } from "./helpers/app";
+import { killApp, launchApp, PORT, removeDir, waitForPortFree } from "./helpers/app";
 import type { Browser, Page } from "@playwright/test";
 
 let app: ChildProcess;
@@ -33,8 +33,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await browser?.close();
   if (app) killApp(app);
-  await rm(dir, { recursive: true, force: true });
-  await rm(profile, { recursive: true, force: true });
+  await removeDir(dir);
+  await removeDir(profile);
 });
 
 test("异常退出后重启：未保存内容从草稿恢复", async () => {

@@ -1,9 +1,9 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import type { ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killApp, launchApp, PORT } from "./helpers/app";
+import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
 
 let app: ChildProcess;
 let browser: Browser;
@@ -43,7 +43,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await browser?.close();
   if (app) killApp(app);
-  await rm(dir, { recursive: true, force: true });
+  await removeDir(dir);
 });
 
 test("Mermaid 正常渲染：占位块替换为 SVG，源码不留在页面上", async () => {

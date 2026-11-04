@@ -10,6 +10,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -100,6 +101,14 @@ export function killApp(child: ChildProcess, opts: { keepProfile?: boolean } = {
   } catch {
     // WebView2 可能还短暂占着文件：留给系统临时目录清理，用例不受影响
   }
+}
+
+/**
+ * 删除临时目录。应用刚退出时 Windows 可能还占着文件句柄（监听器 / Git 进程），
+ * 直接 rm 会 EBUSY，带重试等它释放。
+ */
+export async function removeDir(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 
 /** 进程是否还活着（用于断言「退出后无残留进程」） */

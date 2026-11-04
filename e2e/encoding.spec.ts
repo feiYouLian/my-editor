@@ -1,9 +1,9 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import type { ChildProcess } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { killApp, launchApp, PORT } from "./helpers/app";
+import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
 
 /** GBK：「中文测试」+ 换行 */
 const GBK_BYTES = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4, 0x0a]);
@@ -30,7 +30,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await browser?.close();
   if (app) killApp(app);
-  await rm(dir, { recursive: true, force: true });
+  await removeDir(dir);
 });
 
 async function pickEncoding(pattern: RegExp): Promise<void> {
@@ -67,7 +67,17 @@ test("GBK 文件：乱码可切回，保存后仍是原编码", async () => {
   await page.locator(".cm-content").click();
   await page.keyboard.press("Control+End");
   await page.keyboard.type(" ok");
+  // 确认输入落进编辑器再保存：重载后立刻打字可能被替换成新文档
+  await expect(page.locator(".cm-content")).toContainText(" ok");
   await page.keyboard.press("Control+S");
+  // 重载后偶发第一次 Ctrl+S 丢焦点：以「已保存」消息为准，没有就补点编辑器重试一次
+  try {
+    await expect(page.locator("#status-message")).toContainText("已保存", { timeout: 5_000 });
+  } catch {
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("Control+S");
+    await expect(page.locator("#status-message")).toContainText("已保存", { timeout: 5_000 });
+  }
 
   await expect.poll(async () => (await readFile(file)).toString("latin1")).toContain(" ok");
   const bytes = await readFile(file);

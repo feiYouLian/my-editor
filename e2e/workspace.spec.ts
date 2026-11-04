@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { killApp, launchApp, PORT } from "./helpers/app";
+import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
 
 let app: ChildProcess;
 let browser: Browser;
@@ -25,7 +25,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await browser?.close();
   if (app) killApp(app);
-  await rm(dir, { recursive: true, force: true });
+  await removeDir(dir);
 });
 
 test("命令行传目录：作为工作区打开并列出文件", async () => {
