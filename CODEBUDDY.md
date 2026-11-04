@@ -47,6 +47,7 @@ node scripts/check-ipc-contract.mjs && node scripts/scan-unsafe.mjs && node scri
 npm run typecheck:e2e
 # E2E 连真实应用（WebView2 CDP），先构建调试版：
 npm run tauri build -- --debug --no-bundle && npm run test:e2e
+# 调试构建支持 MY_EDITOR_CONFIG_DIR（E2E 用它隔离会话 / 草稿），正式构建忽略
 ```
 
 Rust 侧约束：
@@ -75,8 +76,8 @@ Rust 侧约束：
   新增 IPC 参数契约 / 生产 panic 点 / DOM 注入面三道静态门禁（`scripts/`，已接入 `ci.yml`）；
   验收基线整理为 `docs/ACCEPTANCE.md`（自动 / 半自动 / 人工三层，与批次一一对应）
 - 0.7.0 计划 S2 进行中（2026-11-04）：E2E 基座已接入（调试版应用 + WebView2 CDP + Playwright，
-  `e2e/` + `playwright.config.ts`，已接入启动基线、打开/保存、大文件视图、Markdown 双栏 4 条）；
-  渲染层测试覆盖 `searchView` / `quickOpen` / `tabsBar` / `gitView`；其余 8 条关键路径待补
+  `e2e/` + `playwright.config.ts`，7 条用例覆盖启动、打开/保存、大文件视图、Markdown 双栏、Mermaid、终端）；
+  渲染层测试覆盖 `searchView` / `quickOpen` / `tabsBar` / `gitView`；其余 6 条关键路径待补
 - **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
-- 未达项：E2E 已接入 4 条，其余 8 条关键路径未补；自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名
+- 未达项：E2E 已接入 7 条用例覆盖 6 条路径，其余 6 条关键路径未补；自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名

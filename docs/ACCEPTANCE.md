@@ -18,7 +18,7 @@
 | A-5 | 生产代码 panic 点 | `node scripts/scan-unsafe.mjs` | 输出「生产代码 panic 点: 0」 | 自动 | S1 | |
 | A-6 | DOM 注入面 | `node scripts/scan-innerhtml.mjs` | S1–S2：`≤ 基线 14`；S3 起：`= 0` | 自动 | S1 / S3 | |
 | A-7 | 默认值契约 | 随 A-2 / A-3（`defaults.contract.test.ts`、`defaults_match_frontend_contract`） | 两侧同时通过；新增键只改一端即失败 | 自动 | S1 | |
-| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 12 条全绿；当前已接入启动基线、打开/保存、大文件视图、Markdown 双栏 4 条 | 自动 | S2 | |
+| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 12 条全绿；当前已接入 7 条用例覆盖 6 条路径（启动基线、打开/保存、大文件视图、Markdown 双栏、Mermaid 正常/降级、终端多会话） | 自动 | S2 | |
 | A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | `searchView` / `quickOpen` / `tabsBar` / `gitView` 共 13 条断言 | 自动 | S2 | |
 | A-10 | 空白错误 | `git diff --check` | 无输出、退出码 0 | 自动 | S0 | |
 

@@ -49,6 +49,9 @@ npm run tauri build -- --debug --no-bundle
 npm run test:e2e
 ```
 
+E2E 每次启动都用独立的 `MY_EDITOR_CONFIG_DIR`（仅调试构建生效），测试标签不会进真实
+`session.json`；新增用例请继续走 `e2e/helpers/app.ts`，不要直接 `spawn` 应用。
+
 改动碰到 `src-tauri/tauri.conf.json` 的 `bundle` 时额外跑一次 `npm run tauri build`：
 打包失败（尤其 MSI/WiX 的代码页问题）只有真打包才能发现，而 CI 要几分钟编译后才报。
 
