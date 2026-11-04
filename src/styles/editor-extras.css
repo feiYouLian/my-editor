@@ -130,6 +130,11 @@
   font-size: 12px;
 }
 
+/* 待渲染期间源码只作为数据存在，不显示（失败后由 .md-mermaid-error + pre 接管） */
+.preview-content .md-mermaid-src {
+  display: none;
+}
+
 .preview-content .md-mermaid.failed {
   text-align: left;
   border-color: #d1242f;

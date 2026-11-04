@@ -153,9 +153,12 @@ export async function loadMarkdownPipeline(host: MarkdownPipelineHost): Promise<
     if (lang === "mermaid") {
       const src = md.utils.escapeHtml(token.content);
       const line = token.map ? token.map[0] + 1 : 1;
+      // 源码放子节点而不是 data-mermaid 属性：DOMPurify 的 SAFE_FOR_XML 会丢掉
+      // 含 `-->` 的属性值（图里最常见的箭头），属性形式会让源码在消毒后消失。
       // data-line 与其它块保持一致：双栏滚动联动依赖它
       return (
-        `<div class="md-mermaid" data-line="${line}" data-mermaid="${src}">` +
+        `<div class="md-mermaid" data-line="${line}">` +
+        `<pre class="md-mermaid-src">${src}</pre>` +
         `<div class="md-mermaid-pending">Mermaid 图表（渲染中…）</div></div>`
       );
     }

@@ -76,7 +76,8 @@ export async function hydrateMermaid(
   for (const block of blocks) {
     // 已渲染 / 已失败的块在增量渲染中被复用：不要重复跑 mermaid
     if (block.classList.contains("rendered") || block.classList.contains("failed")) continue;
-    const source = block.dataset.mermaid ?? "";
+    // 源码在子节点里（消毒后仍保留）；属性形式会被 DOMPurify 丢掉，见 markdownPipeline
+    const source = block.querySelector(".md-mermaid-src")?.textContent ?? "";
     if (!source.trim()) continue;
     if (!seen.has(source)) {
       seen.add(source);
@@ -95,7 +96,8 @@ export async function hydrateMermaid(
   try {
     api = await loadMermaid();
   } catch (e) {
-    failAll(pending.map((item) => item.block), `Mermaid 组件加载失败：${String(e instanceof Error ? e.message : e).split("\n")[0]}`);
+    const reason = `Mermaid 组件加载失败：${String(e instanceof Error ? e.message : e).split("\n")[0]}`;
+    for (const item of pending) fail(item.block, item.source, reason);
     return;
   }
   for (const { block, source } of pending) {
@@ -110,10 +112,6 @@ export async function hydrateMermaid(
       fail(block, source, String(e instanceof Error ? e.message : e).split("\n")[0]);
     }
   }
-}
-
-function failAll(blocks: HTMLElement[], reason: string): void {
-  for (const block of blocks) fail(block, block.dataset.mermaid ?? "", reason);
 }
 
 /** 失败降级：展示源码 + 原因（保留"能看到图定义"的可读性） */
