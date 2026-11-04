@@ -11,6 +11,7 @@
  */
 
 import type { EditorView } from "@codemirror/view";
+import { replaceHtml } from "../core/html";
 import { pathKindOf as kindOf } from "./preview/pathKind";
 import {
   loadMarkdownPipeline,
@@ -131,8 +132,10 @@ export class PreviewHost {
     /** 图片标签的自然宽高回报（状态栏展示用） */
     private onImageSize?: (tabId: string, width: number, height: number) => void,
   ) {
-    this.pane.innerHTML = '<div class="preview-content"></div>';
-    this.contentEl = this.pane.querySelector<HTMLElement>(".preview-content")!;
+    const content = document.createElement("div");
+    content.className = "preview-content";
+    this.pane.replaceChildren(content);
+    this.contentEl = content;
     // 不阻止默认滚动：passive 避免浏览器为等待监听器而拖慢滚动
     this.contentEl.addEventListener("scroll", () => this.onPreviewScroll(), { passive: true });
     this.findBar = new PreviewFindBar(this.pane, () => this.findScope());
@@ -521,8 +524,10 @@ export class PreviewHost {
   ): Promise<void> {
     if (this.isStale(tab, seq)) return;
     if (tab.size > PREVIEW_MAX_BYTES) {
-      this.contentEl.innerHTML =
-        '<div class="preview-note">文件过大（超过 20MB），预览已禁用</div>';
+      const note = document.createElement("div");
+      note.className = "preview-note";
+      note.textContent = "文件过大（超过 20MB），预览已禁用";
+      this.contentEl.replaceChildren(note);
       this.markerCache = null;
       this.renderedTabId = null;
       this.renderedSource = null;
@@ -579,7 +584,7 @@ export class PreviewHost {
           continue;
         }
         const wrapper = document.createElement("div");
-        wrapper.innerHTML = block.html;
+        replaceHtml(wrapper, block.html);
         // 每个块应只产出一个根元素；出现多个根时退回整篇替换，避免块与节点错位
         if (wrapper.childElementCount !== 1) {
           canPatch = false;
@@ -622,7 +627,7 @@ export class PreviewHost {
         // 兜底：整篇重建（极少触发，例如某块产出了多个根元素）
         const holder = document.createElement("div");
         // 部分块可能走了复用（没有 html），这里必须整篇重新渲染
-        holder.innerHTML = this.md!.render(tab.content);
+        replaceHtml(holder, this.md!.render(tab.content));
         await inlineLocalImages(holder, tab.path);
         if (this.isStale(tab, seq)) return;
         this.dompurify!.sanitize(holder, { IN_PLACE: true });
@@ -659,9 +664,10 @@ export class PreviewHost {
       }
       // sandbox 仅放行 allow-same-origin 以便把右键事件转回宿主；
       // 未开启 allow-scripts，HTML 内脚本仍不执行
-      this.contentEl.innerHTML =
-        '<iframe class="preview-iframe" sandbox="allow-same-origin"></iframe>';
-      const iframe = this.contentEl.querySelector("iframe")!;
+      const iframe = document.createElement("iframe");
+      iframe.className = "preview-iframe";
+      iframe.setAttribute("sandbox", "allow-same-origin");
+      this.contentEl.replaceChildren(iframe);
       iframe.srcdoc = tab.content;
       iframe.addEventListener("load", () => {
         this.bindIframeContextMenu(iframe);
@@ -740,7 +746,7 @@ export class PreviewHost {
     if (kindOf(tab.path) === "md") {
       await this.ensureMarkdown();
       const holder = document.createElement("div");
-      holder.innerHTML = this.md!.render(tab.content);
+      replaceHtml(holder, this.md!.render(tab.content));
       // 导出文件可能被保存到任意目录：本地图片转 data URL，保证打开即可见
       await inlineLocalImages(holder, tab.path, EXPORT_IMAGE_MAX_BYTES);
       // 图表导出为静态 SVG：对方环境没有 mermaid 也能正常显示

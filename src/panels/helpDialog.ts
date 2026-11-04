@@ -1,4 +1,5 @@
 import { firstLine } from "../core/errors";
+import { replaceHtml } from "../core/html";
 
 /**
  * 帮助对话框：用户指南 / 常见问题。
@@ -122,7 +123,7 @@ export function showHelpDialog(topic: HelpTopic = "guide"): void {
     void Promise.all([loadRenderer(), loadSource(next)])
       .then(([{ renderer, sanitize }, source]) => {
         if (current !== seq) return;
-        content.innerHTML = sanitize(renderer.render(source));
+        replaceHtml(content, sanitize(renderer.render(source)));
         content.scrollTop = 0;
       })
       .catch((e: unknown) => {

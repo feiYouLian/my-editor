@@ -17,7 +17,7 @@ import {
 import { firstLine } from "../core/errors";
 import { basenameOf } from "../core/paths";
 import { confirmAction } from "../ui/dialogs";
-import { buttonRow, checkRow, numberRow, section, textRow } from "../ui/formControls";
+import { buttonRow, checkRow, numberRow, section, selectRow, textRow } from "../ui/formControls";
 import {
   saveExternal,
   saveSettings,
@@ -295,16 +295,28 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
   );
   main.append(searchSection.el);
 
-  const terminalSection = section("终端", "Shell 在下次新建终端时生效。");
+  const terminalSection = section(
+    "终端",
+    "Shell 在下次新建终端时生效；只支持列表内的内置 shell（后端会拒绝其它程序名）。",
+  );
+  // 只暴露后端支持的 shell：自由填程序名等于给脚本一个任意进程启动器
+  const shellOptions: { value: string; label: string }[] = [
+    { value: "", label: "自动检测" },
+    { value: "pwsh", label: "PowerShell 7（pwsh）" },
+    { value: "powershell", label: "Windows PowerShell" },
+    { value: "cmd", label: "cmd.exe" },
+    { value: "bash", label: "bash" },
+    { value: "zsh", label: "zsh" },
+    { value: "fish", label: "fish" },
+    { value: "sh", label: "sh" },
+  ];
+  if (cfg.terminal.shell && !shellOptions.some((o) => o.value === cfg.terminal.shell)) {
+    shellOptions.push({ value: cfg.terminal.shell, label: `${cfg.terminal.shell}（自定义）` });
+  }
   terminalSection.body.append(
-    textRow(
-      "Shell 命令（空 = 自动检测）",
-      cfg.terminal.shell,
-      "如 pwsh / powershell / bash",
-      (value) => {
-        saveSettings({ terminal: { ...getConfig().terminal, shell: value } });
-      },
-    ),
+    selectRow("Shell（空 = 自动检测）", shellOptions, cfg.terminal.shell, (value) => {
+      saveSettings({ terminal: { ...getConfig().terminal, shell: value } });
+    }),
   );
   main.append(terminalSection.el);
 }

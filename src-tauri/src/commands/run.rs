@@ -262,11 +262,36 @@ fn quote_posix(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
+/// cmd.exe 的引号规则：双引号分组，内部的 `"` 用 `""` 转义
+/// （CommandLineToArgvW 对 `"a""b"` 的解析结果是 `a"b`）。
+fn quote_cmd(arg: &str) -> String {
+    format!("\"{}\"", arg.replace('"', "\"\""))
+}
+
 /// 把命令描述渲染成可写入 shell 的一行命令。
-/// PowerShell 用 `& 'prog' 'arg'`；POSIX 用 `'prog' 'arg'`；cmd.exe 暂不支持。
+/// PowerShell 用 `& 'prog' 'arg'`；POSIX 用 `'prog' 'arg'`；cmd 用 `set "K=V" && "prog" "arg"`。
 pub(crate) fn render_shell_line(kind: ShellKind, spec: &CommandSpec) -> Result<String, String> {
     match kind {
-        ShellKind::Cmd => Err("cmd.exe 暂不支持在终端运行，请改用 PowerShell".to_string()),
+        ShellKind::Cmd => {
+            let mut parts: Vec<String> = Vec::new();
+            for (key, value) in &spec.envs {
+                // `set "K=V"` 是 cmd 里唯一可靠的赋值形式（值含空格 / & 不必再转义）；
+                // 但值里的双引号无法在 set 内可靠转义，直接拒绝好过拼出语义不明的命令。
+                if value.contains('"') {
+                    return Err(format!(
+                        "环境变量 {key} 的值包含双引号，cmd.exe 无法可靠转义；请改用 PowerShell"
+                    ));
+                }
+                parts.push(format!("set \"{key}={value}\""));
+            }
+            let mut cmd = quote_cmd(&spec.program);
+            for arg in &spec.args {
+                cmd.push(' ');
+                cmd.push_str(&quote_cmd(arg));
+            }
+            parts.push(cmd);
+            Ok(parts.join(" && "))
+        }
         ShellKind::PowerShell => {
             let mut parts: Vec<String> = Vec::new();
             for (key, value) in &spec.envs {
@@ -844,13 +869,27 @@ mod tests {
     }
 
     #[test]
-    fn cmd_shell_is_rejected_for_terminal_run() {
+    fn cmd_line_quotes_args_and_envs() {
+        let spec = CommandSpec {
+            program: "C:\\Program Files\\node.exe".into(),
+            args: vec!["a b.js".into(), "say \"hi\"".into()],
+            envs: vec![("NODE_ENV".into(), "dev".into())],
+        };
+        assert_eq!(
+            render_shell_line(ShellKind::Cmd, &spec).unwrap(),
+            "set \"NODE_ENV=dev\" && \"C:\\Program Files\\node.exe\" \"a b.js\" \"say \"\"hi\"\"\""
+        );
+    }
+
+    #[test]
+    fn cmd_rejects_unquotable_env_value() {
         let spec = CommandSpec {
             program: "python".into(),
-            args: vec!["a.py".into()],
-            envs: Vec::new(),
+            args: Vec::new(),
+            envs: vec![("BAD".into(), "a\"b".into())],
         };
-        assert!(render_shell_line(ShellKind::Cmd, &spec).is_err());
+        let err = render_shell_line(ShellKind::Cmd, &spec).unwrap_err();
+        assert!(err.contains("双引号"));
     }
 
     #[test]

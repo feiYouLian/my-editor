@@ -9,6 +9,7 @@
  */
 
 import { placeMenu } from "../ui/menu";
+import { replaceSvg } from "../core/html";
 import { bindOpenGesture } from "../ui/openGesture";
 import { getConfig } from "../config/settings";
 
@@ -439,9 +440,12 @@ export class GitView {
       action.title = staged ? "取消暂存" : "暂存";
       action.setAttribute("aria-label", action.title);
       action.disabled = this.busy;
-      action.innerHTML = staged
-        ? '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
-        : '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>';
+      replaceSvg(
+        action,
+        staged
+          ? '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
+          : '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>',
+      );
       action.addEventListener("click", (e) => {
         e.stopPropagation();
         if (staged) this.deps.onUnstage([entry]);

@@ -176,7 +176,8 @@ function prepareForMarkdown(doc: Document): void {
     if (cells.length === 0 || cells.some((c) => c.tagName.toLowerCase() === "th")) return;
     cells.forEach((c) => {
       const th = doc.createElement("th");
-      th.innerHTML = c.innerHTML;
+      // 同一文档内搬子节点：不经过 innerHTML，内容里的标签按节点原样保留
+      th.append(...Array.from(c.childNodes, (node) => node.cloneNode(true)));
       c.replaceWith(th);
     });
     const thead = doc.createElement("thead");

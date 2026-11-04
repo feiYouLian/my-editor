@@ -1,3 +1,5 @@
+import { replaceSvg } from "../../core/html";
+
 /**
  * Mermaid 图表渲染（懒加载）。
  *
@@ -83,7 +85,7 @@ export async function hydrateMermaid(
       seen.add(source);
       const cached = svgCache.get(source);
       if (cached) {
-        block.innerHTML = cached;
+        replaceSvg(block, cached);
         block.classList.add("rendered");
         continue;
       }
@@ -105,7 +107,7 @@ export async function hydrateMermaid(
       renderSeq += 1;
       const { svg } = await api.render(`md-mermaid-${Date.now()}-${renderSeq}`, source);
       const safe = sanitize(svg);
-      block.innerHTML = safe;
+      replaceSvg(block, safe);
       block.classList.add("rendered");
       cacheSvg(source, safe);
     } catch (e) {

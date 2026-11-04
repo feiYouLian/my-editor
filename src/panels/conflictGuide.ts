@@ -63,11 +63,34 @@ export class ConflictGuideDialog {
 
     const steps = document.createElement("div");
     steps.className = "git-conflict-steps";
-    steps.innerHTML =
-      "<p>1. 打开文件，处理 <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> / <code>=======</code> / <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code> 标记；</p>" +
-      "<p>2. 对每个已解决文件执行 <code>git add &lt;文件&gt;</code>（也可在源代码管理里点「暂存」）；</p>" +
-      "<p>3. 全部冲突文件标记为已解决后，填写提交信息并提交。</p>" +
-      `<p class="git-conflict-root">仓库：<code>${escapeHtml(root)}</code></p>`;
+    // 步骤文案全程用 DOM 构建：仓库路径走 textContent，天然转义，无需拼 HTML
+    const code = (text: string): HTMLElement => {
+      const el = document.createElement("code");
+      el.textContent = text;
+      return el;
+    };
+    const para = (...parts: (string | Node)[]): HTMLParagraphElement => {
+      const p = document.createElement("p");
+      p.append(...parts);
+      return p;
+    };
+    steps.append(
+      para(
+        "1. 打开文件，处理 ",
+        code("<<<<<<<"),
+        " / ",
+        code("======="),
+        " / ",
+        code(">>>>>>>"),
+        " 标记；",
+      ),
+      para("2. 对每个已解决文件执行 ", code("git add <文件>"), "（也可在源代码管理里点「暂存」）；"),
+      para("3. 全部冲突文件标记为已解决后，填写提交信息并提交。"),
+    );
+    const rootLine = document.createElement("p");
+    rootLine.className = "git-conflict-root";
+    rootLine.append("仓库：", code(root));
+    steps.append(rootLine);
 
     const actions = document.createElement("div");
     actions.className = "dialog-actions";
@@ -98,12 +121,4 @@ export class ConflictGuideDialog {
     this.backdrop?.remove();
     this.backdrop = null;
   }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

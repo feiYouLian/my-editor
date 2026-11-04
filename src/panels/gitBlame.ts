@@ -64,8 +64,11 @@ export class GitBlameDialog {
 
     const columns = document.createElement("div");
     columns.className = "git-blame-columns";
-    columns.innerHTML =
-      "<span>行</span><span>提交</span><span>作者</span><span>日期</span><span>内容</span>";
+    for (const label of ["行", "提交", "作者", "日期", "内容"]) {
+      const span = document.createElement("span");
+      span.textContent = label;
+      columns.append(span);
+    }
 
     const list = document.createElement("div");
     list.className = "git-blame-list";

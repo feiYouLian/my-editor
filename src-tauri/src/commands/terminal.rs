@@ -115,9 +115,39 @@ fn find_pwsh() -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
+/// 支持的 shell（按可执行文件名判定）。
+/// 出于安全考虑只认内置列表：`terminal.shell` 若可写任意程序，
+/// 等同于给了脚本一个「任意进程启动器」。
+const SUPPORTED_SHELLS: &[&str] = &[
+    "pwsh",
+    "pwsh.exe",
+    "powershell",
+    "powershell.exe",
+    "cmd",
+    "cmd.exe",
+    "bash",
+    "zsh",
+    "fish",
+    "sh",
+];
+
+fn is_supported_shell(requested: &str) -> bool {
+    let name = Path::new(requested)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    SUPPORTED_SHELLS.contains(&name.as_str())
+}
+
 /// shell 与启动参数：空串 = 自动检测
-fn resolve_shell(requested: &str) -> (String, Vec<String>, String) {
+fn resolve_shell(requested: &str) -> Result<(String, Vec<String>, String), String> {
     let requested = requested.trim();
+    if !requested.is_empty() && !is_supported_shell(requested) {
+        return Err(format!(
+            "不支持的 Shell：{requested}（可选 pwsh / powershell / cmd / bash / zsh / fish / sh）"
+        ));
+    }
     #[cfg(windows)]
     {
         let program = if !requested.is_empty() {
@@ -140,7 +170,7 @@ fn resolve_shell(requested: &str) -> (String, Vec<String>, String) {
             .file_stem()
             .map(|s| s.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_else(|| program.clone());
-        (program, args, label)
+        Ok((program, args, label))
     }
     #[cfg(not(windows))]
     {
@@ -153,7 +183,7 @@ fn resolve_shell(requested: &str) -> (String, Vec<String>, String) {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| program.clone());
-        (program, Vec::new(), label)
+        Ok((program, Vec::new(), label))
     }
 }
 
@@ -167,7 +197,7 @@ pub fn terminal_open(
     cols: u16,
     rows: u16,
 ) -> Result<TerminalInfo, String> {
-    let (program, args, shell_label) = resolve_shell(&shell);
+    let (program, args, shell_label) = resolve_shell(&shell)?;
     {
         let guard = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if guard.len() >= MAX_SESSIONS {
@@ -468,7 +498,7 @@ mod tests {
 
     #[test]
     fn resolve_shell_never_returns_empty_program() {
-        let (program, args, label) = resolve_shell("");
+        let (program, args, label) = resolve_shell("").expect("默认 shell 应可用");
         assert!(!program.trim().is_empty());
         assert!(!label.is_empty());
         // Windows 默认 PowerShell 会带 UTF-8 初始化参数
@@ -477,6 +507,15 @@ mod tests {
             assert!(args.iter().any(|a| a == "-NoLogo"));
             assert!(args.iter().any(|a| a.contains("UTF8Encoding")));
         }
+    }
+
+    /// 只接受内置 shell 列表：任意程序名不得成为终端进程
+    #[test]
+    fn unsupported_shell_is_rejected() {
+        assert!(resolve_shell("calc.exe").is_err());
+        assert!(resolve_shell("..\\evil.exe").is_err());
+        assert!(resolve_shell("C:\\Windows\\System32\\cmd.exe").is_ok());
+        assert!(resolve_shell("pwsh").is_ok());
     }
 
     #[test]

@@ -72,13 +72,15 @@ Rust 侧约束：
 - 文件关联改为应用内显式开关（2026-11-04）：安装包不再声明 `bundle.fileAssociations`；
   设置 →「文件与会话 → Windows 系统集成」只向 HKCU 登记「打开方式」候选，不改 `.ext` 默认值（见 `commands/association.rs`）；
   旧版安装器留下的默认关联可在此处「一键恢复」（有 `_backup` 的恢复原程序，无备份的去掉默认）
-- 测试基线（2026-11-04）：`npm test` 131 项 + 渲染层 13 项（`vitest.render.config.ts`）、`cargo test --lib` 189 项（+2 条默认 ignore 的真实注册表往返）
+- 测试基线（2026-11-04）：`npm test` 131 项 + 渲染层 13 项（`vitest.render.config.ts`）、`cargo test --lib` 195 项（+2 条默认 ignore 的真实注册表往返）
 - 0.7.0 计划 S0–S1 完成（2026-11-04）：起始标签 `v0.6.3-baseline`、工作分支 `dev/0.7.0`；
   新增 IPC 参数契约 / 生产 panic 点 / DOM 注入面三道静态门禁（`scripts/`，已接入 `ci.yml`）；
   验收基线整理为 `docs/ACCEPTANCE.md`（自动 / 半自动 / 人工三层，与批次一一对应）
 - 0.7.0 计划 S2 进行中（2026-11-04）：E2E 基座已接入（调试版应用 + WebView2 CDP + Playwright，
   `e2e/` + `playwright.config.ts`，15 条用例覆盖 12 条关键路径与启动基线（路径 2 仅覆盖保存保持原编码）；
   渲染层测试覆盖 `searchView` / `quickOpen` / `tabsBar` / `gitView`
+- 0.7.0 计划 S3 完成（2026-11-04，标签 `v0.7.0-s3`）：release 关闭 devtools、
+  抓取重定向逐跳复查、配置目录写保护、DOM 注入面归零、终端 shell 收敛到内置列表
 - **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
 - 未达项：E2E 15 条用例覆盖全部 12 条关键路径，路径 2 的「另存为转码」仍受原生对话框限制；

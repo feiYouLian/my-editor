@@ -7,6 +7,7 @@ import {
   parseCron,
   type CronFields,
 } from "../core/cron";
+import { replaceHtml } from "../core/html";
 
 /**
  * Cron 解析 / 生成对话框（命令面板入口）：
@@ -157,7 +158,7 @@ export class CronPanel {
     const help = document.createElement("details");
     help.className = "cron-help";
     help.open = true;
-    help.innerHTML = HELP_HTML;
+    replaceHtml(help, HELP_HTML);
     dialog.append(help);
 
     const actions = document.createElement("div");
