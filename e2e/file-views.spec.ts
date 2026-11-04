@@ -51,6 +51,25 @@ test("超过 20MB 的文件进入只读虚拟视图", async () => {
   await expect(page.locator("#status-readonly")).toContainText("只读");
 });
 
+test("大文件视图：过滤命中，清除后可按行号跳转", async () => {
+  await page.locator(".tab", { hasText: "app.log" }).click();
+  await expect(page.locator("#large-view")).toBeVisible();
+
+  const filter = page.getByPlaceholder("过滤行（留空显示全部）");
+  await filter.fill("line 150000 ");
+  await filter.press("Enter");
+  await expect(page.locator(".lv-status")).toContainText("命中 1 行", { timeout: 20_000 });
+  await expect(page.locator(".lv-rows")).toContainText("line 150000", { timeout: 20_000 });
+
+  // 清除过滤 → 回到全量行；再按行号定位
+  await page.locator("#large-view .lv-btn", { hasText: "清除" }).click();
+  await expect(page.locator(".lv-status")).not.toContainText("命中");
+
+  await page.locator(".lv-goto").fill("1234");
+  await page.locator("#large-view .lv-btn", { hasText: "跳转" }).click();
+  await expect(page.locator(".lv-no").filter({ hasText: /^1234$/ })).toBeVisible();
+});
+
 test("Markdown 双栏：预览渲染并跟随编辑区滚动", async () => {
   await page.locator(".tab", { hasText: "notes.md" }).click();
   await page.locator('#preview-modes button[data-mode="split"]').click();

@@ -32,7 +32,7 @@ test.afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("Code Run：运行中可停止，进程树被终止", async () => {
+test("Code Run：运行中可停止，超时按配置终止", async () => {
   await expect(page.locator(".tab.active")).toContainText("loop.js");
   await expect(page.locator("#btn-run")).toBeEnabled();
 
@@ -43,5 +43,16 @@ test("Code Run：运行中可停止，进程树被终止", async () => {
 
   await page.locator("#btn-run").click();
   await expect(page.locator(".run-status")).toContainText("已停止", { timeout: 15_000 });
+  await expect(page.locator("#btn-run")).toContainText("运行");
+
+  // 运行配置里把超时改成 1 秒，再跑同一脚本：应由后端按超时终止并给出原因
+  await page.locator('#run-output button[title^="运行配置"]').click();
+  const dialog = page.locator('.dialog[aria-label="运行配置"]');
+  await expect(dialog).toBeVisible();
+  await dialog.locator(".dialog-input").first().fill("1");
+  await dialog.locator("button.primary").click();
+
+  await page.locator("#btn-run").click();
+  await expect(page.locator(".run-status")).toContainText("已超时终止（1s）", { timeout: 15_000 });
   await expect(page.locator("#btn-run")).toContainText("运行");
 });
