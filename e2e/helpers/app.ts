@@ -23,7 +23,12 @@ async function cdpReady(): Promise<boolean> {
   }
 }
 
-export async function launchApp(): Promise<ChildProcess> {
+/**
+ * 启动应用。args 与「用 my-editor 打开 / 把文件拖到 exe 上」同一条路径：
+ * 文件路径经 cli.rs 入队，前端就绪后统一打开；原生文件对话框不在 WebView 内，
+ * CDP 点不到，需要选文件时一律走这条入口。
+ */
+export async function launchApp(args: string[] = []): Promise<ChildProcess> {
   if (!existsSync(EXE)) {
     throw new Error(
       `未找到调试版应用：${EXE}\n先执行 npm run tauri build -- --debug --no-bundle`,
@@ -33,7 +38,7 @@ export async function launchApp(): Promise<ChildProcess> {
   if (await cdpReady()) {
     throw new Error(`调试端口 ${PORT} 已被占用：先结束残留的 my-editor 进程再跑 E2E`);
   }
-  const child = spawn(EXE, [], {
+  const child = spawn(EXE, args, {
     env: {
       ...process.env,
       // WebView2 读取该变量并打开 CDP 端口；只影响调试，不影响应用行为
