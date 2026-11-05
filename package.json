@@ -13,6 +13,7 @@
     "test:node": "vitest run",
     "test:render": "vitest run --config vitest.render.config.ts",
     "test:e2e": "playwright test",
+    "build:e2e": "node scripts/build-debug-e2e.mjs",
     "typecheck:e2e": "tsc -p tsconfig.e2e.json --noEmit",
     "test:watch": "vitest",
     "bump": "node scripts/bump-version.mjs",
@@ -69,5 +70,8 @@
     "typescript": "^5.6",
     "vite": "^6",
     "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

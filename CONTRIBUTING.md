@@ -45,7 +45,7 @@ push / PR 在 Windows runner 上自动跑。
 E2E 连的是真实应用（WebView2 CDP），先构建调试版再跑：
 
 ```bash
-npm run tauri build -- --debug --no-bundle
+npm run build:e2e
 npm run test:e2e
 ```
 

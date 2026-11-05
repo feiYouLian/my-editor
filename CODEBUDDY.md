@@ -46,7 +46,7 @@ npm test && npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --l
 node scripts/check-ipc-contract.mjs && node scripts/scan-unsafe.mjs && node scripts/scan-innerhtml.mjs
 npm run typecheck:e2e
 # E2E 连真实应用（WebView2 CDP），先构建调试版：
-npm run tauri build -- --debug --no-bundle && npm run test:e2e
+npm run build:e2e && npm run test:e2e
 # 调试构建支持 MY_EDITOR_CONFIG_DIR（E2E 用它隔离会话 / 草稿；WebView2 数据目录同样按用例隔离），
 # 正式构建忽略；命令行传目录 = 打开工作区（my-editor.exe D:\project）
 ```

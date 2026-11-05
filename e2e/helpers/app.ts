@@ -9,7 +9,7 @@
  * 日志都落在临时目录，既不把测试标签写进真实 session.json，也不会跨用例互相污染。
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ export async function launchApp(
 ): Promise<ChildProcess> {
   if (!existsSync(EXE)) {
     throw new Error(
-      `未找到调试版应用：${EXE}\n先执行 npm run tauri build -- --debug --no-bundle`,
+      `未找到调试版应用：${EXE}\n先执行 npm run build:e2e（注入 CDP 端口并构建调试版）`,
     );
   }
   // 单实例插件会把新进程转交给已有窗口：端口已占用时必须先清理，否则测的是上一次的实例
@@ -50,20 +50,74 @@ export async function launchApp(
     throw new Error(`调试端口 ${PORT} 已被占用：先结束残留的 my-editor 进程再跑 E2E`);
   }
   const configDir = opts.configDir ?? mkdtempSync(join(tmpdir(), "my-editor-e2e-profile-"));
+  const out: string[] = [];
+  const err: string[] = [];
   const child = spawn(EXE, args, {
     env: {
       ...process.env,
       MY_EDITOR_CONFIG_DIR: configDir,
       // WebView2 的 localStorage / sessionStorage 也按用例隔离（默认是所有实例共用）
       WEBVIEW2_USER_DATA_FOLDER: join(configDir, "webview"),
-      // WebView2 读取该变量并打开 CDP 端口；只影响调试，不影响应用行为
+      // 双保险：窗口参数里已烧入端口（scripts/build-debug-e2e.mjs），这里再走环境变量通道
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`,
     },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  child.stdout?.on("data", (d: Buffer) => pushTail(out, d));
+  child.stderr?.on("data", (d: Buffer) => pushTail(err, d));
   if (child.pid !== undefined) profiles.set(child.pid, configDir);
-  await waitForCdp();
+  try {
+    await waitForCdp();
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\n${await diagnose(child, configDir, out, err)}`);
+  }
   return child;
+}
+
+/** 只保留末尾几 KB，避免诊断信息本身撑爆错误输出 */
+function pushTail(buf: string[], chunk: Buffer): void {
+  buf.push(chunk.toString("utf8"));
+  while (buf.join("").length > 4096) buf.shift();
+}
+
+/** CDP 起不来时给出可行动的现场信息（进程状态 / WebView2 运行时 / 输出 / 应用日志） */
+async function diagnose(
+  child: ChildProcess,
+  configDir: string,
+  out: string[],
+  err: string[],
+): Promise<string> {
+  const lines: string[] = ["—— 诊断信息 ——"];
+  lines.push(
+    child.exitCode === null
+      ? "进程状态: 仍在运行（WebView 未开调试端口）"
+      : `进程状态: 已退出 code=${child.exitCode} signal=${child.signalCode}`,
+  );
+  const wv2 = spawnSync(
+    "reg",
+    [
+      "query",
+      "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+      "/v",
+      "pv",
+    ],
+    { encoding: "utf8" },
+  );
+  lines.push(
+    wv2.status === 0
+      ? `WebView2 运行时: ${wv2.stdout.trim().split(/\r?\n/).pop()}`
+      : "WebView2 运行时: 注册表无记录（可能未安装）",
+  );
+  if (out.length) lines.push(`stdout:\n${out.join("")}`);
+  if (err.length) lines.push(`stderr:\n${err.join("")}`);
+  const log = join(configDir, "logs", "app.log");
+  try {
+    const text = readFileSync(log, "utf8");
+    lines.push(`app.log 末尾:\n${text.split(/\r?\n/).slice(-15).join("\n")}`);
+  } catch {
+    lines.push(`app.log: 不存在（${log}）`);
+  }
+  return lines.join("\n");
 }
 
 /** 等上一次实例彻底退出、调试端口释放（重启恢复类用例用） */
