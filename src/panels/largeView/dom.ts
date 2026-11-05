@@ -16,6 +16,9 @@ export interface LargeViewDom {
   filterInput: HTMLInputElement;
   filterBtn: HTMLButtonElement;
   clearBtn: HTMLButtonElement;
+  /** 过滤结果出口：复制命中行 / 导出命中行 */
+  copyMatchesBtn: HTMLButtonElement;
+  exportMatchesBtn: HTMLButtonElement;
   caseBtn: HTMLButtonElement;
   regexBtn: HTMLButtonElement;
   /** 换行开关：长日志行不换行时只能靠横向滚动，二者互补 */
@@ -86,6 +89,18 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   clearBtn.className = "lv-btn";
   clearBtn.textContent = "清除";
 
+  // 过滤结果出口：命中行可以复制 / 导出，视图仍是只读
+  const copyMatchesBtn = document.createElement("button");
+  copyMatchesBtn.type = "button";
+  copyMatchesBtn.className = "lv-btn";
+  copyMatchesBtn.textContent = "复制命中";
+  copyMatchesBtn.title = "复制当前过滤命中的行（最多 5000 行）";
+  const exportMatchesBtn = document.createElement("button");
+  exportMatchesBtn.type = "button";
+  exportMatchesBtn.className = "lv-btn";
+  exportMatchesBtn.textContent = "导出命中";
+  exportMatchesBtn.title = "把过滤命中行导出为 <文件>.filtered.txt";
+
   const encodingSelect = document.createElement("select");
   encodingSelect.className = "lv-select";
   encodingSelect.title = "重新解释编码";
@@ -114,6 +129,8 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     followBtn,
     filterBtn,
     clearBtn,
+    copyMatchesBtn,
+    exportMatchesBtn,
     gotoInput,
     gotoBtn,
     copyBtn,
@@ -158,6 +175,8 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     filterInput,
     filterBtn,
     clearBtn,
+    copyMatchesBtn,
+    exportMatchesBtn,
     caseBtn,
     regexBtn,
     wrapBtn,

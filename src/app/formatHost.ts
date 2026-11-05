@@ -25,6 +25,8 @@ export interface FormatHostDeps {
   blockIfReadonly: () => boolean;
   showMessage: (text: string, durationMs?: number) => void;
   refreshStatus: () => void;
+  /** 打开 config.json（formatters 表所在文件）：格式化器缺失时的可行动入口 */
+  openFormattersConfig: () => void;
 }
 
 export class FormatHost {
@@ -63,12 +65,15 @@ export class FormatHost {
         // 不要写「点击查看详情」这种做不到的承诺。
         this.deps.showMessage("格式化失败，详情见弹窗");
         showErrorDialog("格式化失败", result.message);
-        addNotice(
-          "formatFail",
-          `格式化失败：「${tab.name}」`,
-          [{ label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) }],
-          `fmt:${tab.id}`,
-        );
+        const actions = [
+          { label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) },
+        ];
+        // 缺工具 / 未配置：给一个直达格式化配置的入口，而不是只让用户读报错
+        const failure = result.failure;
+        if (failure && (failure.code === "missing_tool" || failure.code === "not_configured")) {
+          actions.unshift({ label: "打开格式化配置", run: () => this.deps.openFormattersConfig() });
+        }
+        addNotice("formatFail", `格式化失败：「${tab.name}」`, actions, `fmt:${tab.id}`);
         return;
       }
       this.deps.showMessage(result.message);
@@ -97,12 +102,15 @@ export class FormatHost {
         // 不要写「点击查看详情」这种做不到的承诺。
         this.deps.showMessage("格式化失败，详情见弹窗");
         showErrorDialog("格式化失败", result.message);
-        addNotice(
-          "formatFail",
-          `格式化失败：「${tab.name}」`,
-          [{ label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) }],
-          `fmt:${tab.id}`,
-        );
+        const actions = [
+          { label: "查看详情", run: () => showErrorDialog("格式化失败", result.message) },
+        ];
+        // 缺工具 / 未配置：给一个直达格式化配置的入口，而不是只让用户读报错
+        const failure = result.failure;
+        if (failure && (failure.code === "missing_tool" || failure.code === "not_configured")) {
+          actions.unshift({ label: "打开格式化配置", run: () => this.deps.openFormattersConfig() });
+        }
+        addNotice("formatFail", `格式化失败：「${tab.name}」`, actions, `fmt:${tab.id}`);
         return;
       }
       this.deps.showMessage(result.message);

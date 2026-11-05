@@ -1076,6 +1076,34 @@ fn delete_branch_blocking(dir: &str, name: &str, force: bool) -> Result<(), Stri
     git(&root, &["branch", if force { "-D" } else { "-d" }, name]).map(|_| ())
 }
 
+/// 重命名本地分支：`git branch -m <old> <new>`。
+/// 支持当前分支；重命名不改变分支指向，工作区与提交历史不受影响。
+#[tauri::command]
+pub async fn git_rename_branch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PathGuard>,
+    root: String,
+    from: String,
+    to: String,
+) -> Result<String, String> {
+    ensure_writable(&app)?;
+    state.ensure_file_scope(&root)?;
+    let from = validate_branch(&from)?;
+    let to = validate_branch(&to)?;
+    if from == to {
+        return Ok(to);
+    }
+    tauri::async_runtime::spawn_blocking(move || rename_branch_blocking(&root, &from, &to))
+        .await
+        .map_err(|e| format!("任务失败: {e}"))?
+}
+
+fn rename_branch_blocking(dir: &str, from: &str, to: &str) -> Result<String, String> {
+    let root = repo_root_of(dir)?;
+    git(&root, &["branch", "-m", from, to])?;
+    Ok(to.to_string())
+}
+
 /// 拉取：`git pull --ff-only`。
 ///
 /// 只做快进，不产生合并提交、不弹编辑器；分叉时如实报错由用户自行处理。
@@ -1442,6 +1470,47 @@ mod tests {
         let st = git_status_blocking(&dir.to_string_lossy()).unwrap();
         assert!(!st.error.is_empty());
         assert!(st.staged.is_empty() && st.changes.is_empty());
+    }
+
+    /// 重命名：普通分支与当前分支都可改，当前分支改完 HEAD 跟随新名字
+    #[test]
+    fn rename_branch_moves_name_and_head() {
+        if !git_works() {
+            eprintln!("跳过：未安装 git");
+            return;
+        }
+        let dir = temp_dir("rename_branch");
+        let dir_str = dir.to_string_lossy().to_string();
+        run(&dir, &["init", "-q"]);
+        run(&dir, &["config", "user.email", "test@example.com"]);
+        run(&dir, &["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        run(&dir, &["add", "--", "a.txt"]);
+        run(&dir, &["commit", "-q", "-m", "init"]);
+        run(&dir, &["branch", "old"]);
+
+        assert_eq!(
+            rename_branch_blocking(&dir_str, "old", "new").unwrap(),
+            "new"
+        );
+        let names = git(&dir_str, &["branch", "--format=%(refname:short)"]).unwrap();
+        assert!(names.lines().any(|l| l.trim() == "new"));
+        assert!(!names.lines().any(|l| l.trim() == "old"));
+
+        let base = git(&dir_str, &["symbolic-ref", "--short", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            rename_branch_blocking(&dir_str, &base, "renamed").unwrap(),
+            "renamed"
+        );
+        assert_eq!(
+            git(&dir_str, &["symbolic-ref", "--short", "HEAD"])
+                .unwrap()
+                .trim(),
+            "renamed"
+        );
     }
 
     #[test]

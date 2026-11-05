@@ -835,6 +835,24 @@ body.tree-dragging {
   color: var(--danger);
 }
 
+/* 重命名：与删除同尺寸，但用强调色而非危险色 */
+.palette-branch-rename {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.palette-branch-rename:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
 /* 命中字符：只提亮字色，不加底色，避免整行花掉 */
 .palette-item mark {
   background: transparent;

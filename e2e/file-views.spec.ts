@@ -1,6 +1,6 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import type { ChildProcess } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
@@ -9,6 +9,7 @@ let app: ChildProcess;
 let browser: Browser;
 let page: Page;
 let dir: string;
+let bigPath: string;
 
 const MB = 1024 * 1024;
 
@@ -23,7 +24,8 @@ function markdownDoc(): string {
 test.beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "my-editor-e2e-"));
   const md = join(dir, "notes.md");
-  const big = join(dir, "app.log");
+  bigPath = join(dir, "app.log");
+  const big = bigPath;
   await writeFile(md, markdownDoc(), "utf8");
   // 单行控制在 110 字符左右：避免命中「单行超长」提示，专测体积分流
   const lines = Array.from({ length: 200_000 }, (_, i) => `line ${i} ${"x".repeat(96)}`);
@@ -60,6 +62,13 @@ test("大文件视图：过滤命中，清除后可按行号跳转", async () =>
   await filter.press("Enter");
   await expect(page.locator(".lv-status")).toContainText("命中 1 行", { timeout: 20_000 });
   await expect(page.locator(".lv-rows")).toContainText("line 150000", { timeout: 20_000 });
+
+  // 过滤结果出口：导出到 <文件>.filtered.txt（视图仍只读）
+  await page.locator("#large-view .lv-btn", { hasText: "导出命中" }).click();
+  await expect
+    // 文件尚未写出时 readFile 会抛 ENOENT：返回空串让 poll 继续重试
+    .poll(() => readFile(`${bigPath}.filtered.txt`, "utf8").catch(() => ""), { timeout: 20_000 })
+    .toContain("line 150000");
 
   // 清除过滤 → 回到全量行；再按行号定位
   await page.locator("#large-view .lv-btn", { hasText: "清除" }).click();

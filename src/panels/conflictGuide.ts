@@ -4,6 +4,21 @@
  */
 
 import type { GitFileEntry } from "./gitView";
+import { firstLine } from "../core/errors";
+import { showErrorDialog } from "../ui/dialogs";
+
+/** 冲突引导的外部动作：打开文件 / 跳到标记 / 标记已解决 / 在终端处理 */
+export interface ConflictGuideActions {
+  onOpenFile: (path: string) => void;
+  onOpenTerminal: (dir: string) => void;
+  /** 对该文件执行 git add（标记为已解决）；失败时抛错，由对话框提示 */
+  onMarkResolved: (file: GitFileEntry) => Promise<void>;
+  /**
+   * 跳到 `<<<<<<<` 标记：`after` 是上一次跳到的偏移（首次传 -1）。
+   * 返回本次跳到的偏移；没有更多返回 -1。
+   */
+  onJumpToMarker: (after: number) => number;
+}
 
 export class ConflictGuideDialog {
   private backdrop: HTMLElement | null = null;
@@ -12,12 +27,7 @@ export class ConflictGuideDialog {
     return this.backdrop !== null;
   }
 
-  open(
-    root: string,
-    files: GitFileEntry[],
-    onOpenFile: (path: string) => void,
-    onOpenTerminal: (dir: string) => void,
-  ): void {
+  open(root: string, files: GitFileEntry[], deps: ConflictGuideActions): void {
     if (this.isOpen) return;
     const backdrop = document.createElement("div");
     backdrop.className = "dialog-backdrop";
@@ -56,8 +66,32 @@ export class ConflictGuideDialog {
       open.type = "button";
       open.className = "git-action-btn";
       open.textContent = "打开";
-      open.addEventListener("click", () => onOpenFile(file.path));
-      row.append(name, open);
+      open.addEventListener("click", () => deps.onOpenFile(file.path));
+      // 编辑完直接标记：等价于 git add，不需要切到源代码管理面板
+      const resolve = document.createElement("button");
+      resolve.type = "button";
+      resolve.className = "git-action-btn";
+      resolve.textContent = "标记已解决";
+      resolve.title = "对该文件执行 git add；全部标记后仍需填写提交信息";
+      resolve.addEventListener("click", () => {
+        if (resolve.disabled) return;
+        resolve.disabled = true;
+        open.disabled = true;
+        resolve.textContent = "标记中…";
+        void deps.onMarkResolved(file).then(
+          () => {
+            row.classList.add("resolved");
+            resolve.textContent = "已标记";
+          },
+          (e: unknown) => {
+            resolve.disabled = false;
+            open.disabled = false;
+            resolve.textContent = "标记已解决";
+            showErrorDialog("标记冲突文件失败", firstLine(e));
+          },
+        );
+      });
+      row.append(name, open, resolve);
       list.append(row);
     }
 
@@ -94,16 +128,32 @@ export class ConflictGuideDialog {
 
     const actions = document.createElement("div");
     actions.className = "dialog-actions";
+    // 跳到下一个标记：不必在长文件里肉眼找 <<<<<<<
+    const hint = document.createElement("span");
+    hint.className = "git-conflict-hint";
+    let lastJump = -1;
+    const jump = document.createElement("button");
+    jump.type = "button";
+    jump.textContent = "跳到下一个冲突标记";
+    jump.addEventListener("click", () => {
+      const pos = deps.onJumpToMarker(lastJump);
+      if (pos < 0) {
+        hint.textContent = "当前文件里没有更多 <<<<<<< 标记";
+        return;
+      }
+      lastJump = pos;
+      hint.textContent = "";
+    });
     const terminal = document.createElement("button");
     terminal.type = "button";
     terminal.className = "primary";
     terminal.textContent = "在终端解决";
-    terminal.addEventListener("click", () => onOpenTerminal(root));
+    terminal.addEventListener("click", () => deps.onOpenTerminal(root));
     const done = document.createElement("button");
     done.type = "button";
     done.textContent = "关闭";
     done.addEventListener("click", () => this.close());
-    actions.append(terminal, done);
+    actions.append(hint, jump, terminal, done);
 
     dialog.append(head, intro, list, steps, actions);
     backdrop.append(dialog);

@@ -556,6 +556,18 @@
   font-size: 12px;
 }
 
+/* 已标记（git add 成功）：整行降噪，避免重复点击 */
+.git-conflict-row.resolved {
+  opacity: 0.55;
+}
+
+.git-conflict-hint {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  align-self: center;
+}
+
 .git-conflict-steps {
   font-size: 12px;
   line-height: 1.7;

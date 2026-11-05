@@ -102,6 +102,8 @@ export class LargeView {
     el.followBtn.addEventListener("click", () => this.toggleFollow());
     el.filterBtn.addEventListener("click", () => void this.runFilter());
     el.clearBtn.addEventListener("click", () => void this.clearFilter());
+    el.copyMatchesBtn.addEventListener("click", () => void this.copyMatches());
+    el.exportMatchesBtn.addEventListener("click", () => void this.exportMatches());
     el.filterInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -717,6 +719,84 @@ export class LargeView {
     this.el.scrollEl.scrollTop = 0;
     await this.loadWindow();
     this.drawMinimap();
+  }
+
+  /**
+   * 取过滤命中的行文本。
+   * 命中行号递增：按连续区间批量读，单次上限与后端 `read_large_lines` 一致（4000 行）。
+   */
+  private async collectMatches(limit: number): Promise<string[]> {
+    const info = this.info;
+    const total = this.matchBuf.length;
+    if (!info || total === 0) return [];
+    const windowMax = 4000;
+    const n = Math.min(total, limit);
+    const out: string[] = [];
+    let i = 0;
+    while (i < n) {
+      const start = this.matchBuf.at(i);
+      let end = i + 1;
+      while (end < n && this.matchBuf.at(end) === start + (end - i)) end += 1;
+      while (i < end) {
+        const count = Math.min(end - i, windowMax);
+        const win = await invoke<LineWindow>("read_large_lines", {
+          id: info.id,
+          start: this.matchBuf.at(i),
+          count,
+        });
+        out.push(...win.lines);
+        i += count;
+      }
+    }
+    return out;
+  }
+
+  /** 复制命中行（最多 5000 行）：只读视图的结果出口之一 */
+  private async copyMatches(): Promise<void> {
+    const total = this.matchBuf.length;
+    if (!this.matchBuf.active) {
+      this.deps.onMessage("先执行一次过滤：复制只针对命中行");
+      return;
+    }
+    if (total === 0) {
+      this.deps.onMessage("当前过滤没有命中行");
+      return;
+    }
+    const limit = Math.min(total, 5000);
+    const lines = await this.collectMatches(limit);
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      this.deps.onMessage(
+        limit < total ? `已复制前 ${limit} 行命中（共 ${total} 行）` : `已复制 ${total} 行命中`,
+      );
+    } catch (e) {
+      this.deps.onMessage(`复制失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** 导出命中行到 `<文件>.filtered.txt`：原文件保持只读，不改动一个字节 */
+  private async exportMatches(): Promise<void> {
+    const info = this.info;
+    const total = this.matchBuf.length;
+    if (!info) return;
+    if (!this.matchBuf.active) {
+      this.deps.onMessage("先执行一次过滤：导出只针对命中行");
+      return;
+    }
+    if (total === 0) {
+      this.deps.onMessage("当前过滤没有命中行");
+      return;
+    }
+    try {
+      const lines = await this.collectMatches(total);
+      const out = await invoke<string>("export_large_matches", {
+        path: info.path,
+        content: `${lines.join("\n")}\n`,
+      });
+      this.deps.onMessage(`已导出 ${total} 行命中：${out}`);
+    } catch (e) {
+      this.deps.onMessage(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** 中止正在进行的过滤（切换标签 / 关闭时调用） */

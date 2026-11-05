@@ -9,6 +9,7 @@
 import { fuzzyScore } from "../core/fuzzy";
 import { firstLine } from "../core/errors";
 import { getConfig } from "../config/settings";
+import { promptText, showErrorDialog } from "../ui/dialogs";
 
 export interface GitBranch {
   name: string;
@@ -24,6 +25,8 @@ export interface BranchPickerDeps {
   onCreate: (name: string) => Promise<void>;
   /** 删除本地分支（未合并时由 git 拒绝） */
   onDelete: (name: string) => Promise<void>;
+  /** 重命名本地分支（git branch -m） */
+  onRename: (from: string, to: string) => Promise<void>;
   /** 查看提交历史（分支与历史同属"仓库元信息"，入口放一起） */
   onOpenHistory?: () => void;
   showMessage: (text: string) => void;
@@ -209,6 +212,19 @@ export class BranchPicker {
     }
   }
 
+  /** 重命名分支：输入新名字后交给调用方执行 git branch -m */
+  private async renameBranch(from: string): Promise<void> {
+    const to = (await promptText(`重命名分支「${from}」`, from))?.trim();
+    if (!to || to === from) return;
+    try {
+      await this.deps.onRename(from, to);
+      await this.reload();
+      this.deps.showMessage(`分支已重命名为「${to}」`);
+    } catch (e) {
+      showErrorDialog("重命名分支失败", firstLine(e));
+    }
+  }
+
   private async removeBranch(name: string): Promise<void> {
     if (this.pendingDelete !== name) {
       this.pendingDelete = name;
@@ -326,6 +342,18 @@ export class BranchPicker {
       tag.textContent = parts.join(" ");
 
       item.append(name, tag);
+      if (!getConfig().git.readOnly) {
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.className = "palette-branch-rename";
+        rename.textContent = "✎";
+        rename.title = "重命名该分支…";
+        rename.addEventListener("click", (e) => {
+          e.stopPropagation();
+          void this.renameBranch(branch.name);
+        });
+        item.append(rename);
+      }
       // 只读模式：不渲染删除按钮（切分支属于"查看"之外的写入，由 GitHost 拦截）
       if (!branch.current && !getConfig().git.readOnly) {
         const del = document.createElement("button");

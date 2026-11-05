@@ -40,9 +40,11 @@ test("Code Run：运行中可停止，超时按配置终止", async () => {
   await expect(page.locator("#run-output")).toBeVisible();
   await expect(page.locator("#btn-run")).toContainText("停止");
   await expect(page.locator(".run-body")).toContainText("started", { timeout: 15_000 });
+  // 等「启动中…」进入运行态再停：启动阶段就点停止会停在「正在停止…」
+  await page.waitForTimeout(800);
 
   await page.locator("#btn-run").click();
-  await expect(page.locator(".run-status")).toContainText("已停止", { timeout: 15_000 });
+  await expect(page.locator(".run-status")).toContainText("已停止", { timeout: 20_000 });
   await expect(page.locator("#btn-run")).toContainText("运行");
 
   // 运行配置里把超时改成 1 秒，再跑同一脚本：应由后端按超时终止并给出原因

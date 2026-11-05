@@ -799,6 +799,30 @@ pub fn large_minimap(
     ))
 }
 
+/// 过滤结果出口：把命中行写到 `<文件>.filtered.txt`。
+/// 视图保持只读语义：导出的是副本，不改动原文件。
+///
+/// 作用域以「已打开的大文件会话」为准：只有通过 open_large_file 打开过的路径
+/// 才允许写它的 .filtered.txt，不依赖前端登记，也不给任意路径写文件的能力。
+#[tauri::command]
+pub fn export_large_matches(
+    state: tauri::State<'_, LargeState>,
+    path: String,
+    content: String,
+) -> Result<String, String> {
+    let target = PathBuf::from(&path);
+    let known = {
+        let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
+        map.values().any(|entry| entry.path == target)
+    };
+    if !known {
+        return Err("只有已打开的大文件才能导出命中行".to_string());
+    }
+    let out = format!("{path}.filtered.txt");
+    std::fs::write(&out, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(out)
+}
+
 /// 切换解码编码：单字节家族（UTF-8 / GBK / Big5…）字节偏移不变，无需重建索引
 #[tauri::command]
 pub fn set_large_encoding(

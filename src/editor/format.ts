@@ -59,12 +59,37 @@ async function loadPlugins(parser: string): Promise<unknown[]> {
   }
 }
 
+/** 后端结构化失败（run_cli_formatter 的 Err 载荷） */
+export interface FormatFailure {
+  /** not_configured / missing_tool / rejected_args / spawn_failed / io / tool_error / timeout / internal */
+  code: string;
+  message: string;
+  tool?: string;
+  language?: string;
+}
+
 export interface FormatResult {
   ok: boolean;
   message: string;
   changed: boolean;
   /** 格式化输出（仅 ok 时存在）；调用方负责校验文档未变后再写入 */
   output?: string;
+  /** 结构化失败原因：调用方据此给可行动入口（如「打开格式化配置」） */
+  failure?: FormatFailure;
+}
+
+/** Tauri 的 Err 载荷是普通对象而不是 Error：统一取成结构化失败 */
+function asFormatFailure(raw: unknown): FormatFailure {
+  if (typeof raw === "object" && raw !== null && "message" in raw) {
+    const value = raw as Record<string, unknown>;
+    return {
+      code: typeof value.code === "string" ? value.code : "unknown",
+      message: typeof value.message === "string" ? value.message : String(raw),
+      tool: typeof value.tool === "string" ? value.tool : undefined,
+      language: typeof value.language === "string" ? value.language : undefined,
+    };
+  }
+  return { code: "unknown", message: String(raw) };
 }
 
 /**
@@ -155,10 +180,12 @@ export async function formatText(
         output,
       };
     } catch (e) {
+      const failure = asFormatFailure(e);
       return {
         ok: false,
-        message: withInstallHint(String(e), cli.tool),
+        message: withInstallHint(failure.message, cli.tool),
         changed: false,
+        failure,
       };
     }
   }

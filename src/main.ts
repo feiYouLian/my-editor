@@ -851,6 +851,10 @@ const branchPicker = new BranchPicker({
   onPick: (name) => gitHost.checkout(name),
   onCreate: (name) => gitHost.createBranch(name, true),
   onDelete: (name) => gitHost.deleteBranch(name, false),
+  onRename: async (from, to) => {
+    await invoke<string>("git_rename_branch", { root: workspaceRoot ?? "", from, to });
+    gitHost.refresh();
+  },
   // 分支与历史同属"仓库元信息"：面板底部顺手给一个历史入口
   onOpenHistory: () => openGitHistory(),
   showMessage: statusBar.showMessage,
@@ -879,6 +883,20 @@ const gitHistoryPanel = new GitHistoryPanel(document.getElementById("git-history
   loadCommit: (hash) => gitHost.showCommit(hash),
 });
 gitHistoryPanel.mount();
+/**
+ * 冲突引导：跳到 `after` 之后的下一个 `<<<<<<<`，返回落点偏移。
+ * 以「上一次跳到哪」为准而不是光标位置：否则重复点击会原地不动。
+ */
+function jumpToNextConflictMarker(after: number): number {
+  const view = editorHandle.view;
+  const doc = view.state.doc.toString();
+  const idx = doc.indexOf("<<<<<<<", after + 1);
+  if (idx < 0) return -1;
+  view.dispatch({ selection: { anchor: idx }, scrollIntoView: true });
+  view.focus();
+  return idx;
+}
+
 const conflictGuideDialog = new ConflictGuideDialog();
 const gitView: GitView = new GitView($("sidebar-git"), {
   onRefresh: () => gitHost.refresh(),
@@ -889,12 +907,15 @@ const gitView: GitView = new GitView($("sidebar-git"), {
   onCommit: (message) => gitHost.commit(message),
   onOpenHistory: () => openGitHistory(),
   onResolveConflicts: (entries) =>
-    conflictGuideDialog.open(
-      workspaceRoot ?? "",
-      entries,
-      (path) => void fileService.openFilePath(path),
-      (dir) => void terminalHost.openAt(dir),
-    ),
+    conflictGuideDialog.open(workspaceRoot ?? "", entries, {
+      onOpenFile: (path) => void fileService.openFilePath(path),
+      onOpenTerminal: (dir) => void terminalHost.openAt(dir),
+      onMarkResolved: async (file) => {
+        await invoke("git_stage", { root: workspaceRoot ?? "", paths: [file.relative] });
+        gitHost.refresh();
+      },
+      onJumpToMarker: jumpToNextConflictMarker,
+    }),
   onOpenFile: (path) => void fileService.openFilePath(path),
   onCopyPath: copyPathToClipboard,
   onCopyRelative: (relative) => copyTextToClipboard(relative, "已复制相对路径"),
@@ -1358,6 +1379,12 @@ const formatHost = new FormatHost({
   blockIfReadonly,
   showMessage: statusBar.showMessage,
   refreshStatus: () => statusBar.refresh(),
+  // 格式化器缺失时的可行动入口：直接打开 config.json 的 formatters 表
+  openFormattersConfig: () => {
+    void invoke<string>("app_config_dir")
+      .then((dir) => fileService.openFilePath(`${dir.replace(/[\\/]$/, "")}/config.json`))
+      .catch(() => statusBar.showMessage("打开格式化配置失败：请从「关于」里定位配置目录"));
+  },
 });
 
 // 符号定位（F12 转到定义）：文本级，复用工作区搜索的遍历（不是 LSP）

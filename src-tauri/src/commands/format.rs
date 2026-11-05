@@ -15,8 +15,46 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use serde::Serialize;
+
 /// 格式化超时（超时即中断子进程）
 const FORMAT_TIMEOUT_SECS: u64 = 5;
+
+/// 结构化失败：前端据此给出可行动提示（缺工具 → 直接打开格式化配置），
+/// 而不是让用户面对一整段 stderr。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatFailure {
+    /// 机器可读原因：not_configured / missing_tool / rejected_args /
+    /// spawn_failed / io / tool_error / timeout / internal
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+impl FormatFailure {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+            tool: None,
+            language: None,
+        }
+    }
+
+    fn tool(mut self, tool: &str) -> Self {
+        self.tool = Some(tool.to_string());
+        self
+    }
+
+    fn language(mut self, language: &str) -> Self {
+        self.language = Some(language.to_string());
+        self
+    }
+}
 
 /// 未命名文档的合成扩展名（供 clang-format -assume-filename 定位 .clang-format）
 fn synthetic_ext(language_key: &str) -> &'static str {
@@ -49,16 +87,26 @@ pub async fn run_cli_formatter(
     language_key: String,
     file_path: Option<String>,
     content: String,
-) -> Result<String, String> {
+) -> Result<String, FormatFailure> {
     // 工具/参数只信后端配置：前端只传语言键，杜绝任意命令执行
     let entry = crate::commands::config::load_config(app)
         .formatters
         .get(&language_key)
         .cloned()
-        .ok_or_else(|| format!("语言「{language_key}」未配置 CLI 格式化器"))?;
+        .ok_or_else(|| {
+            FormatFailure::new(
+                "not_configured",
+                format!("语言「{language_key}」未配置 CLI 格式化器"),
+            )
+            .language(&language_key)
+        })?;
     let tool = entry.tool.trim().to_string();
     if tool.is_empty() {
-        return Err(format!("语言「{language_key}」的格式化工具未配置"));
+        return Err(FormatFailure::new(
+            "not_configured",
+            format!("语言「{language_key}」的格式化工具未配置"),
+        )
+        .language(&language_key));
     }
     let assume_name = file_path
         .filter(|p| !p.trim().is_empty())
@@ -70,13 +118,16 @@ pub async fn run_cli_formatter(
         .map(|a| a.replace("__PLACEHOLDER__", &assume_name))
         .collect();
     if let Some(bad) = args.iter().find(|a| is_rejected_arg(a)) {
-        return Err(format!(
-            "参数「{bad}」被安全策略拒绝（不允许写文件或读取外部配置）"
-        ));
+        return Err(FormatFailure::new(
+            "rejected_args",
+            format!("参数「{bad}」被安全策略拒绝（不允许写文件或读取外部配置）"),
+        )
+        .tool(&tool));
     }
-    tauri::async_runtime::spawn_blocking(move || run_blocking(&tool, &args, &content))
+    let tool_for_task = tool.clone();
+    tauri::async_runtime::spawn_blocking(move || run_blocking(&tool_for_task, &args, &content))
         .await
-        .map_err(|e| format!("任务调度失败: {e}"))?
+        .map_err(|e| FormatFailure::new("internal", format!("任务调度失败: {e}")))?
 }
 
 /// Windows 下 .cmd/.bat 包装脚本必须经 cmd /C 调用（Rust 直接 spawn 会失败）
@@ -104,7 +155,7 @@ fn build_command(tool: &str, args: &[String]) -> Command {
     cmd
 }
 
-fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, String> {
+fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, FormatFailure> {
     let mut cmd = build_command(tool, args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -112,11 +163,15 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
 
     let child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            format!(
-                "未找到格式化工具「{tool}」：请先安装该工具，或在 config.json 的 formatters 中配置完整路径"
+            FormatFailure::new(
+                "missing_tool",
+                format!(
+                    "未找到格式化工具「{tool}」：请先安装该工具，或在 config.json 的 formatters 中配置完整路径"
+                ),
             )
+            .tool(tool)
         } else {
-            format!("启动工具「{tool}」失败: {e}")
+            FormatFailure::new("spawn_failed", format!("启动工具「{tool}」失败: {e}")).tool(tool)
         }
     })?;
 
@@ -125,10 +180,11 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
     let worker_child = Arc::clone(&child);
 
     let input = content.to_string();
+    let tool_name = tool.to_string();
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        let result = (|| -> Result<String, String> {
+        let result = (|| -> Result<String, FormatFailure> {
             // 取出管道句柄（不持锁做 IO，保证超时线程能拿到锁 kill）
             let (stdin_opt, mut stdout_opt, mut stderr_opt) = {
                 let mut guard = worker_child.lock().unwrap_or_else(|e| e.into_inner());
@@ -138,14 +194,14 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
             if let Some(mut stdin) = stdin_opt {
                 stdin
                     .write_all(input.as_bytes())
-                    .map_err(|e| format!("写入 stdin 失败: {e}"))?;
+                    .map_err(|e| FormatFailure::new("io", format!("写入 stdin 失败: {e}")))?;
                 drop(stdin); // 关闭 stdin，通知工具输入结束
             }
 
             let mut stdout = String::new();
             if let Some(mut out) = stdout_opt.take() {
                 out.read_to_string(&mut stdout)
-                    .map_err(|e| format!("读取输出失败: {e}"))?;
+                    .map_err(|e| FormatFailure::new("io", format!("读取输出失败: {e}")))?;
             }
 
             let mut stderr = String::new();
@@ -160,7 +216,12 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
                     match guard.try_wait() {
                         Ok(Some(status)) => break status,
                         Ok(None) => {}
-                        Err(e) => return Err(format!("等待进程退出失败: {e}")),
+                        Err(e) => {
+                            return Err(FormatFailure::new(
+                                "io",
+                                format!("等待进程退出失败: {e}"),
+                            ))
+                        }
                     }
                 }
                 thread::sleep(Duration::from_millis(20));
@@ -169,10 +230,11 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
             if !status.success() {
                 let msg = stderr.trim();
                 return Err(if msg.is_empty() {
-                    format!("工具异常退出（退出码: {status}）")
+                    FormatFailure::new("tool_error", format!("工具异常退出（退出码: {status}）"))
                 } else {
-                    format!("工具报错: {msg}")
-                });
+                    FormatFailure::new("tool_error", format!("工具报错: {msg}"))
+                }
+                .tool(&tool_name));
             }
             Ok(stdout)
         })();
@@ -186,7 +248,33 @@ fn run_blocking(tool: &str, args: &[String], content: &str) -> Result<String, St
             if let Ok(mut guard) = child.lock() {
                 let _ = guard.kill();
             }
-            Err(format!("格式化超时（{FORMAT_TIMEOUT_SECS}s），已中断"))
+            Err(
+                FormatFailure::new("timeout", format!("格式化超时（{FORMAT_TIMEOUT_SECS}s），已中断"))
+                    .tool(tool),
+            )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_serializes_code_and_tool() {
+        let failure = FormatFailure::new("missing_tool", "未找到格式化工具「black」")
+            .tool("black")
+            .language("python");
+        let json = serde_json::to_value(&failure).expect("应可序列化");
+        assert_eq!(json["code"], "missing_tool");
+        assert_eq!(json["tool"], "black");
+        assert_eq!(json["language"], "python");
+    }
+
+    #[test]
+    fn failure_omits_absent_optional_fields() {
+        let json = serde_json::to_value(FormatFailure::new("timeout", "超时")).unwrap();
+        assert!(json.get("tool").is_none());
+        assert!(json.get("language").is_none());
     }
 }
