@@ -18,7 +18,7 @@
 | A-5 | 生产代码 panic 点 | `node scripts/scan-unsafe.mjs` | 输出「生产代码 panic 点: 0」 | 自动 | S1 | |
 | A-6 | DOM 注入面 | `node scripts/scan-innerhtml.mjs` | `= 0`（S3 已达成，基线归零，新增即失败） | 自动 | S1 / S3 | |
 | A-7 | 默认值契约 | 随 A-2 / A-3（`defaults.contract.test.ts`、`defaults_match_frontend_contract`） | 两侧同时通过；新增键只改一端即失败 | 自动 | S1 | |
-| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 15 条用例覆盖全部 12 条路径；路径 2 仅覆盖「保存保持原编码」（另存为转码受原生对话框限制） | 自动 | S2 | |
+| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 19 条用例覆盖全部 12 条路径（另含格式化失败 / 冲突引导 / 分支重命名 / 运行器扩展 4 条能力用例）；路径 2 仅覆盖「保存保持原编码」（另存为转码受原生对话框限制） | 自动 | S2 | |
 | A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | `searchView` / `quickOpen` / `tabsBar` / `gitView` 共 13 条断言 | 自动 | S2 | |
 | A-10 | 空白错误 | `git diff --check` | 无输出、退出码 0 | 自动 | S0 | |
 

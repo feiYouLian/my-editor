@@ -114,7 +114,8 @@
         "tool": "clang-format",
         "args": ["-style=file", "-assume-filename=__PLACEHOLDER__"]
       }
-    }
+    },
+    "runners": {}
   },
   "largeViewEncodings": [
     "UTF-8",

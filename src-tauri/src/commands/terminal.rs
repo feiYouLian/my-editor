@@ -27,7 +27,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::paths::PathGuard;
 use crate::commands::run::{
-    command_spec, render_shell_line, shell_kind, CommandSpec, RunSource, ShellKind,
+    command_spec, render_shell_line, resolve_spec, shell_kind, CommandSpec, RunSource, ShellKind,
 };
 
 /// 终端输出事件
@@ -344,8 +344,10 @@ pub async fn terminal_close(state: tauri::State<'_, TerminalState>, id: String) 
 }
 
 /// 在终端中运行当前文件（PowerShell/POSIX 引号规则由 Rust 侧处理）
+/// 运行器解析与 Code Run 同一套：内置 4 项 + config.json 的 runners 表
 #[tauri::command]
 pub fn terminal_run_code(
+    app: AppHandle,
     state: tauri::State<TerminalState>,
     guard: tauri::State<PathGuard>,
     id: String,
@@ -356,7 +358,11 @@ pub fn terminal_run_code(
     if !target.is_file() {
         return Err(format!("文件不存在: {path}"));
     }
-    let spec = command_spec(&runner, RunSource::File(&target))?;
+    let custom = crate::commands::config::load_config(app)
+        .runners
+        .get(&runner)
+        .cloned();
+    let spec = resolve_spec(&runner, RunSource::File(&target), custom.as_ref())?;
     write_command(&state, &id, &spec)
 }
 

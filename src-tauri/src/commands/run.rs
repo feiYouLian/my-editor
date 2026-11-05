@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+use crate::commands::config::RunnerEntry;
+
 /// 单次运行默认超时（可被 run_code 参数覆盖）
 const TIMEOUT_SECS: u64 = 30;
 /// 输出总量默认上限（可被 run_code 参数覆盖）
@@ -213,13 +215,73 @@ pub(crate) fn command_spec(runner: &str, source: RunSource<'_>) -> Result<Comman
         ("python" | "node" | "java", RunSource::Script(_)) => {
             Err(format!("{runner} 需要磁盘文件，不能直接执行脚本文本"))
         }
-        (other, _) => Err(format!("不支持的运行器: {other}")),
+        (other, _) => Err(format!(
+            "不支持的运行器「{other}」：内置仅 python / node / java / curl；\
+             其它语言可在设置 → 文件与会话 → Code Run 运行器中按语言键配置"
+        )),
     }
 }
 
+/// 运行器参数的拒绝规则（与 format.rs 的 is_rejected_arg 同一套）：
+/// 不允许把运行器变成「写文件 / 读外部配置」的通道。
+fn is_rejected_runner_arg(arg: &str) -> bool {
+    let lower = arg.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "-o" | "-i" | "--in-place" | "--output" | "--config" | "-config"
+    ) || lower.starts_with("--output=")
+        || lower.starts_with("--config=")
+        || lower.starts_with("-o=")
+        || lower.starts_with("-config=")
+}
+
+/// 从 config.json 的 `runners` 条目构造命令描述（自定义运行器）。
+/// `__PLACEHOLDER__` 会被替换成目标文件路径（与 formatters 同一约定）。
+fn custom_spec(entry: &RunnerEntry, file: &Path) -> Result<CommandSpec, String> {
+    let program = entry.program.trim();
+    if program.is_empty() {
+        return Err("运行器配置缺少 program（可执行文件名）".to_string());
+    }
+    if entry.args.iter().any(|a| is_rejected_runner_arg(a)) {
+        return Err("运行器参数被安全策略拒绝（不允许写文件或读取外部配置）".to_string());
+    }
+    for (key, value) in &entry.envs {
+        if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return Err(format!("运行器环境变量不合法: {key}"));
+        }
+    }
+    let path = file_arg(file);
+    Ok(CommandSpec {
+        program: program.to_string(),
+        args: entry
+            .args
+            .iter()
+            .map(|a| a.replace("__PLACEHOLDER__", &path))
+            .collect(),
+        envs: entry
+            .envs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    })
+}
+
+/// 按运行器生成命令描述：`custom`（config.json 的 runners 条目）优先，
+/// 没有自定义条目时回落到内置 4 项。脚本文本（cURL）不走自定义。
+pub(crate) fn resolve_spec(
+    runner: &str,
+    source: RunSource<'_>,
+    custom: Option<&RunnerEntry>,
+) -> Result<CommandSpec, String> {
+    if let (Some(entry), RunSource::File(file)) = (custom, &source) {
+        return custom_spec(entry, file);
+    }
+    command_spec(runner, source)
+}
+
 /// 按运行器构造命令（cURL 从文件内容解析参数）
-fn build_command(runner: &str, file: &Path) -> Result<Command, String> {
-    let spec = command_spec(runner, RunSource::File(file))?;
+fn build_command(runner: &str, file: &Path, custom: Option<&RunnerEntry>) -> Result<Command, String> {
+    let spec = resolve_spec(runner, RunSource::File(file), custom)?;
     let mut cmd = Command::new(&spec.program);
     cmd.args(&spec.args);
     for (key, value) in &spec.envs {
@@ -597,8 +659,9 @@ fn spawn_run(
 }
 
 /// 运行当前文件：先停掉上一个任务，再启动新进程并流式回传。
-/// 安全：目标文件必须是应用已知路径（当前打开的标签），runner 仅接受
-/// 内置白名单（python / node / java / curl）。
+/// 安全：目标文件必须是应用已知路径（当前打开的标签）；runner 取自
+/// 内置 4 项（python / node / java / curl）或 config.json 的 runners 表，
+/// 工具与参数一律后端解析，前端只传语言键。
 /// 停旧进程含 taskkill、curl 还需读文件：整个过程放 spawn_blocking，
 /// 避免阻塞 IPC 主线程（与 stop_run 的理由一致）。
 #[tauri::command]
@@ -643,9 +706,14 @@ pub async fn run_code(
         .unwrap_or_else(|| PathBuf::from("."));
     let slot = Arc::clone(&state.slot);
     let generation = Arc::clone(&state.generation);
+    // 自定义运行器：同名条目覆盖内置定义（program / args / envs 来自配置文件）
+    let custom = crate::commands::config::load_config(app.clone())
+        .runners
+        .get(&runner)
+        .cloned();
     tauri::async_runtime::spawn_blocking(move || {
         kill_tree(&slot);
-        let mut cmd = build_command(&runner, &file)?;
+        let mut cmd = build_command(&runner, &file, custom.as_ref())?;
         for (key, value) in &env {
             cmd.env(key, value);
         }
@@ -751,7 +819,7 @@ mod tests {
             "curl.txt",
             "# 注释行\ncurl -X POST https://example.com -d \"a=1\"\n",
         );
-        let cmd = build_command("curl", &file).unwrap();
+        let cmd = build_command("curl", &file, None).unwrap();
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
@@ -762,13 +830,13 @@ mod tests {
     #[test]
     fn curl_runner_rejects_empty_arguments() {
         let file = temp_file("curl_empty.txt", "# 只有注释\n");
-        assert!(build_command("curl", &file).is_err());
+        assert!(build_command("curl", &file, None).is_err());
     }
 
     #[test]
     fn python_runner_sets_utf8_io_encoding() {
         let file = temp_file("py.py", "print('hi')");
-        let cmd = build_command("python", &file).unwrap();
+        let cmd = build_command("python", &file, None).unwrap();
         let envs: Vec<String> = cmd
             .get_envs()
             .filter_map(|(k, v)| v.map(|v| format!("{}={}", k.to_string_lossy(), v.to_string_lossy())))
@@ -779,7 +847,7 @@ mod tests {
     #[test]
     fn unsupported_runner_is_rejected() {
         let file = temp_file("x.txt", "x");
-        assert!(build_command("ruby", &file).is_err());
+        assert!(build_command("ruby", &file, None).is_err());
     }
 
     #[test]
@@ -909,7 +977,50 @@ mod tests {
 
         assert!(command_spec("node", RunSource::Script("x")).is_err());
         assert!(command_spec("ruby", RunSource::File(&file)).is_err());
-    }
+        }
+
+        /// config.json 的 runners 条目：__PLACEHOLDER__ 换成文件路径，envs 生效
+        #[test]
+        fn custom_runner_builds_from_config_entry() {
+            let file = temp_file("spec.rb", "puts 1");
+            let entry = RunnerEntry {
+                program: "ruby".into(),
+                args: vec!["-e".into(), "load '__PLACEHOLDER__'".into()],
+                envs: [("LANG".to_string(), "C.UTF-8".to_string())].into_iter().collect(),
+            };
+            let spec = custom_spec(&entry, &file).unwrap();
+            assert_eq!(spec.program, "ruby");
+            assert!(spec.args[1].contains(&file.to_string_lossy().to_string()));
+            assert_eq!(spec.envs, vec![("LANG".to_string(), "C.UTF-8".to_string())]);
+        }
+
+        /// 自定义运行器拒绝写文件 / 读外部配置的参数（与格式化器同一套规则）
+        #[test]
+        fn custom_runner_rejects_write_args() {
+            let file = temp_file("spec2.rb", "puts 1");
+            let entry = RunnerEntry {
+                program: "ruby".into(),
+                args: vec!["--output=out.txt".into()],
+                envs: Default::default(),
+            };
+            let err = custom_spec(&entry, &file).unwrap_err();
+            assert!(err.contains("安全策略"));
+        }
+
+        /// 有自定义条目时覆盖内置定义；没有则回落到内置 4 项
+        #[test]
+        fn resolve_prefers_custom_entry_over_builtin() {
+            let file = temp_file("spec3.py", "print(1)");
+            let entry = RunnerEntry {
+                program: "python3".into(),
+                args: vec!["__PLACEHOLDER__".into()],
+                envs: Default::default(),
+            };
+            let spec = resolve_spec("python", RunSource::File(&file), Some(&entry)).unwrap();
+            assert_eq!(spec.program, "python3");
+            let builtin = resolve_spec("python", RunSource::File(&file), None).unwrap();
+            assert_eq!(builtin.program, "python");
+        }
 
     #[test]
     fn parse_curl_args_accepts_powershell_and_curl_exe() {

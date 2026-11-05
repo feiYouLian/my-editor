@@ -343,6 +343,31 @@ impl Default for FormatterEntry {
     }
 }
 
+/// Code Run 自定义运行器（config.json 的 `runners` 表）。
+///
+/// 键是语言键（如 `ruby` / `go`），`args` 中的 `__PLACEHOLDER__` 会被替换成目标文件路径。
+/// 内置 4 项（python / node / java / curl）仍在代码里，同名条目可覆盖其 program / args。
+/// 工具与参数只来自配置文件（用户自己的机器），前端仍只传语言键——与 formatters 同一信任模型。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerEntry {
+    pub program: String,
+    pub args: Vec<String>,
+    /// 运行前注入的环境变量（如 `{"PYTHONIOENCODING": "utf-8"}`）
+    #[serde(default)]
+    pub envs: BTreeMap<String, String>,
+}
+
+impl Default for RunnerEntry {
+    fn default() -> Self {
+        Self {
+            program: String::new(),
+            args: Vec::new(),
+            envs: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppConfig {
@@ -377,6 +402,8 @@ pub struct AppConfig {
     pub ignore_dirs: Vec<String>,
     pub file_encoding_memory: BTreeMap<String, String>,
     pub formatters: BTreeMap<String, FormatterEntry>,
+    /// Code Run 自定义运行器（键 = 语言键）；内置 4 项不受影响，同名可覆盖
+    pub runners: BTreeMap<String, RunnerEntry>,
 }
 
 impl Default for AppConfig {
@@ -408,6 +435,7 @@ impl Default for AppConfig {
             ignore_dirs: vec!["node_modules".into(), ".git".into(), "dist".into()],
             file_encoding_memory: BTreeMap::new(),
             formatters: default_formatters(),
+            runners: BTreeMap::new(),
         }
     }
 }

@@ -156,6 +156,16 @@ export interface FormatterEntry {
   args: string[];
 }
 
+/** Code Run 自定义运行器（config.json 的 runners 表；键 = 语言键） */
+export interface RunnerEntry {
+  /** 可执行文件名（后端解析，前端不指定完整路径之外的语义） */
+  program: string;
+  /** 参数；`__PLACEHOLDER__` 会被替换成目标文件路径 */
+  args: string[];
+  /** 运行前注入的环境变量 */
+  envs?: Record<string, string>;
+}
+
 export interface AppConfig {
   version: number;
   theme: ThemeSetting;
@@ -187,6 +197,8 @@ export interface AppConfig {
   ignoreDirs: string[];
   fileEncodingMemory: Record<string, string>;
   formatters: Record<string, FormatterEntry>;
+  /** Code Run 自定义运行器（键 = 语言键）；内置 python / node / java / curl 不受影响 */
+  runners: Record<string, RunnerEntry>;
 }
 
 /** 编辑器直接消费的配置子集（由 AppConfig 派生） */
@@ -329,6 +341,8 @@ export function defaultConfig(): AppConfig {
       rust: { tool: "rustfmt", args: [] },
       cpp: { tool: "clang-format", args: ["-style=file", "-assume-filename=__PLACEHOLDER__"] },
     },
+    // 空表：内置 4 个运行器在代码里，用户按语言键在这里扩展（如 ruby / go）
+    runners: {},
   };
 }
 

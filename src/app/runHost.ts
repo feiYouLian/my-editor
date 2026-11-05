@@ -139,18 +139,20 @@ export class RunHost {
     // 有未保存改动也可运行：点击后先保存再执行
     this.runBtn.disabled = !canRun;
     this.runBtn.title = !canRun
-      ? "当前文件不支持运行（支持 Python / JS / Java / cURL，且需已保存为磁盘文件）"
+      ? "当前文件不支持运行（内置 Python / JS / Java / cURL；其它语言可在设置 → 文件与会话 → Code Run 运行器中配置，且需已保存为磁盘文件）"
       : tab?.dirty
         ? `保存并运行 ${tab?.name ?? ""}（F5）`
         : `运行 ${tab?.name ?? ""}（F5）`;
   }
 
-  /** 按生效语言选择 Code Run 运行器（仅 Python / Node / Java / cURL） */
+  /** 按生效语言选择 Code Run 运行器（内置 Python / Node / Java / cURL + 配置扩展） */
   runnerFor(tab: Tab): string | null {
     const lang = effectiveLanguage(tab);
     if (lang === "python") return "python";
     if (lang === "javascript" || lang === "jsx") return "node";
     if (lang === "java") return "java";
+    // config.json 的 runners 表按语言键扩展（如 ruby / go）；内置 4 项不受影响
+    if (lang && lang in getConfig().runners) return lang;
     // cURL 脚本：只看第一个有意义行（兼容 curl / curl.exe / PowerShell & 'curl'）
     // 只取前 4KB：本函数每次输入都会调用，对全文扫描太贵（惰性快照下走 O(4KB) 头部读取）
     const head = tabStore.contentHeadOf(tab, 4096);
@@ -175,7 +177,9 @@ export class RunHost {
     }
     const runner = this.runnerFor(tab);
     if (!runner) {
-      this.deps.showMessage("当前语言不支持运行（支持 Python / JS / Java / cURL）");
+      this.deps.showMessage(
+        "当前语言不支持运行：内置 Python / JS / Java / cURL，其它语言可在设置 → 文件与会话 → Code Run 运行器中按语言键配置",
+      );
       return;
     }
     this.deps.onBeforeRun?.();
@@ -199,7 +203,9 @@ export class RunHost {
     }
     const runner = this.runnerFor(tab);
     if (!runner) {
-      this.deps.showMessage("当前语言不支持运行（支持 Python / JS / Java / cURL）");
+      this.deps.showMessage(
+        "当前语言不支持运行：内置 Python / JS / Java / cURL，其它语言可在设置 → 文件与会话 → Code Run 运行器中按语言键配置",
+      );
       return;
     }
     this.deps.runInTerminal(tab.path, runner);

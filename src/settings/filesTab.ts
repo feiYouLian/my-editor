@@ -16,7 +16,7 @@ import {
 } from "../config/settings";
 import { firstLine } from "../core/errors";
 import { basenameOf } from "../core/paths";
-import { confirmAction } from "../ui/dialogs";
+import { confirmAction, promptText, showErrorDialog } from "../ui/dialogs";
 import { buttonRow, checkRow, numberRow, section, selectRow, textRow } from "../ui/formControls";
 import {
   saveExternal,
@@ -294,6 +294,106 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
     }),
   );
   main.append(searchSection.el);
+
+  // ---- Code Run 运行器（config.json 的 runners 表） ----
+  // 内置 4 项在代码里；这里按语言键扩展 / 覆盖。工具与参数由后端解析，
+  // 前端只传语言键——与格式化器同一信任模型。
+  const runnerSection = section(
+    "Code Run 运行器",
+    "内置 Python / Node / Java / cURL；这里按语言键扩展（键即文件语言，如 ruby / go）。" +
+      "参数中 __PLACEHOLDER__ 会被替换成目标文件路径；保存后立即生效。",
+  );
+
+  /** 与后端 is_rejected_runner_arg 同一套规则：先在这里拦下，提示更近 */
+  const REJECTED_RUNNER_ARGS = new Set([
+    "-o",
+    "-i",
+    "--in-place",
+    "--output",
+    "--config",
+    "-config",
+  ]);
+  const isRejectedRunnerArg = (arg: string): boolean => {
+    const lower = arg.trim().toLowerCase();
+    return (
+      REJECTED_RUNNER_ARGS.has(lower) ||
+      /^(--output=|--config=|-o=|-config=)/.test(lower)
+    );
+  };
+
+  const renderRunners = (): void => {
+    runnerSection.body.replaceChildren();
+    const runners = getConfig().runners;
+    for (const key of Object.keys(runners)) {
+      const entry = runners[key];
+      const summary = `${entry.program} ${entry.args.join(" ")}`.trim();
+      runnerSection.body.append(
+        buttonRow(`${key} → ${summary}`, [
+          {
+            text: "删除",
+            title: `删除运行器「${key}」（内置 4 项不受影响）`,
+            onClick: () => {
+              void confirmAction(`确定删除运行器「${key}」？`, "删除").then(async (ok) => {
+                if (!ok) return;
+                const next = { ...getConfig().runners };
+                delete next[key];
+                // updateSettings 先写盘再刷新内存：必须等它完成，列表才读得到新值
+                try {
+                  await updateSettings({ runners: next });
+                } catch (e) {
+                  showErrorDialog("运行器保存失败", firstLine(e));
+                  return;
+                }
+                renderRunners();
+                ctx.callbacks.onMessage(`已删除运行器「${key}」`);
+              });
+            },
+          },
+        ]),
+      );
+    }
+    runnerSection.body.append(
+      buttonRow(
+        Object.keys(runners).length === 0 ? "尚未配置扩展运行器" : "添加",
+        [{ text: "添加运行器…", title: "按语言键新增一个 Code Run 运行器", onClick: () => void addRunner() }],
+      ),
+    );
+  };
+
+  const addRunner = async (): Promise<void> => {
+    const key = (await promptText("语言键（与文件语言一致，如 ruby / go）", ""))?.trim();
+    if (!key) return;
+    if (!/^[A-Za-z0-9+#._-]+$/.test(key)) {
+      showErrorDialog("运行器配置有误", "语言键只能包含字母、数字与 + # . _ -");
+      return;
+    }
+    if (key in getConfig().runners) {
+      showErrorDialog("运行器配置有误", `「${key}」已存在：删除后重新添加`);
+      return;
+    }
+    const program = (await promptText(`「${key}」的可执行文件名`, ""))?.trim();
+    if (!program) return;
+    const argsText =
+      (await promptText("参数（空格分隔；__PLACEHOLDER__ 代表文件路径）", "__PLACEHOLDER__"))?.trim() ?? "";
+    const args = argsText.split(/\s+/).filter(Boolean);
+    const rejected = args.find(isRejectedRunnerArg);
+    if (rejected) {
+      showErrorDialog(
+        "运行器配置有误",
+        `参数「${rejected}」被安全策略拒绝（不允许写文件或读取外部配置）`,
+      );
+      return;
+    }
+    // updateSettings 先写盘再刷新内存：等它完成，列表与运行器解析才读得到新值
+    await updateSettings({ runners: { ...getConfig().runners, [key]: { program, args } } }).catch(
+      (e: unknown) => showErrorDialog("运行器保存失败", firstLine(e)),
+    );
+    renderRunners();
+    ctx.callbacks.onMessage(`已添加运行器「${key}」：打开对应语言文件按 F5 即可运行`);
+  };
+
+  renderRunners();
+  main.append(runnerSection.el);
 
   const terminalSection = section(
     "终端",
