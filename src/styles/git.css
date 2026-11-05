@@ -109,79 +109,6 @@
   min-width: 0;
 }
 
-/* 侧栏内嵌历史：列表 + 补丁详情，不占模态层 */
-.git-log-list {
-  flex: none;
-  max-height: 46%;
-  overflow: auto;
-  border-bottom: 1px solid var(--border);
-  margin: 0 8px;
-}
-
-.git-log-item {
-  padding: 5px 4px;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-}
-
-.git-log-item:hover {
-  background: var(--bg-hover);
-}
-
-.git-log-item.selected {
-  background: var(--bg-selected);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.git-log-subject {
-  font-size: 12px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-log-meta,
-.git-log-refs {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-log-refs {
-  color: var(--accent);
-}
-
-.git-log-detail {
-  margin: 6px 8px;
-  max-height: 48%;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: var(--font-mono, Consolas, monospace);
-  font-size: 10px;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
-
-/* 侧栏内嵌分支列表 */
-.git-body .git-branch-create {
-  margin: 0 8px 6px;
-}
-
-.git-branch-list.inline {
-  border-top: 1px solid var(--border);
-  border-bottom: 0;
-  padding: 0 8px;
-}
-
-.git-branch-list.inline .git-branch-row {
-  padding: 4px 0;
-}
-
 /* 底部 Git 历史面板（终端区域同级） */
 .git-history-panel {
   height: 34%;
@@ -233,9 +160,27 @@
 }
 
 .git-history-panel-item {
+  /* 固定行高：虚拟化按 ROW_H=40 定位窗口（改这里必须同步 gitHistoryPanel.ts） */
+  height: 40px;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
+}
+
+/* 虚拟化容器：spacer 撑总高度，window 只放可见行 */
+.git-history-panel-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.git-history-panel-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
 }
 
 .git-history-panel-item:hover {
@@ -264,12 +209,6 @@
   white-space: nowrap;
 }
 
-.git-history-panel-refs {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--accent);
-}
-
 .git-history-panel-detail {
   flex: 1;
   min-width: 0;
@@ -284,14 +223,6 @@
   color: var(--text-secondary);
 }
 
-/* Git 历史 / 分支 / 冲突对话框 */
-.git-history-dialog {
-  width: min(920px, 92vw);
-  max-height: 82vh;
-  display: flex;
-  flex-direction: column;
-}
-
 .git-history-head {
   display: flex;
   align-items: center;
@@ -301,74 +232,6 @@
 
 .git-history-head h3 {
   margin: 0;
-}
-
-.git-history-layout {
-  display: flex;
-  gap: 8px;
-  flex: 1;
-  min-height: 0;
-  margin-top: 8px;
-}
-
-.git-history-list {
-  width: 310px;
-  min-width: 220px;
-  overflow: auto;
-  border-right: 1px solid var(--border);
-  padding-right: 6px;
-}
-
-.git-history-item {
-  padding: 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  border: 1px solid transparent;
-}
-
-.git-history-item:hover {
-  background: var(--bg-hover);
-}
-
-.git-history-item.selected {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-
-.git-history-subject {
-  font-size: 12px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-history-meta {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.git-history-refs {
-  margin-top: 2px;
-  font-size: 10px;
-  color: var(--accent);
-}
-
-.git-history-detail {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: var(--font-mono, Consolas, monospace);
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-secondary);
 }
 
 /* Git Blame */
@@ -411,9 +274,28 @@
 }
 
 .git-blame-row {
+  /* 固定行高：虚拟化按 ROW_H=22 定位窗口（改这里必须同步 gitBlame.ts） */
+  height: 22px;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 2px 6px;
   cursor: pointer;
   border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+/* 虚拟化容器：spacer 撑总高度，window 只放可见行 */
+.git-blame-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.git-blame-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
 }
 
 .git-blame-row:hover {
@@ -449,77 +331,6 @@
 
 .git-blame-truncated {
   padding: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.git-branch-dialog {
-  width: min(560px, 92vw);
-  max-height: 76vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.git-branch-create {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.git-branch-create .dialog-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.git-branch-check {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.git-branch-list {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-
-.git-branch-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 2px;
-  border-bottom: 1px solid var(--border);
-}
-
-.git-branch-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.git-branch-tag {
-  flex: none;
-  font-size: 10px;
-  color: var(--accent);
-}
-
-.git-branch-actions {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-
-.git-branch-hint {
-  padding-top: 6px;
   font-size: 11px;
   color: var(--text-secondary);
 }
@@ -789,11 +600,6 @@
 
 .git-row-action:hover {
   color: var(--accent);
-}
-
-/* 行内撤回（放弃更改）：危险动作，悬停变红 */
-.git-row-action.git-row-discard:hover {
-  color: var(--danger);
 }
 
 .git-row-action:disabled {

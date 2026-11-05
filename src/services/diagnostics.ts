@@ -4,6 +4,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { firstLine } from "../core/errors";
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -20,7 +21,7 @@ export function logError(message: string, error?: unknown): void {
       : error instanceof Error
         ? error.stack ?? error.message
         : String(error);
-  const first = detail.split("\n")[0] ?? "";
+  const first = detail ? firstLine(detail) : "";
   logEvent("error", message, first);
 }
 

@@ -9,6 +9,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { firstLine } from "../core/errors";
 import { parseThemeEntries, type UserTheme } from "../config/userThemes";
 import { parseLanguageEntries, type UserLanguageSpec } from "../config/userLanguages";
 
@@ -29,8 +30,7 @@ export interface LanguageLoadResult {
 }
 
 function reason(e: unknown): string {
-  const text = e instanceof Error ? e.message : String(e);
-  return text.split("\n")[0];
+  return firstLine(e);
 }
 
 /** 读取并解析全部自定义主题 */

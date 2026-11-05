@@ -1,3 +1,4 @@
+import { firstLine } from "../../core/errors";
 import { replaceSvg } from "../../core/html";
 
 /**
@@ -98,7 +99,7 @@ export async function hydrateMermaid(
   try {
     api = await loadMermaid();
   } catch (e) {
-    const reason = `Mermaid 组件加载失败：${String(e instanceof Error ? e.message : e).split("\n")[0]}`;
+    const reason = `Mermaid 组件加载失败：${firstLine(e)}`;
     for (const item of pending) fail(item.block, item.source, reason);
     return;
   }
@@ -111,7 +112,7 @@ export async function hydrateMermaid(
       block.classList.add("rendered");
       cacheSvg(source, safe);
     } catch (e) {
-      fail(block, source, String(e instanceof Error ? e.message : e).split("\n")[0]);
+      fail(block, source, firstLine(e));
     }
   }
 }
