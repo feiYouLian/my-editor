@@ -87,7 +87,10 @@ Rust 侧约束：
   （config.json 的 runners 表按语言键扩展 / 覆盖，设置页增删改 + 参数校验，立即生效）
 - 0.7.0 计划 S6 完成（2026-11-05，标签 `v0.7.0-s6`）：Git 历史 / Blame 千条级列表虚拟化、
   历史面板键盘操作（↑↓/Enter/Esc）、git.css 废弃样式清理（-231 行）、首行提取统一走 firstLine
+- 0.7.0 计划 S7 完成（2026-11-05，标签 `v0.7.0`）：验收记录归档 docs/acceptance/2026-11-05.md，
+  CHANGELOG 转 0.7.0 段、USER-GUIDE 补运行器与命令行工作区说明，版本号统一 0.7.0
 - **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
 - 未达项：E2E 19 条用例覆盖全部 12 条关键路径（路径 2 的「另存为转码」仍受原生对话框限制）；
+  C 层人工观感条目待桌面会话走查（见 docs/acceptance/2026-11-05.md 第 4 节）；
   自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名

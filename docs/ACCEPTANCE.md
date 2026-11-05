@@ -22,6 +22,8 @@
 | A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | `searchView` / `quickOpen` / `tabsBar` / `gitView` / `gitHistoryPanel` / `gitBlame` / `branchPicker` 共 18 条断言（含长列表虚拟化与键盘行为） | 自动 | S2 / S6 | |
 | A-10 | 空白错误 | `git diff --check` | 无输出、退出码 0 | 自动 | S0 | |
 
+> 执行记录：[`docs/acceptance/2026-11-05.md`](./acceptance/2026-11-05.md)（v0.7.0 收口，A 层 10 项 / B 层 3 项全绿）。
+
 ## B. 半自动层（脚本产出 + 人工判读）
 
 | # | 检查项 | 方式 | 判据 | 层级 | 批次 | 记录 |
