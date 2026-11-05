@@ -30,13 +30,13 @@ test.afterAll(async () => {
 
 /**
  * promptText 对话框：按标题定位（连续弹窗时旧框还在淡出，`.dialog` 会命中多个），
- * 填入后 Enter 确认，等本框真正消失再返回。
+ * 填入后**真实点击**「确定」——click 会做命中测试，对话框若被设置中心盖住就会失败。
  */
 async function answerPrompt(heading: string, text: string): Promise<void> {
   const dialog = page.locator(".dialog", { hasText: heading });
   await expect(dialog).toBeVisible();
   await dialog.locator(".dialog-input").fill(text);
-  await dialog.locator(".dialog-input").press("Enter");
+  await dialog.getByRole("button", { name: "确定", exact: true }).click();
   await expect(dialog).toBeHidden();
 }
 

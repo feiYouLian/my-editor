@@ -5,7 +5,7 @@
 /* ---------- 无边框窗口缩放热区 ---------- */
 .resize-zone {
   position: fixed;
-  z-index: 150;
+  z-index: var(--z-resize);
 }
 
 .rz-n {

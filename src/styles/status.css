@@ -400,7 +400,7 @@
 .diff-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 220;
+  z-index: var(--z-diff);
   display: flex;
   align-items: center;
   justify-content: center;

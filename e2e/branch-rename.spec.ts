@@ -54,9 +54,9 @@ test("分支面板可重命名：git branch -m 生效且列表刷新", async () 
 
   const dialog = page.locator(".dialog");
   await expect(dialog).toContainText("重命名分支「feature」");
-  // Enter 确认：对话框上的确定按钮会被 palette 遮罩挡住（z-index），键盘路径更稳
+  // 真实点击「确定」：click 会做命中测试——对话框若被 palette 遮罩盖住就会失败
   await dialog.locator(".dialog-input").fill("renamed");
-  await dialog.locator(".dialog-input").press("Enter");
+  await dialog.getByRole("button", { name: "确定", exact: true }).click();
 
   await expect
     .poll(() => git(["branch", "--format=%(refname:short)"]))

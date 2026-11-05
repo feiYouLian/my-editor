@@ -13,7 +13,7 @@
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
   user-select: none;
   position: relative;
-  z-index: 30;
+  z-index: var(--z-titlebar);
 }
 
 .titlebar-spacer {
@@ -93,7 +93,7 @@
 
 .menu-dropdown {
   position: fixed;
-  z-index: 250;
+  z-index: var(--z-dropdown);
   min-width: 232px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);

@@ -156,7 +156,7 @@
 .sv-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 260;
+  z-index: var(--z-structured);
   display: flex;
   align-items: center;
   justify-content: center;

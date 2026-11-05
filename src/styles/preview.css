@@ -75,7 +75,7 @@
 /* 悬停行预览：固定定位，靠近指针但不参与布局 */
 .cm-minimap-hover {
   position: fixed;
-  z-index: 230;
+  z-index: var(--z-minimap);
   display: none;
   max-width: min(420px, calc(100vw - 16px));
   padding: 4px 8px;
