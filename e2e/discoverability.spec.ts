@@ -5,6 +5,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
+import { readWhenWritten } from "./helpers/fs";
 import { openSidebarView } from "./helpers/sidebar";
 
 /**
@@ -121,8 +122,11 @@ test("导出补丁同名时先问覆盖，换名字不丢旧文件", async () =>
   await expect(exportBtn).toContainText("工作区 vs HEAD");
   await exportBtn.click();
   await expect(page.locator(".result-card-title")).toContainText("已导出统一 diff 补丁");
-  await expect.poll(async () => readFile(join(dir, "a.txt.patch"), "utf8")).toContain("THREE");
-  const firstPatch = await readFile(join(dir, "a.txt.patch"), "utf8");
+  const firstPatchPath = join(dir, "a.txt.patch");
+  await expect
+    .poll(() => readWhenWritten(firstPatchPath), { timeout: 15_000 })
+    .toContain("THREE");
+  const firstPatch = await readFile(firstPatchPath, "utf8");
 
   // 第二次：同名已存在，先不落盘，给「覆盖 / 换个名字」
   await exportBtn.click();
@@ -135,9 +139,15 @@ test("导出补丁同名时先问覆盖，换名字不丢旧文件", async () =>
   await expect(rename).toBeVisible();
   await rename.click();
 
+  // 先等动作真的落地（卡片换成「已导出」），再看文件：
+  // 否则「点击没生效」和「写盘慢」两种失败会混在同一个读文件断言里
+  await expect(page.locator(".result-card-title").last()).toContainText("已导出统一 diff 补丁");
+
   // 换名字 → a.txt.1.patch，旧文件内容不变
-  await expect.poll(async () => readFile(join(dir, "a.txt.1.patch"), "utf8")).toContain("THREE");
-  expect(await readFile(join(dir, "a.txt.patch"), "utf8")).toBe(firstPatch);
+  await expect
+    .poll(() => readWhenWritten(join(dir, "a.txt.1.patch")), { timeout: 15_000 })
+    .toContain("THREE");
+  expect(await readFile(firstPatchPath, "utf8")).toBe(firstPatch);
 
   await dialog.getByRole("button", { name: "关闭差异面板" }).click();
   await expect(dialog).toBeHidden();

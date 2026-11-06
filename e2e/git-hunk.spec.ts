@@ -1,10 +1,11 @@
 import { chromium, expect, test, type Browser, type Page } from "@playwright/test";
 import type { ChildProcess } from "node:child_process";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { killApp, launchApp, PORT, removeDir } from "./helpers/app";
+import { readWhenWritten } from "./helpers/fs";
 import { openSidebarView } from "./helpers/sidebar";
 
 let app: ChildProcess;
@@ -66,7 +67,9 @@ test("Git 差异：导出补丁，并只暂存当前差异块", async () => {
   // 导出补丁：写入 <文件>.patch，不弹保存对话框
   await dialog.getByRole("button", { name: "导出补丁" }).click();
   const patch = join(dir, "a.txt.patch");
-  await expect.poll(async () => readFile(patch, "utf8"), { timeout: 15_000 }).toContain("THREE");
+  await expect
+    .poll(() => readWhenWritten(patch), { timeout: 15_000 })
+    .toContain("THREE");
 
   await dialog.getByRole("button", { name: "暂存此块" }).click();
 
