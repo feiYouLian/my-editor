@@ -1,7 +1,7 @@
 {
   "name": "my-editor",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.8.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -15,6 +15,8 @@
     "test:e2e": "playwright test",
     "build:e2e": "node scripts/build-debug-e2e.mjs",
     "typecheck:e2e": "tsc -p tsconfig.e2e.json --noEmit",
+    "audit:discoverability": "node scripts/audit-discoverability.mjs",
+    "gen:commands": "node scripts/gen-command-index.mjs",
     "test:watch": "vitest",
     "bump": "node scripts/bump-version.mjs",
     "tauri": "tauri"
