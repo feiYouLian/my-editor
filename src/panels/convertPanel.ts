@@ -21,6 +21,7 @@ import {
 } from "../core/convert";
 import { jsonToJava, type CodegenOptions } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
+import { showHelpDialog } from "./helpDialog";
 
 /** 超过此行数替换前确认（与格式化一致） */
 const CONFIRM_LINES = 10000;
@@ -138,7 +139,14 @@ export class ConvertPanel {
     const scope = document.createElement("span");
     scope.className = "convert-scope";
     scope.textContent = this.source?.hasSelection ? "范围：选区" : "范围：整篇";
-    head.append(title, scope);
+    const helpBtn = document.createElement("button");
+    helpBtn.type = "button";
+    helpBtn.className = "convert-head-btn";
+    helpBtn.textContent = "?";
+    helpBtn.title = "查看「格式转换」帮助";
+    helpBtn.addEventListener("click", () => showHelpDialog("guide", "格式转换"));
+
+    head.append(title, scope, helpBtn);
     return head;
   }
 

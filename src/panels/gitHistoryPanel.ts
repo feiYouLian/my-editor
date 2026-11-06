@@ -1,6 +1,9 @@
 /**
  * 底部 Git 历史面板（参考 IDEA 的 Log 工具窗）：
  * 左侧提交列表，右侧提交明细；作为终端/运行输出同级的非模态面板。
+ *
+ * 头部固定说明范围与操作，空态/失败态都给下一步动作：
+ * 历史面板是新用户最容易「看不懂在干什么」的地方，文案必须自己解释。
  */
 
 import type { GitCommit } from "./gitView";
@@ -16,6 +19,12 @@ const MIN_ROWS = 15;
 export interface GitHistoryPanelDeps {
   load: () => Promise<GitCommit[]>;
   loadCommit: (hash: string) => Promise<string>;
+  /** 空仓库时「去提交」：切到源代码管理并聚焦提交框 */
+  onFocusCommit?: () => void;
+  /** 导出当前提交的 .patch（由 app 层落到工作区根目录） */
+  exportPatch?: (name: string, patch: string) => Promise<void>;
+  /** 头部「?」：打开用户指南的 Git 一节 */
+  onOpenHelp?: () => void;
 }
 
 export class GitHistoryPanel {
@@ -27,6 +36,9 @@ export class GitHistoryPanel {
   private listEl: HTMLElement | null = null;
   private detailEl: HTMLElement | null = null;
   private countEl: HTMLElement | null = null;
+  private scopeEl: HTMLElement | null = null;
+  private detailBarEl: HTMLElement | null = null;
+  private detailMetaEl: HTMLElement | null = null;
   /** 当前列表的窗口重绘（滚动时调用；每次 render 更新） */
   private paintList: (() => void) | null = null;
 
@@ -48,8 +60,21 @@ export class GitHistoryPanel {
     const title = document.createElement("span");
     title.className = "git-history-panel-title";
     title.textContent = "Git 历史";
+    // 范围与操作进头部：不点任何东西就知道看的是哪份数据、能怎么操作
+    this.scopeEl = document.createElement("span");
+    this.scopeEl.className = "git-history-panel-scope";
+    this.scopeEl.textContent = "当前工作区 · ↑↓ 选择 / Enter 查看 / Esc 关闭";
     this.countEl = document.createElement("span");
     this.countEl.className = "git-history-panel-count";
+
+    const help = document.createElement("button");
+    help.type = "button";
+    help.className = "gs-head-btn";
+    help.textContent = "?";
+    help.title = "查看「Git 日常」帮助";
+    help.setAttribute("aria-label", "查看帮助");
+    help.addEventListener("click", () => this.deps.onOpenHelp?.());
+
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "gs-head-btn";
@@ -61,8 +86,9 @@ export class GitHistoryPanel {
     close.className = "gs-head-btn";
     close.textContent = "✕";
     close.title = "关闭历史面板";
+    close.setAttribute("aria-label", "关闭历史面板");
     close.addEventListener("click", () => this.hide());
-    head.append(title, this.countEl, refresh, close);
+    head.append(title, this.scopeEl, this.countEl, help, refresh, close);
 
     const body = document.createElement("div");
     body.className = "git-history-panel-body";
@@ -70,16 +96,31 @@ export class GitHistoryPanel {
     this.listEl.className = "git-history-panel-list";
     // 键盘导航：列表可聚焦（↑↓ 选择 / Enter 查看 / Esc 关闭，与分支面板一致）
     this.listEl.tabIndex = 0;
+
+    const detailWrap = document.createElement("div");
+    detailWrap.className = "git-history-panel-detail-wrap";
+    const bar = document.createElement("div");
+    bar.className = "git-history-detail-bar";
+    this.detailMetaEl = document.createElement("span");
+    this.detailMetaEl.className = "git-history-detail-meta";
+    this.detailBarEl = document.createElement("div");
+    this.detailBarEl.className = "git-history-detail-actions";
+    bar.append(this.detailMetaEl, this.detailBarEl);
     this.detailEl = document.createElement("pre");
     this.detailEl.className = "git-history-panel-detail";
-    this.detailEl.textContent = "选择提交查看补丁";
-    body.append(this.listEl, this.detailEl);
+    this.detailEl.textContent = this.emptyDetailText();
+    detailWrap.append(bar, this.detailEl);
 
+    body.append(this.listEl, detailWrap);
     this.host.append(head, body);
 
     // 滚动重绘窗口：监听器只挂一次，paintList 随 render 更新
     this.listEl.addEventListener("scroll", () => this.paintList?.(), { passive: true });
     this.host.addEventListener("keydown", (e) => this.onKeyDown(e));
+  }
+
+  private emptyDetailText(): string {
+    return "选择一条提交查看它改了哪些文件：右侧是 diff 原文，可复制或导出为 .patch";
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -162,16 +203,35 @@ export class GitHistoryPanel {
     this.render();
   }
 
+  /** diff 里「改了 N 个文件」的口径：git 的 diff --git 头计数 */
+  private fileCountOf(detail: string): number {
+    return detail.split("\n").filter((line) => line.startsWith("diff --git ")).length;
+  }
+
   private render(): void {
     if (!this.listEl || !this.detailEl) return;
     if (this.countEl) {
-      this.countEl.textContent = this.commits ? `共 ${this.commits.length} 条` : "";
+      this.countEl.textContent = this.commits ? `· 最近 ${this.commits.length} 条` : "";
     }
     this.listEl.innerHTML = "";
     if (this.error) {
       const err = document.createElement("div");
       err.className = "git-empty";
       err.textContent = this.error;
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "git-empty-action";
+      retry.textContent = "重试";
+      retry.addEventListener("click", () => void this.load());
+      const help = document.createElement("button");
+      help.type = "button";
+      help.className = "git-empty-action";
+      help.textContent = "检查是否为 Git 仓库";
+      help.addEventListener("click", () => this.deps.onOpenHelp?.());
+      const row = document.createElement("div");
+      row.className = "git-empty-actions";
+      row.append(retry, help);
+      err.append(row);
       this.listEl.append(err);
     } else if (this.commits === null) {
       const loading = document.createElement("div");
@@ -181,7 +241,16 @@ export class GitHistoryPanel {
     } else if (this.commits.length === 0) {
       const empty = document.createElement("div");
       empty.className = "git-empty";
-      empty.textContent = "没有提交";
+      empty.textContent = "这个仓库还没有提交 · 可先在左侧提交一次，历史会从这里开始记录";
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "git-empty-action";
+      go.textContent = "去提交";
+      go.addEventListener("click", () => this.deps.onFocusCommit?.());
+      const row = document.createElement("div");
+      row.className = "git-empty-actions";
+      row.append(go);
+      empty.append(row);
       this.listEl.append(empty);
     } else {
       const commits = this.commits;
@@ -208,7 +277,60 @@ export class GitHistoryPanel {
       };
       this.paintList();
     }
-    this.detailEl.textContent = this.detail || "选择提交查看补丁";
+    this.renderDetail();
+  }
+
+  /** 详情区：一行「改了 N 个文件」+ 复制 / 导出动作，下面是 diff 原文 */
+  private renderDetail(): void {
+    if (!this.detailEl || !this.detailMetaEl || !this.detailBarEl) return;
+    const detail = this.detail || this.emptyDetailText();
+    this.detailEl.textContent = detail;
+
+    // 后端返回 `git show --stat --patch`：commit 头与 stat 在前，补丁从第一个 diff --git 开始。
+    // 复制与导出一律只取补丁部分，否则 git apply 会报「unrecognized input」。
+    const patchStart = detail.indexOf("diff --git ");
+    const patch = patchStart >= 0 ? detail.slice(patchStart) : "";
+    const commit = this.commits?.find((c) => c.hash === this.selected);
+    this.detailMetaEl.textContent = patch
+      ? `这次提交改了 ${this.fileCountOf(patch)} 个文件 · 下面是 diff 原文`
+      : "";
+    this.detailBarEl.replaceChildren();
+
+    if (!patch || !commit) return;
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "git-detail-btn";
+    copy.textContent = "复制 diff";
+    copy.addEventListener("click", () => {
+      void navigator.clipboard.writeText(patch).then(
+        () => {
+          copy.textContent = "已复制";
+          window.setTimeout(() => {
+            copy.textContent = "复制 diff";
+          }, 1500);
+        },
+        () => {
+          copy.textContent = "复制失败";
+        },
+      );
+    });
+    this.detailBarEl.append(copy);
+
+    if (this.deps.exportPatch) {
+      const exportBtn = document.createElement("button");
+      exportBtn.type = "button";
+      exportBtn.className = "git-detail-btn";
+      exportBtn.textContent = "导出为 .patch";
+      exportBtn.title = "把这次提交的 diff 保存成 .patch 文件，可发给别人用 git apply 应用";
+      exportBtn.addEventListener("click", () => {
+        void this.deps.exportPatch?.(commit.shortHash, patch).catch((e) => {
+          exportBtn.textContent = "导出失败";
+          exportBtn.title = firstLine(e);
+        });
+      });
+      this.detailBarEl.append(exportBtn);
+    }
   }
 
   private itemFor(commit: GitCommit): HTMLElement {

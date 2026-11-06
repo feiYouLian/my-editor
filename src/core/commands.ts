@@ -27,12 +27,29 @@ export interface MenuModel {
   items: MenuItemModel[];
 }
 
+/** 产物类型：无产物 / 写文件 / 剪贴板 / 视图内结果 / Git */
+export type OutcomeKind = "none" | "file" | "clipboard" | "view" | "git";
+
+export interface CommandOutcome {
+  kind: OutcomeKind;
+  /** 结果说明：这是什么、能拿它做什么（结果卡第三段） */
+  hint?: string;
+  /** 暗入口位置：无菜单、只在命令面板时声明用户从哪里进入 */
+  entry?: string;
+}
+
 export interface CommandDef {
   id: string;
   /** 命令面板标题 */
   title: string;
   /** 命令面板分组 */
   section: string;
+  /** 一句话说明：解决什么问题 / 作用在哪份数据（15–40 字，面向用户） */
+  description?: string;
+  /** 用户会输入的词：口语、外部命令名、结果物名称（3–8 个） */
+  keywords?: string[];
+  /** 结果去向：产物类型 / 结果说明 / 暗入口位置 */
+  outcome?: CommandOutcome;
   run: () => void;
   // ---- 快捷键体系（defaultKey 缺省 = 不参与；"" = 参与但未绑定）----
   defaultKey?: string;
@@ -101,15 +118,28 @@ export function allCommands(): readonly CommandDef[] {
 }
 
 /** 命令面板条目（过滤不进面板的命令） */
-export function commandPaletteItems(): {
+export interface CommandItemModel {
   id: string;
   title: string;
   section: string;
+  description?: string;
+  keywords?: string[];
+  outcome?: CommandOutcome;
   run: () => void;
-}[] {
+}
+
+export function commandPaletteItems(): CommandItemModel[] {
   return allCommands()
     .filter((c) => !c.hidden)
-    .map((c) => ({ id: c.id, title: c.title, section: c.section, run: c.run }));
+    .map((c) => ({
+      id: c.id,
+      title: c.title,
+      section: c.section,
+      description: c.description,
+      keywords: c.keywords,
+      outcome: c.outcome,
+      run: c.run,
+    }));
 }
 
 /** 参与快捷键体系的命令（含 fixed 展示项） */

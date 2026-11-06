@@ -19,6 +19,9 @@
   --z-structured: 520;
   --z-settings: 540;
   --z-dialog: 600;
+  /* 结果卡是「刚发生了什么」的即时反馈，必须压过发起它的界面：
+     从差异面板导补丁时，卡上的「覆盖 / 换个名字」不能被对话框挡住。 */
+  --z-toast: 700;
 
   /* ---------- 表面与边框 ---------- */
   --bg-app: #16181f;
@@ -272,8 +275,9 @@
   color: #000;
 }
 
-/* 黄底上的快捷键与命中字必须回到黑色，否则与底色同色不可见 */
+/* 黄底上的快捷键、说明与命中字必须回到黑色，否则与底色同色不可见 */
 :root[data-theme="high-contrast"] .palette-item.selected .palette-shortcut,
+:root[data-theme="high-contrast"] .palette-item.selected .palette-item-desc,
 :root[data-theme="high-contrast"] .palette-item.selected mark {
   color: #000;
 }

@@ -51,6 +51,10 @@ jobs:
       - name: DOM 注入面
         run: node scripts/scan-innerhtml.mjs
 
+      # 可发现性：命令说明 / 关键词 / 产物入口 / 暗入口 / 空态 / 同名异源
+      - name: 可发现性审计
+        run: node scripts/audit-discoverability.mjs
+
       - name: E2E 类型检查
         run: npm run typecheck:e2e
 

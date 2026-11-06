@@ -1,0 +1,245 @@
+{
+  "phase": "baseline",
+  "generatedFrom": "v0.7.1-baseline (78bf390)",
+  "note": "S1 建立：commands 三个集合记录待补缺口，新增缺口立即失败；S3 收敛为 0 后自然转为硬判据。productActions 的 resultCard 在 S5 逐条填写；sameLabelGroups 在 S6 归零。",
+  "commands": {
+    "missingDescription": [],
+    "missingKeywords": [],
+    "undeclaredEntry": []
+  },
+  "productActions": [
+    {
+      "key": "command:file.saveAs",
+      "source": "command",
+      "id": "file.saveAs",
+      "file": "src/app/commandTable.ts",
+      "line": 185,
+      "label": "另存为…",
+      "resultCard": "src/app/fileService.ts"
+    },
+    {
+      "key": "command:file.saveAsEncoding",
+      "source": "command",
+      "id": "file.saveAsEncoding",
+      "file": "src/app/commandTable.ts",
+      "line": 187,
+      "label": "另存为指定编码…",
+      "resultCard": "src/app/fileService.ts"
+    },
+    {
+      "key": "command:fetch.open",
+      "source": "command",
+      "id": "fetch.open",
+      "file": "src/app/commandTable.ts",
+      "line": 196,
+      "label": "从网址抓取网页…",
+      "resultCard": "src/panels/fetchPageDialog.ts"
+    },
+    {
+      "key": "command:file.exportMarkdown",
+      "source": "command",
+      "id": "file.exportMarkdown",
+      "file": "src/app/commandTable.ts",
+      "line": 198,
+      "label": "导出 Markdown（当前 HTML 文件）",
+      "resultCard": "src/app/previewHost.ts"
+    },
+    {
+      "key": "command:help.exportDiagnostics",
+      "source": "command",
+      "id": "help.exportDiagnostics",
+      "file": "src/app/commandTable.ts",
+      "line": 220,
+      "label": "导出诊断包（版本 / 系统 / 日志）",
+      "resultCard": "src/app/commandTable.ts"
+    },
+    {
+      "key": "command:tools.batchEncoding",
+      "source": "command",
+      "id": "tools.batchEncoding",
+      "file": "src/app/commandTable.ts",
+      "line": 253,
+      "label": "批量另存为编码…",
+      "resultCard": null,
+      "exempt": "结果清单在面板内逐条展示"
+    },
+    {
+      "key": "command:insert.clipboardImage",
+      "source": "command",
+      "id": "insert.clipboardImage",
+      "file": "src/app/commandTable.ts",
+      "line": 278,
+      "label": "插入剪贴板图片（存为 .assets 并插入引用）",
+      "resultCard": "src/app/fileService.ts"
+    },
+    {
+      "key": "button:src/panels/gitHistoryPanel.ts#导出为 .patch",
+      "source": "button",
+      "file": "src/panels/gitHistoryPanel.ts",
+      "line": 319,
+      "label": "导出为 .patch",
+      "count": 1,
+      "resultCard": "src/app/diffService.ts"
+    },
+    {
+      "key": "button:src/panels/largeView/dom.ts#导出命中",
+      "source": "button",
+      "file": "src/panels/largeView/dom.ts",
+      "line": 101,
+      "label": "导出命中",
+      "resultCard": "src/panels/largeView.ts",
+      "count": 1
+    },
+    {
+      "key": "button:src/panels/runConfig.ts#保存",
+      "source": "button",
+      "file": "src/panels/runConfig.ts",
+      "line": 152,
+      "label": "保存",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "运行器配置写盘"
+    },
+    {
+      "key": "button:src/panels/saveEncoding.ts#选择路径并保存",
+      "source": "button",
+      "file": "src/panels/saveEncoding.ts",
+      "line": 99,
+      "label": "选择路径并保存",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "另存为编码对话框"
+    },
+    {
+      "key": "button:src/ui/dialogs.ts#保存",
+      "source": "button",
+      "file": "src/ui/dialogs.ts",
+      "line": 277,
+      "label": "保存",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "保存确认对话框"
+    },
+    {
+      "key": "button:src/ui/dialogs.ts#不保存",
+      "source": "button",
+      "file": "src/ui/dialogs.ts",
+      "line": 281,
+      "label": "不保存",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "保存确认对话框"
+    },
+    {
+      "key": "button:src/ui/dialogs.ts#保存全部并退出",
+      "source": "button",
+      "file": "src/ui/dialogs.ts",
+      "line": 345,
+      "label": "保存全部并退出",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "保存确认对话框"
+    },
+    {
+      "key": "button:src/ui/dialogs.ts#不保存退出",
+      "source": "button",
+      "file": "src/ui/dialogs.ts",
+      "line": 349,
+      "label": "不保存退出",
+      "resultCard": null,
+      "count": 1,
+      "exempt": "保存确认对话框"
+    },
+    {
+      "key": "manual:diff-patch-unsaved",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/diffService.ts",
+      "label": "导出补丁（未保存改动）",
+      "resultCard": "src/app/diffService.ts"
+    },
+    {
+      "key": "manual:diff-patch-file",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/diffService.ts",
+      "label": "导出补丁（与另一文件）",
+      "resultCard": "src/app/diffService.ts"
+    },
+    {
+      "key": "manual:diff-patch-worktree",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/diffService.ts",
+      "label": "导出补丁（工作区 vs HEAD）",
+      "resultCard": "src/app/diffService.ts"
+    },
+    {
+      "key": "manual:diff-patch-index",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/diffService.ts",
+      "label": "导出补丁（暂存区 vs HEAD）",
+      "resultCard": "src/app/diffService.ts"
+    },
+    {
+      "key": "manual:large-copy",
+      "source": "manual",
+      "manual": true,
+      "file": "src/panels/largeView.ts",
+      "label": "复制命中",
+      "resultCard": "src/panels/largeView.ts"
+    },
+    {
+      "key": "manual:preview-export",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/previewHost.ts",
+      "label": "导出 HTML / Word / PDF / Markdown",
+      "resultCard": "src/app/previewHost.ts"
+    },
+    {
+      "key": "manual:search-replace",
+      "source": "manual",
+      "manual": true,
+      "file": "src/panels/searchView.ts",
+      "label": "全部替换",
+      "resultCard": "src/panels/searchView.ts"
+    },
+    {
+      "key": "manual:git-commit",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/gitHost.ts",
+      "label": "提交",
+      "resultCard": "src/app/gitHost.ts"
+    },
+    {
+      "key": "manual:git-discard",
+      "source": "manual",
+      "manual": true,
+      "file": "src/app/gitHost.ts",
+      "label": "放弃更改",
+      "resultCard": "src/app/gitHost.ts"
+    }
+  ],
+  "emptyStates": [
+    {
+      "file": "src/panels/gitHistoryPanel.ts",
+      "text": "选择一条提交查看它改了哪些文件：右侧是 diff 原文，可复制或导出为 .patch"
+    },
+    {
+      "file": "src/panels/commandPalette.ts",
+      "text": "没有匹配的命令 · 先换个词试试（可以说用途，如「发给别人」），或按 Esc 关闭"
+    },
+    {
+      "file": "src/panels/bookmarksView.ts",
+      "text": "先打开一个文件，按 Ctrl+F2 在当前行加书签，这里会按文档分组列出"
+    },
+    {
+      "file": "src/panels/fileTree.ts",
+      "text": "没有匹配的文件 · 先清空关键词或换个写法再试"
+    }
+  ],
+  "sameLabelGroups": []
+}

@@ -30,6 +30,8 @@ export interface LargeViewDom {
   copyBtn: HTMLButtonElement;
   encodingSelect: HTMLSelectElement;
   editorBtn: HTMLButtonElement;
+  /** 帮助入口（跳到用户指南的大文件一节） */
+  helpBtn: HTMLButtonElement;
 }
 
 function toggleBtn(label: string, title: string): HTMLButtonElement {
@@ -120,6 +122,12 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
   const indexEl = document.createElement("span");
   indexEl.className = "lv-index";
 
+  const helpBtn = document.createElement("button");
+  helpBtn.type = "button";
+  helpBtn.className = "lv-btn";
+  helpBtn.textContent = "?";
+  helpBtn.title = "查看「看一个大日志」帮助";
+
   bar.append(
     title,
     filterInput,
@@ -137,6 +145,7 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     encodingSelect,
     editorBtn,
     indexEl,
+    helpBtn,
   );
 
   // ---- 主体：虚拟列表 + 缩略图（缩略图在右侧，与编辑器内 minimap 同侧） ----
@@ -186,5 +195,6 @@ export function buildLargeViewDom(host: HTMLElement): LargeViewDom {
     copyBtn,
     encodingSelect,
     editorBtn,
+    helpBtn,
   };
 }

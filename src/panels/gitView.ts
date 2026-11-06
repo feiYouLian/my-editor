@@ -169,9 +169,18 @@ export class GitView {
     this.bodyEl = document.createElement("div");
     this.bodyEl.className = "git-body";
 
-    // 「查看提交历史」不占独立一行：一个文字按钮孤悬在提交框上方很突兀。
-    // 历史是"查看类元信息"，入口收敛到组头右键 / 文件行右键 / 分支面板 / 命令面板。
-    host.append(commit, this.bodyEl);
+    // 「查看提交历史」摆成提交区下方的次级入口：默认注视区就能看到。
+    // 组头右键 / 文件行右键 / 分支面板 / 命令面板的入口保留为快捷方式。
+    const historyBar = document.createElement("div");
+    historyBar.className = "git-history-entry";
+    const historyBtn = document.createElement("button");
+    historyBtn.type = "button";
+    historyBtn.className = "git-history-entry-btn";
+    historyBtn.textContent = "查看提交历史";
+    historyBtn.title = "按时间查看当前工作区的提交记录，选中一条可看它改了哪些文件";
+    historyBtn.addEventListener("click", () => this.deps.onOpenHistory());
+    historyBar.append(historyBtn);
+    host.append(commit, historyBar, this.bodyEl);
   }
 
   private submitCommit(): void {

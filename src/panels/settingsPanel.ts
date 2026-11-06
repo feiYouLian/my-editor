@@ -19,6 +19,7 @@ import { renderTheme } from "../settings/themeTab";
 import { renderKeybindings } from "../settings/keybindingsTab";
 import { renderLayout } from "../settings/layoutTab";
 import { renderFiles } from "../settings/filesTab";
+import { showHelpDialog } from "./helpDialog";
 
 export type { SettingsPanelCallbacks };
 
@@ -75,7 +76,14 @@ export class SettingsPanel {
     head.className = "settings-head";
     const title = document.createElement("h3");
     title.textContent = "设置";
-    head.append(title);
+    const helpBtn = document.createElement("button");
+    helpBtn.type = "button";
+    helpBtn.className = "settings-close";
+    helpBtn.textContent = "?";
+    helpBtn.title = "查看「设置」帮助";
+    helpBtn.addEventListener("click", () => showHelpDialog("guide", "5 设置"));
+
+    head.append(title, helpBtn);
     // 搜索框：四页共约 40 项，靠翻分类找人太慢
     const searchInput = document.createElement("input");
     searchInput.type = "search";

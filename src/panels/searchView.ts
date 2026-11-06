@@ -9,6 +9,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/settings";
 import { confirmAction } from "../ui/dialogs";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
+import { showErrorCard, showResultCard } from "../ui/resultCard";
+import { showHelpDialog } from "./helpDialog";
 import { firstLine } from "../core/errors";
 
 interface SearchMatch {
@@ -211,7 +213,14 @@ export class SearchView {
       this.renderList();
     });
 
-    toolbar.append(this.queryEl, caseBtn, regexBtn, wordBtn, replaceToggle);
+    const helpBtn = document.createElement("button");
+    helpBtn.type = "button";
+    helpBtn.className = "sv-toggle";
+    helpBtn.textContent = "?";
+    helpBtn.title = "查看「批量替换并后悔」帮助";
+    helpBtn.addEventListener("click", () => showHelpDialog("guide", "批量替换"));
+
+    toolbar.append(this.queryEl, caseBtn, regexBtn, wordBtn, replaceToggle, helpBtn);
 
     // 包含 / 排除 glob：按 gitignore 语义传给后端（include 白名单，exclude 用 !pattern）
     const globRow = document.createElement("div");
@@ -692,14 +701,21 @@ export class SearchView {
       ];
       this.notice =
         reasons.length > 0 ? `上次替换跳过 ${reasons.length} 个：${reasons.join("；")}` : "";
-      this.deps.showMessage(
-        `已替换 ${result.replaced_files} 个文件 / ${result.replaced_matches} 处` +
-          (reasons.length > 0 ? `；跳过 ${reasons.length} 个（见侧栏）` : ""),
-        reasons.length > 0 ? 8000 : 4000,
-      );
+      showResultCard({
+        title: `已替换 ${result.replaced_files} 个文件 / ${result.replaced_matches} 处`,
+        hint:
+          reasons.length > 0
+            ? `跳过 ${reasons.length} 个（原因见侧栏）；可用「撤销上次替换」回退`
+            : "改动已写入磁盘；可用「撤销上次替换」回退，原文件内容会保留在替换历史里",
+        key: "search-replace",
+      });
       await this.run();
     } catch (e) {
-      this.deps.showMessage(`替换失败: ${firstLine(e)}`, 8000);
+      showErrorCard({
+        title: "批量替换失败",
+        message: firstLine(e),
+        hint: "可能有文件被占用或权限不足；已写入的部分文件可用「撤销上次替换」回退。",
+      });
     } finally {
       this.replacing = false;
       this.updateReplaceButton();

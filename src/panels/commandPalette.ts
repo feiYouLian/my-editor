@@ -1,20 +1,69 @@
 /**
  * 命令面板（Ctrl+Shift+P）：
  * 高级操作统一收进面板，主界面保持干净。
- * 动作注册表模式：各功能模块在实现时 register。
- * 不含宏录制/回放，故无「运行宏」条目。
+ *
+ * 搜索同时看三个字段：标题（模糊子序列）、keywords（精确/包含优先）、
+ * description（包含即命中）。说明写进命令元数据，面板只消费，不硬编码文案。
  */
 
 import { fuzzyMatch, fuzzyScore } from "../core/fuzzy";
 import { appendHighlighted } from "../ui/highlight";
+import { showHelpDialog } from "./helpDialog";
 
 export interface CommandItem {
   id: string;
   title: string;
   section?: string;
+  /** 一句话说明（第二行渲染） */
+  description?: string;
+  /** 用户会输入的词（搜索用） */
+  keywords?: string[];
+  /** 结果说明（选中项的详情区） */
+  outcome?: { kind: string; hint?: string };
   /** 快捷键展示文本（函数形式：渲染时求值，改键位后无需重注册） */
   shortcut?: string | (() => string);
   run: () => void;
+}
+
+export interface CommandScore {
+  score: number;
+  /** 标题里的命中位置（用于高亮）；只在关键词/说明命中时为空 */
+  positions: number[];
+}
+
+/**
+ * 命令匹配打分：标题模糊匹配打底，关键词与说明做加法。
+ * 精确关键词（如 "git apply"）权重最高——用户输入的是外部命令名或口语，
+ * 这些词不会出现在标题里。
+ * 命令 id 也参与匹配：命令索引里看到 `git.showHistory` 的人会直接拿它来搜。
+ */
+export function commandScore(query: string, item: CommandItem): CommandScore {
+  const q = query.trim().toLowerCase();
+  if (!q) return { score: 1, positions: [] };
+
+  const title = fuzzyMatch(q, item.title);
+  let score = title?.score ?? 0;
+  const positions = title?.positions ?? [];
+
+  const id = item.id?.toLowerCase() ?? "";
+  if (id) {
+    if (id === q) score += 120;
+    else if (id.includes(q)) score += 60;
+  }
+
+  for (const kw of item.keywords ?? []) {
+    const k = kw.toLowerCase();
+    if (k === q) score += 100;
+    else if (k.includes(q)) score += 40;
+  }
+
+  const desc = item.description?.toLowerCase() ?? "";
+  if (desc) {
+    if (desc.includes(q)) score += 30;
+    else score += fuzzyScore(q, desc) * 0.3;
+  }
+
+  return { score, positions };
 }
 
 export class CommandPalette {
@@ -22,6 +71,7 @@ export class CommandPalette {
   private overlay: HTMLElement | null = null;
   private input: HTMLInputElement | null = null;
   private listEl: HTMLElement | null = null;
+  private detailEl: HTMLElement | null = null;
   private selectedIndex = 0;
   private visible: CommandItem[] = [];
   /** 上次渲染时的查询：查询变了就要把选中项复位（否则回车会打开"意外那条"） */
@@ -57,14 +107,17 @@ export class CommandPalette {
 
     this.input = document.createElement("input");
     this.input.className = "palette-input";
-    this.input.placeholder = "输入命令…（Esc 关闭）";
+    this.input.placeholder = "输入命令名、用途或产物…（Esc 关闭）";
     this.input.addEventListener("input", () => this.renderList());
     this.input.addEventListener("keydown", (e) => this.onKeydown(e));
 
     this.listEl = document.createElement("div");
     this.listEl.className = "palette-list";
 
-    box.append(this.input, this.listEl);
+    this.detailEl = document.createElement("div");
+    this.detailEl.className = "palette-detail";
+
+    box.append(this.input, this.listEl, this.detailEl);
     overlay.append(box);
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) this.close();
@@ -81,6 +134,7 @@ export class CommandPalette {
     this.overlay = null;
     this.input = null;
     this.listEl = null;
+    this.detailEl = null;
   }
 
   toggle(): void {
@@ -92,6 +146,13 @@ export class CommandPalette {
     if (e.key === "Escape") {
       e.preventDefault();
       this.close();
+    } else if (e.key === "Enter" && e.ctrlKey) {
+      // Ctrl+Enter：不执行命令，先看它的完整说明
+      e.preventDefault();
+      const cmd = this.visible[this.selectedIndex];
+      if (!cmd) return;
+      this.close();
+      showHelpDialog("commands", cmd.id);
     } else if (e.key === "Enter") {
       e.preventDefault();
       const cmd = this.visible[this.selectedIndex];
@@ -151,7 +212,7 @@ export class CommandPalette {
     const query = this.input.value.trim();
     const recent = this.recentIds();
     const scored = this.commands
-      .map((cmd) => ({ cmd, score: fuzzyScore(query, cmd.title) }))
+      .map((cmd) => ({ cmd, ...commandScore(query, cmd) }))
       .filter((s) => s.score > 0)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
@@ -172,22 +233,35 @@ export class CommandPalette {
     if (this.visible.length === 0) {
       const empty = document.createElement("div");
       empty.className = "palette-empty";
-      empty.textContent = "无匹配命令";
+      empty.textContent =
+        "没有匹配的命令 · 先换个词试试（可以说用途，如「发给别人」），或按 Esc 关闭";
       this.listEl.append(empty);
+      this.updateSelection();
       return;
     }
 
     this.visible.forEach((cmd, i) => {
       const item = document.createElement("div");
       item.className = `palette-item${i === this.selectedIndex ? " selected" : ""}`;
-      const label = document.createElement("span");
-      if (cmd.section) label.append(document.createTextNode(`${cmd.section}: `));
-      // 只高亮命中的命令名，不把 "编辑:" 这类分组名也点亮
-      const positions = new Set<number>();
-      const match = fuzzyMatch(query, cmd.title);
-      if (match) for (const pos of match.positions) positions.add(pos);
-      appendHighlighted(label, cmd.title, positions);
-      item.append(label);
+
+      const main = document.createElement("div");
+      main.className = "palette-item-main";
+
+      const titleRow = document.createElement("div");
+      titleRow.className = "palette-item-title";
+      if (cmd.section) titleRow.append(document.createTextNode(`${cmd.section}: `));
+      // 只高亮标题里的命中，不把分组名也点亮
+      appendHighlighted(titleRow, cmd.title, new Set(scored[i].positions));
+      main.append(titleRow);
+
+      if (cmd.description) {
+        const desc = document.createElement("div");
+        desc.className = "palette-item-desc";
+        desc.textContent = cmd.description;
+        main.append(desc);
+      }
+
+      item.append(main);
       const shortcut = this.shortcutText(cmd);
       if (shortcut) {
         const key = document.createElement("span");
@@ -207,12 +281,37 @@ export class CommandPalette {
     this.updateSelection();
   }
 
-  /** 只更新选中样式，不重建 DOM（重建会打断点击：悬停即替换元素） */
+  /** 只更新选中样式与详情区，不重建 DOM（重建会打断点击：悬停即替换元素） */
   private updateSelection(): void {
     if (!this.listEl) return;
     this.listEl.querySelectorAll(".palette-item").forEach((el, idx) => {
       el.classList.toggle("selected", idx === this.selectedIndex);
     });
     this.listEl.children[this.selectedIndex]?.scrollIntoView({ block: "nearest" });
+
+    if (this.detailEl) {
+      const cmd = this.visible[this.selectedIndex];
+      const hint = cmd?.outcome?.hint ?? "";
+      this.detailEl.replaceChildren();
+      if (hint) {
+        const text = document.createElement("span");
+        text.className = "palette-detail-text";
+        text.textContent = hint;
+        this.detailEl.append(text);
+      }
+      if (cmd) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "palette-detail-btn";
+        more.textContent = "查看完整说明";
+        more.title = "在帮助里打开这条命令的说明（Ctrl+Enter）";
+        more.addEventListener("click", () => {
+          this.close();
+          showHelpDialog("commands", cmd.id);
+        });
+        this.detailEl.append(more);
+      }
+      this.detailEl.classList.toggle("palette-detail-empty", !hint);
+    }
   }
 }

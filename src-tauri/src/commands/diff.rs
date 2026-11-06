@@ -325,20 +325,49 @@ fn git_diff_blocking(path: &str, scope: &str) -> Result<DiffPayload, String> {
     Ok(payload(&format!("HEAD · {rel}"), &right_label, &old, &new)?)
 }
 
-/// 导出统一 diff 补丁：写入 <path>.patch，返回实际写入路径。
+/// 导出统一 diff 补丁的结果。
+///
+/// `existed = true` 表示目标已存在且**未写入**：前端据此提供「覆盖 / 换个名字」，
+/// 确认前不落盘——静默覆盖会让用户丢掉上一次导出的补丁。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPatchResult {
+    pub path: String,
+    pub existed: bool,
+}
+
+/// 导出统一 diff 补丁：写入 <path>.patch。
 /// 安全：目标必须位于应用已知路径范围内（被比较文件同目录等）。
 #[tauri::command]
-pub fn export_patch(
+pub async fn export_patch(
     state: tauri::State<'_, PathGuard>,
     path: String,
     content: String,
-) -> Result<String, String> {
+    overwrite: Option<bool>,
+    unique: Option<bool>,
+) -> Result<ExportPatchResult, String> {
     state.ensure_file_scope(&path)?;
-    let target = format!("{path}.patch");
-    let tmp = format!("{target}.tmp");
-    std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
-    std::fs::rename(&tmp, &target).map_err(|e| format!("替换失败: {e}"))?;
-    Ok(target)
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut target = format!("{path}.patch");
+        if unique == Some(true) {
+            let mut n = 1;
+            while std::path::Path::new(&target).exists() {
+                if n > 999 {
+                    return Err("同名补丁过多，请先清理旧的 .patch 文件".to_string());
+                }
+                target = format!("{path}.{n}.patch");
+                n += 1;
+            }
+        } else if std::path::Path::new(&target).exists() && overwrite != Some(true) {
+            return Ok(ExportPatchResult { path: target, existed: true });
+        }
+        let tmp = format!("{target}.tmp");
+        std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
+        std::fs::rename(&tmp, &target).map_err(|e| format!("替换失败: {e}"))?;
+        Ok(ExportPatchResult { path: target, existed: false })
+    })
+    .await
+    .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
 #[cfg(test)]

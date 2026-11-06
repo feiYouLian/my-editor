@@ -21,6 +21,8 @@ import { tabStore, type Tab } from "../store/tabs";
 import { pushRecentFile } from "../panels/recentFiles";
 import { showConfigReloaded } from "../ui/settingsHelp";
 import { confirmAction } from "../ui/dialogs";
+import { showErrorCard } from "../ui/resultCard";
+import { reportResult } from "./resultCenter";
 import { basenameOf, dirnameOf, joinVirtualPath } from "../core/paths";
 import { localStamps } from "../core/stamps";
 import { effectiveLanguage, setUserLanguages } from "../editor/languages";
@@ -255,6 +257,13 @@ export class FileService {
     try {
       await this.writeTo(current, target);
       this.rememberDirectory(target);
+      reportResult({
+        title: `已另存为 ${basenameOf(target)}`,
+        path: target,
+        hint: "原文件保持不变；后续编辑与保存都作用于这份新文件",
+        key: "save-as",
+        helpId: "file.saveAs",
+      });
     } catch {
       /* 已由 reportSaveError 提示 */
     }
@@ -294,11 +303,19 @@ export class FileService {
           try {
             await this.writeTo(current, target, encoding, hasBom);
             this.rememberDirectory(target);
-            this.deps.showMessage(
-              `已按 ${encoding}${hasBom ? "（带 BOM）" : ""} 另存为：${basenameOf(target)}`,
-            );
+            reportResult({
+              title: `已另存为 ${basenameOf(target)}（${encoding}${hasBom ? "，带 BOM" : ""}）`,
+              path: target,
+              hint: "原文件保持不变；后续编辑与保存都作用于这份新文件",
+              key: "save-as",
+              helpId: "file.saveAsEncoding",
+            });
           } catch (e) {
-            this.deps.showMessage(`另存为失败: ${firstLine(e)}`);
+            showErrorCard({
+              title: "另存为失败",
+              message: firstLine(e),
+              hint: "目标目录可能只读或磁盘已满；换一个位置再试，原文件不会受影响。",
+            });
           }
         })();
       },
@@ -370,7 +387,13 @@ export class FileService {
     }
 
     this.deps.insertAtCursor(effectiveLanguage(tab) === "markdown" ? `![](${rel})` : rel);
-    showMessage(`已插入图片：${rel}`);
+    reportResult({
+      title: `已插入图片：${rel}`,
+      path: absolute,
+      hint: "图片已存到文档旁的 .assets 目录，插入的是相对路径引用；移动文档时请连同 .assets 一起移动",
+      key: "clipboard-image",
+      helpId: "insert.clipboardImage",
+    });
   }
 
   /** 调 Rust 保存命令：保留换行符与 BOM（原子替换在 Rust 侧） */

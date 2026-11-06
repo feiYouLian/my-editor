@@ -778,7 +778,7 @@ body.tree-dragging {
 
 .palette-item {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 8px 10px;
@@ -787,6 +787,41 @@ body.tree-dragging {
   font-size: 13px;
   transition: background-color var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+/* 命令面板两行：标题 + 一句话说明（说明来自命令元数据，面板不硬编码） */
+.palette-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.palette-item-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item.selected .palette-item-desc {
+  color: var(--text-primary);
+}
+
+/* 选中命令的结果说明：进面板就知道点了会发生什么、产物去哪 */
+.palette-detail {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.palette-detail-empty {
+  display: none;
 }
 
 .palette-item:hover {

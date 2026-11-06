@@ -6,7 +6,7 @@
  * 关掉应用就清空，避免变成第二套日志系统。
  */
 
-export type NoticeKind = "external" | "saveFail" | "formatFail" | "gitFail";
+export type NoticeKind = "external" | "saveFail" | "formatFail" | "gitFail" | "result";
 
 export interface NoticeAction {
   label: string;
@@ -20,6 +20,8 @@ export interface Notice {
   actions: NoticeAction[];
   /** 去重键：同一 key 只保留最新一条（如 fmt:tabId / git:push） */
   key?: string;
+  /** 结果类通知的补充说明：产物路径与用途（多行） */
+  detail?: string;
 }
 
 const MAX_NOTICES = 50;
@@ -33,6 +35,7 @@ export const NOTICE_LABELS: Record<NoticeKind, string> = {
   saveFail: "保存失败",
   formatFail: "格式化失败",
   gitFail: "Git 失败",
+  result: "结果",
 };
 
 function emit(): void {
@@ -45,13 +48,14 @@ export function addNotice(
   text: string,
   actions: NoticeAction[] = [],
   dedupeKey?: string,
+  detail?: string,
 ): number {
   if (dedupeKey) {
     const existing = notices.findIndex((n) => n.key === dedupeKey);
     if (existing >= 0) notices.splice(existing, 1);
   }
   const id = ++seq;
-  notices.unshift({ id, kind, text, actions, key: dedupeKey });
+  notices.unshift({ id, kind, text, actions, key: dedupeKey, detail });
   if (notices.length > MAX_NOTICES) notices.length = MAX_NOTICES;
   emit();
   return id;

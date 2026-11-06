@@ -23,6 +23,7 @@ import { ConflictGuideDialog } from "./panels/conflictGuide";
 import { SidebarViews } from "./ui/sidebar";
 import { WelcomePanel } from "./panels/welcome";
 import { showAboutDialog } from "./panels/aboutDialog";
+import { showHelpDialog } from "./panels/helpDialog";
 import { showShortcutsDialog, type ShortcutRow } from "./panels/shortcutsDialog";
 import { MenuBar } from "./panels/menubar";
 import { pathKindOf } from "./panels/preview";
@@ -881,6 +882,18 @@ const gitBlameDialog = new GitBlameDialog();
 const gitHistoryPanel = new GitHistoryPanel(document.getElementById("git-history-panel")!, {
   load: () => gitHost.listCommits(),
   loadCommit: (hash) => gitHost.showCommit(hash),
+  // 空仓库：收起历史、切到源代码管理，提交框就在眼前
+  onFocusCommit: () => {
+    gitHistoryPanel.hide();
+    showSidebarView("git");
+  },
+  // 历史导出落在仓库根目录：<root>/<短 hash>.patch（已在 PathGuard 根目录范围内）
+  exportPatch: (name, patch) => {
+    const root = workspaceRoot;
+    if (!root) return Promise.reject(new Error("当前没有打开工作区，无法导出"));
+    return diffService.exportPatch(`${root}/${name}`, patch, `提交 ${name}`);
+  },
+  onOpenHelp: () => showHelpDialog("guide", "Git 日常"),
 });
 gitHistoryPanel.mount();
 /**

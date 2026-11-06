@@ -14,7 +14,10 @@ function commit(i: number): GitCommit {
   };
 }
 
-function makePanel(commits: GitCommit[]): {
+function makePanel(
+  commits: GitCommit[],
+  overrides: Partial<GitHistoryPanelDeps> = {},
+): {
   host: HTMLElement;
   deps: GitHistoryPanelDeps;
   panel: GitHistoryPanel;
@@ -24,6 +27,10 @@ function makePanel(commits: GitCommit[]): {
   const deps: GitHistoryPanelDeps = {
     load: vi.fn(async () => commits),
     loadCommit: vi.fn(async () => "diff --git a/x b/x"),
+    onFocusCommit: vi.fn(),
+    onOpenHelp: vi.fn(),
+    exportPatch: vi.fn(async () => {}),
+    ...overrides,
   };
   const panel = new GitHistoryPanel(host, deps);
   panel.mount();
@@ -33,6 +40,12 @@ function makePanel(commits: GitCommit[]): {
 /** 等 open() 的异步 load 完成一轮 */
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function buttonByText(host: HTMLElement, text: string): HTMLButtonElement | undefined {
+  return [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+    (b) => b.textContent === text,
+  );
 }
 
 describe("gitHistoryPanel", () => {
@@ -72,6 +85,59 @@ describe("gitHistoryPanel", () => {
 
     host.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(host.classList.contains("hidden")).toBe(true);
+    host.remove();
+  });
+
+  it("头部说明当前范围与键盘操作，空仓库空态给「去提交」", async () => {
+    const { host, deps, panel } = makePanel([]);
+    panel.open();
+    await flush();
+
+    const scope = host.querySelector(".git-history-panel-scope")?.textContent ?? "";
+    expect(scope).toContain("当前工作区");
+    expect(scope).toContain("↑↓");
+    expect(host.querySelector(".git-history-panel-count")?.textContent).toContain("最近 0 条");
+
+    const empty = host.querySelector(".git-empty")?.textContent ?? "";
+    expect(empty).toContain("还没有提交");
+    expect(empty).toContain("先");
+
+    buttonByText(host, "去提交")?.click();
+    expect(deps.onFocusCommit).toHaveBeenCalledTimes(1);
+    host.remove();
+  });
+
+  it("详情区说明改了 N 个文件，复制与导出动作可触发", async () => {
+    const commits = [commit(0)];
+    const { host, deps, panel } = makePanel(commits);
+    panel.open();
+    await flush();
+
+    expect(host.querySelector(".git-history-detail-meta")?.textContent).toContain("改了 1 个文件");
+
+    buttonByText(host, "导出为 .patch")?.click();
+    await flush();
+    expect(deps.exportPatch).toHaveBeenCalledWith(commits[0].shortHash, "diff --git a/x b/x");
+    host.remove();
+  });
+
+  it("读取失败给「重试」与「检查是否为 Git 仓库」两个自救入口", async () => {
+    const load = vi.fn(async (): Promise<GitCommit[]> => {
+      throw new Error("not a git repository");
+    });
+    const { host, deps, panel } = makePanel([], { load });
+    panel.open();
+    await flush();
+
+    const empty = host.querySelector(".git-empty")?.textContent ?? "";
+    expect(empty).toContain("读取提交历史失败");
+
+    buttonByText(host, "重试")?.click();
+    await flush();
+    expect(load).toHaveBeenCalledTimes(2);
+
+    buttonByText(host, "检查是否为 Git 仓库")?.click();
+    expect(deps.onOpenHelp).toHaveBeenCalledTimes(1);
     host.remove();
   });
 });

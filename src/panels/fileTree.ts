@@ -472,7 +472,7 @@ export class FileTree {
     if (matched.length === 0) {
       const empty = document.createElement("div");
       empty.className = "tree-empty";
-      empty.textContent = "没有匹配的文件";
+      empty.textContent = "没有匹配的文件 · 先清空关键词或换个写法再试";
       this.bodyEl.append(empty);
       return;
     }

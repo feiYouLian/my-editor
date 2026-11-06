@@ -38,7 +38,7 @@ export class BookmarksView {
     }
     const lines = this.deps.linesOf(tab.id);
     if (lines.length === 0) {
-      this.host.append(this.hint("没有书签：在编辑器里按 Ctrl+F2 添加"));
+      this.host.append(this.hint("先打开一个文件，按 Ctrl+F2 在当前行加书签，这里会按文档分组列出"));
       return;
     }
 

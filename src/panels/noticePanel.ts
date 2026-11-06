@@ -133,6 +133,13 @@ export class NoticePanel {
         actions.append(dismiss);
 
         row.append(kind, text, actions);
+        // 结果类通知带产物路径与用途：回看时不用再猜产物在哪
+        if (notice.detail) {
+          const detail = document.createElement("div");
+          detail.className = "notice-detail";
+          detail.textContent = notice.detail;
+          row.append(detail);
+        }
         list.append(row);
       }
     };

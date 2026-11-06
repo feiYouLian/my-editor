@@ -18,6 +18,33 @@ import type {
 import { readDiskAs } from "./fileService";
 import { firstLine } from "../core/errors";
 import { getConfig } from "../config/settings";
+import { showErrorCard, showResultCard } from "../ui/resultCard";
+import { reportResult } from "./resultCenter";
+
+/** 后端导出补丁的返回值：existed = 目标已存在且未写入 */
+interface ExportPatchResult {
+  path: string;
+  existed: boolean;
+}
+
+/**
+ * 四处「导出补丁」的来源标签。
+ * 同一个按钮名对应四种语义，按钮上必须能看出作用在哪份数据上。
+ */
+export const PATCH_SOURCES = {
+  unsaved: "未保存改动",
+  otherFile: "与另一文件",
+  worktree: "工作区 vs HEAD",
+  index: "暂存区 vs HEAD",
+} as const;
+
+/** 来源 → 命令 id：结果卡的「了解更多」据此跳到命令索引对应条目 */
+const PATCH_HELP_IDS: Record<string, string> = {
+  [PATCH_SOURCES.unsaved]: "diff.unsaved",
+  [PATCH_SOURCES.otherFile]: "diff.pickFile",
+  [PATCH_SOURCES.worktree]: "diff.gitHead",
+  [PATCH_SOURCES.index]: "diff.gitIndex",
+};
 
 export interface DiffServiceDeps {
   getActiveTab: () => Tab | null;
@@ -172,13 +199,57 @@ export class DiffService {
     this.deps.showMessage(`已采用第 ${hunkIndex + 1} 处差异块（未保存，Ctrl+S 生效）`);
   }
 
-  /** 导出统一 diff 补丁到 <path>.patch */
-  async exportPatch(basePath: string, patch: string): Promise<void> {
+  /**
+   * 导出统一 diff 补丁到 <path>.patch。
+   * 目标已存在时先不落盘，由结果卡让用户选「覆盖 / 换个名字」。
+   */
+  async exportPatch(
+    basePath: string,
+    patch: string,
+    source: string,
+    opts: { overwrite?: boolean; unique?: boolean } = {},
+  ): Promise<void> {
     try {
-      const written = await invoke<string>("export_patch", { path: basePath, content: patch });
-      this.deps.showMessage(`补丁已导出：${written}`);
+      const res = await invoke<ExportPatchResult>("export_patch", {
+        path: basePath,
+        content: patch,
+        // 显式写成字面量：IPC 契约门禁才能静态核对参数名
+        overwrite: opts.overwrite === true,
+        unique: opts.unique === true,
+      });
+      if (res.existed) {
+        showResultCard({
+          title: `补丁已存在，未覆盖（${source}）`,
+          path: res.path,
+          hint: "同名 .patch 已存在。「覆盖」替换它；「换个名字」保留它，新文件按序号命名。",
+          key: `diff-patch:${basePath}`,
+          actions: [
+            {
+              label: "覆盖",
+              run: () => void this.exportPatch(basePath, patch, source, { overwrite: true }),
+            },
+            {
+              label: "换个名字",
+              run: () => void this.exportPatch(basePath, patch, source, { unique: true }),
+            },
+          ],
+        });
+        return;
+      }
+      reportResult({
+        title: `已导出统一 diff 补丁（${source}）`,
+        path: res.path,
+        hint: "可用 git apply 应用到另一份代码；导出不会修改原文件",
+        key: `diff-patch:${basePath}`,
+        helpId: PATCH_HELP_IDS[source],
+      });
     } catch (e) {
-      this.deps.showMessage(`导出失败：${firstLine(e)}`);
+      showErrorCard({
+        title: "导出补丁失败",
+        message: firstLine(e),
+        hint: "目标目录可能只读，或同名 .patch 正被其它程序占用；关闭占用程序后可重试。",
+        retry: () => void this.exportPatch(basePath, patch, source, opts),
+      });
     }
   }
 
@@ -199,10 +270,11 @@ export class DiffService {
       load: () => invoke<DiffPayload>("diff_files", { leftPath, rightPath }),
       actions: [
         {
-          label: "导出补丁",
+          label: `导出补丁（${PATCH_SOURCES.otherFile}）`,
+          title: "生成当前文件与所选文件的统一 diff，保存为同名 .patch，不修改原文件",
           run: () => {
             const p = this.panel?.getPayload();
-            if (p) void this.exportPatch(leftPath, p.patch);
+            if (p) void this.exportPatch(leftPath, p.patch, PATCH_SOURCES.otherFile);
           },
         },
       ],
@@ -259,11 +331,17 @@ export class DiffService {
         }),
       actions: [
         {
-          label: "导出补丁",
-          title: `导出 ${name} 的统一 diff 补丁`,
+          label: `导出补丁（${staged ? PATCH_SOURCES.index : PATCH_SOURCES.worktree}）`,
+          title: `生成 ${name} 的${staged ? "暂存区" : "工作区"}与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件`,
           run: () => {
             const payload = this.panel?.getPayload();
-            if (payload) void this.exportPatch(path, payload.patch);
+            if (payload) {
+              void this.exportPatch(
+                path,
+                payload.patch,
+                staged ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
+              );
+            }
           },
         },
       ],
@@ -328,10 +406,17 @@ export class DiffService {
           },
         },
         {
-          label: "导出补丁",
+          label: `导出补丁（${PATCH_SOURCES.unsaved}）`,
+          title: "生成当前标签与磁盘内容的统一 diff，保存为同名 .patch，不修改原文件",
           run: () => {
             const p = this.panel?.getPayload();
-            if (p) void this.exportPatch(tabStore.findById(tabId)?.path ?? name, p.patch);
+            if (p) {
+              void this.exportPatch(
+                tabStore.findById(tabId)?.path ?? name,
+                p.patch,
+                PATCH_SOURCES.unsaved,
+              );
+            }
           },
         },
       ],
@@ -370,10 +455,20 @@ export class DiffService {
       load: () => invoke<DiffPayload>("git_diff", { path, scope }),
       actions: [
         {
-          label: "导出补丁",
+          label: `导出补丁（${scope === "index" ? PATCH_SOURCES.index : PATCH_SOURCES.worktree}）`,
+          title:
+            scope === "index"
+              ? "生成暂存区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件"
+              : "生成工作区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件",
           run: () => {
             const p = this.panel?.getPayload();
-            if (p) void this.exportPatch(path, p.patch);
+            if (p) {
+              void this.exportPatch(
+                path,
+                p.patch,
+                scope === "index" ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
+              );
+            }
           },
         },
       ],

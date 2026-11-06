@@ -8,6 +8,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { confirmAction } from "../ui/dialogs";
+import { showResultCard } from "../ui/resultCard";
+import { showHelpDialog } from "./helpDialog";
 import { basenameOf } from "../core/paths";
 import { firstLine } from "../core/errors";
 
@@ -240,9 +242,13 @@ export class FetchPageDialog {
         overwrite: exists,
       });
       this.deps.onFetched(result.path);
-      this.deps.showMessage(
-        `已抓取 ${basenameOf(result.path)}（${formatBytes(result.bytes)}）`,
-      );
+      showResultCard({
+        title: `已抓取 ${basenameOf(result.path)}（${formatBytes(result.bytes)}）`,
+        path: result.path,
+        hint: "产物是 Markdown 文件，图片已就地保存；原网页不受影响，可离线阅读",
+        key: "fetch-page",
+        learnMore: () => showHelpDialog("commands", "fetch.open"),
+      });
       this.busy = false;
       this.close();
     } catch (e) {

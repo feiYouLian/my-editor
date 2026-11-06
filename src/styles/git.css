@@ -209,6 +209,64 @@
   white-space: nowrap;
 }
 
+/* 详情区：一行范围说明 + 复制 / 导出动作，下面是 diff 原文 */
+.git-history-panel-detail-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.git-history-detail-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.git-history-detail-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-history-detail-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.git-detail-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+
+.git-detail-btn:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* 历史面板头部：范围与操作提示（不点任何东西就看得见） */
+.git-history-panel-scope {
+  font-size: 10px;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.git-history-panel-count {
+  flex: 1;
+}
+
 .git-history-panel-detail {
   flex: 1;
   min-width: 0;
@@ -621,6 +679,49 @@
   text-align: center;
   color: var(--text-secondary);
   white-space: pre-wrap;
+}
+
+/* 空态 / 失败态的自救动作：状态后面必须跟一个能点的下一步 */
+.git-empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.git-empty-action {
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.git-empty-action:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* 源代码管理侧栏：历史入口（提交区下方的次级按钮） */
+.git-history-entry {
+  display: flex;
+  padding: 2px 8px 6px;
+}
+
+.git-history-entry-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.git-history-entry-btn:hover {
+  color: var(--accent);
 }
 
 .git-truncated {

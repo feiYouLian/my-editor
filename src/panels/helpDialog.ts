@@ -10,7 +10,7 @@ import { replaceHtml } from "../core/html";
  * 渲染器与文档都懒加载：从不看帮助的用户不会为它付首屏体积。
  */
 
-export type HelpTopic = "guide" | "faq";
+export type HelpTopic = "guide" | "faq" | "commands";
 
 /**
  * 文档按需加载（动态 import）：静态 import 会把两份 Markdown 打进首屏 chunk，
@@ -22,10 +22,13 @@ function loadSource(topic: HelpTopic): Promise<string> {
   let pending = sources.get(topic);
   if (!pending) {
     // 直接用仓库根目录的正式文档：与应用内帮助保持单一真源，不再维护第二份副本
-    pending =
+    pending = (
       topic === "guide"
-        ? import("../../docs/USER-GUIDE.md?raw").then((m) => m.default)
-        : import("../../docs/FAQ.md?raw").then((m) => m.default);
+        ? import("../../docs/USER-GUIDE.md?raw")
+        : topic === "faq"
+          ? import("../../docs/FAQ.md?raw")
+          : import("../../docs/COMMANDS.md?raw")
+    ).then((m) => m.default);
     sources.set(topic, pending);
   }
   return pending;
@@ -34,6 +37,7 @@ function loadSource(topic: HelpTopic): Promise<string> {
 const TOPICS: { id: HelpTopic; label: string }[] = [
   { id: "guide", label: "用户指南" },
   { id: "faq", label: "常见问题" },
+  { id: "commands", label: "命令索引" },
 ];
 
 /** 已打开的对话框（单实例：重复点击菜单不叠加） */
@@ -64,9 +68,25 @@ function loadRenderer(): Promise<{ renderer: Renderer; sanitize: (html: string) 
   return rendererPromise;
 }
 
-/** 打开帮助（topic 决定初始页；已打开时只切换标签页） */
-export function showHelpDialog(topic: HelpTopic = "guide"): void {
+/**
+ * 渲染后按标题文本定位：面板「?」与命令面板「查看完整说明」据此跳到对应段落，
+ * 不要求文档里有 HTML id。
+ *
+ * 命令 id 是 `### <id> · <标题>` 的前缀，必须优先精确匹配：
+ * `file.save` 是 `file.saveAs` 的子串，纯 includes 会跳错条目。
+ */
+function scrollToHeading(root: HTMLElement, heading: string): void {
+  const candidates = [...root.querySelectorAll<HTMLElement>("h1,h2,h3,h4")];
+  const text = (el: HTMLElement) => el.textContent?.trim() ?? "";
+  const exact = candidates.find((el) => text(el).startsWith(`${heading} `) || text(el) === heading);
+  const hit = exact ?? candidates.find((el) => text(el).includes(heading));
+  hit?.scrollIntoView({ block: "start" });
+}
+
+/** 打开帮助（topic 决定初始页，anchor 为标题文本；已打开时切页并定位） */
+export function showHelpDialog(topic: HelpTopic = "guide", anchor?: string): void {
   if (opened) {
+    opened.dataset.pendingAnchor = anchor ?? "";
     const btn = opened.querySelector<HTMLButtonElement>(`[data-topic="${topic}"]`);
     btn?.click();
     return;
@@ -110,6 +130,7 @@ export function showHelpDialog(topic: HelpTopic = "guide"): void {
   dialog.append(head, content, linkHint, actions);
   backdrop.append(dialog);
   document.body.append(backdrop);
+  if (anchor) backdrop.dataset.pendingAnchor = anchor;
   opened = backdrop;
 
   let seq = 0;
@@ -125,6 +146,11 @@ export function showHelpDialog(topic: HelpTopic = "guide"): void {
         if (current !== seq) return;
         replaceHtml(content, sanitize(renderer.render(source)));
         content.scrollTop = 0;
+        const anchor = opened?.dataset.pendingAnchor ?? "";
+        if (anchor) {
+          opened!.dataset.pendingAnchor = "";
+          scrollToHeading(content, anchor);
+        }
       })
       .catch((e: unknown) => {
         if (current !== seq) return;

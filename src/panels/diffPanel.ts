@@ -13,6 +13,7 @@ import type {
   HunkAdopt,
 } from "./diffPanel/types";
 import { gapStarts, renderDiffRows } from "./diffPanel/render";
+import { showHelpDialog } from "./helpDialog";
 
 export type {
   DiffAction,
@@ -138,23 +139,42 @@ export class DiffPanel {
       this.renderRows();
     });
 
+    // 按钮文案直接取来源标签：四处「导出补丁」语义不同，不能都叫同一个名字
+    const exportAction = this.actions.find((a) => a.label.includes("导出"));
     const exportBtn = document.createElement("button");
     exportBtn.type = "button";
     exportBtn.className = "df-btn df-btn-wide";
-    exportBtn.textContent = "导出补丁";
-    exportBtn.addEventListener("click", () => {
-      const action = this.actions.find((a) => a.label.includes("导出"));
-      void action?.run();
-    });
+    exportBtn.textContent = exportAction?.label ?? "导出补丁";
+    exportBtn.title = exportAction?.title ?? "把差异导出为 .patch 文件，不修改原文件";
+    exportBtn.addEventListener("click", () => void exportAction?.run());
 
     const closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "df-btn";
     closeBtn.textContent = "✕";
     closeBtn.title = "关闭（Esc）";
+    closeBtn.setAttribute("aria-label", "关闭差异面板");
     closeBtn.addEventListener("click", () => this.close());
 
-    head.append(title, stats, this.navInfo, prevBtn, nextBtn, wrapBtn, collapseBtn, exportBtn, closeBtn);
+    const helpBtn = document.createElement("button");
+    helpBtn.type = "button";
+    helpBtn.className = "df-btn";
+    helpBtn.textContent = "?";
+    helpBtn.title = "查看「对比两个文件」帮助";
+    helpBtn.addEventListener("click", () => showHelpDialog("guide", "对比两个文件"));
+
+    head.append(
+      title,
+      stats,
+      this.navInfo,
+      prevBtn,
+      nextBtn,
+      wrapBtn,
+      collapseBtn,
+      exportBtn,
+      helpBtn,
+      closeBtn,
+    );
 
     // ---- 场景动作 ----
     const extra = this.actions.filter((a) => !a.label.includes("导出"));

@@ -28,6 +28,8 @@ import type {
 } from "./largeView/types";
 import { firstLine } from "../core/errors";
 import { confirmAction } from "../ui/dialogs";
+import { showErrorCard, showResultCard } from "../ui/resultCard";
+import { showHelpDialog } from "./helpDialog";
 
 export type { LargeFileInfo } from "./largeView/types";
 
@@ -90,6 +92,8 @@ export class LargeView {
   private mount(): void {
     const el = buildLargeViewDom(this.host);
     this.el = el;
+
+    el.helpBtn.addEventListener("click", () => showHelpDialog("guide", "看一个大日志"));
 
     // ---- 事件 ----
     el.scrollEl.addEventListener(
@@ -767,11 +771,17 @@ export class LargeView {
     const lines = await this.collectMatches(limit);
     try {
       await navigator.clipboard.writeText(lines.join("\n"));
-      this.deps.onMessage(
-        limit < total ? `已复制前 ${limit} 行命中（共 ${total} 行）` : `已复制 ${total} 行命中`,
-      );
+      showResultCard({
+        title: limit < total ? `已复制前 ${limit} 行命中（共 ${total} 行）` : `已复制 ${total} 行命中`,
+        hint: "内容是过滤结果的纯文本，可直接粘贴到其它应用；原文件未改动",
+        key: "large-copy",
+      });
     } catch (e) {
-      this.deps.onMessage(`复制失败：${e instanceof Error ? e.message : String(e)}`);
+      showErrorCard({
+        title: "复制命中失败",
+        message: e instanceof Error ? e.message : String(e),
+        hint: "剪贴板可能被其它程序占用；可改用「导出命中」落地成文件。",
+      });
     }
   }
 
@@ -812,9 +822,18 @@ export class LargeView {
           overwrite: true,
         });
       }
-      this.deps.onMessage(`已导出 ${total} 行命中：${out}`);
+      showResultCard({
+        title: `已导出 ${total} 行命中`,
+        path: out,
+        hint: "原文件保持只读，这是过滤结果的副本（.filtered.txt），可直接打开或分发",
+        key: "large-export",
+      });
     } catch (e) {
-      this.deps.onMessage(`导出失败：${e instanceof Error ? e.message : String(e)}`);
+      showErrorCard({
+        title: "导出命中失败",
+        message: e instanceof Error ? e.message : String(e),
+        hint: "目标目录可能只读，或同名 .filtered.txt 正被占用；处理后可重新导出。",
+      });
     }
   }
 

@@ -225,10 +225,21 @@
 
 .notice-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
   font-size: 12px;
+}
+
+/* 结果类通知的补充说明：产物路径 + 用途，换行到条目下方 */
+.notice-detail {
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .notice-item + .notice-item {
@@ -281,6 +292,115 @@
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+}
+
+/* 结果卡：产物类动作的三段式反馈（右下角堆叠，可关闭，自动收起） */
+.result-card-stack {
+  position: fixed;
+  right: 12px;
+  bottom: 36px;
+  /* 压过差异 / 设置 / 对话框：产物卡上的动作（覆盖 / 换个名字）必须当场能点 */
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  pointer-events: none;
+}
+
+.result-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  animation: ui-pop-in var(--dur-slow) var(--ease-out);
+}
+
+.result-card-error {
+  border-left-color: var(--danger);
+}
+
+.result-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.result-card-title {
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.result-card-close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.result-card-close:hover {
+  color: var(--text-primary);
+}
+
+.result-card-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.result-card-path-text {
+  flex: 1 1 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  user-select: text;
+}
+
+.result-card-action {
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text-primary);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.result-card-action:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.result-card-reason {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger);
+  word-break: break-all;
+}
+
+.result-card-hint {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.result-card-foot {
+  display: flex;
+  gap: 6px;
 }
 
 .notice-actions {

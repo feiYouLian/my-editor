@@ -13,6 +13,7 @@ import type { BlameReport } from "../panels/gitBlame";
 import { addNotice } from "./noticeStore";
 import { firstLine } from "../core/errors";
 import { getConfig } from "../config/settings";
+import { reportResult } from "./resultCenter";
 
 export interface GitHostDeps {
   getRoot: () => string | null;
@@ -105,7 +106,11 @@ export class GitHost {
         message,
       });
       this.deps.view.clearCommitMessage();
-      this.deps.showMessage(`已提交 ${hash}`, 4000);
+      reportResult({
+        title: `已提交 ${hash.slice(0, 7)}`,
+        hint: "提交只在本地仓库；要同步到远程需要再点「推送」",
+        key: "git-commit",
+      });
     });
   }
 
@@ -127,14 +132,15 @@ export class GitHost {
         root: this.requireRoot(),
         paths: expandPaths(entries),
       });
-      const backupNote = outcome.backupDir
-        ? "，原内容已备份到配置目录 discard-backup/"
-        : "";
-      const skipNote = outcome.skipped > 0 ? `（${outcome.skipped} 个过大文件未备份）` : "";
-      this.deps.showMessage(
-        `已放弃 ${outcome.count} 个文件的更改${backupNote}${skipNote}`,
-        6000,
-      );
+      const skipNote = outcome.skipped > 0 ? `；${outcome.skipped} 个过大文件未备份` : "";
+      reportResult({
+        title: `已放弃 ${outcome.count} 个文件的更改`,
+        path: outcome.backupDir ?? undefined,
+        hint: outcome.backupDir
+          ? `原内容已备份到上面的目录，需要找回时按文件名取${skipNote}`
+          : `工作区已回退到索引状态，此操作不可撤销${skipNote}`,
+        key: "git-discard",
+      });
       this.deps.onWorkspaceChanged?.();
     });
   }

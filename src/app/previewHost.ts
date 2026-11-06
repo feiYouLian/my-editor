@@ -23,6 +23,8 @@ import {
   type PreviewTab,
 } from "../panels/preview";
 import { placeMenu } from "../ui/menu";
+import { showErrorCard, showResultCard } from "../ui/resultCard";
+import { reportResult } from "./resultCenter";
 import type { SaveResult } from "../types/app";
 import { firstLine } from "../core/errors";
 
@@ -307,7 +309,6 @@ export class PreviewController {
 
   /** 导出当前预览（tab 为调用时快照；导出写的是用户新选路径） */
   async export(tab: Tab, format: "html" | "word" | "pdf" | "md"): Promise<void> {
-    const showMessage = this.deps.showMessage;
     try {
       const title = this.paneTitle(tab);
 
@@ -315,6 +316,11 @@ export class PreviewController {
         // 经系统打印对话框另存为 PDF
         const body = await this.panel.getExportBody(this.toTab(tab));
         openPrintDialog(buildStandaloneHtml(title, body));
+        showResultCard({
+          title: "已打开系统打印对话框",
+          hint: "在对话框里选「另存为 PDF」并确认保存位置；取消则不会生成文件。",
+          key: "export-pdf",
+        });
         return;
       }
 
@@ -330,11 +336,15 @@ export class PreviewController {
           hasBom: false,
           encoding: "UTF-8",
         });
-        showMessage(
-          prepared.count > 0
-            ? `已导出: ${result.path}（${prepared.count} 张内嵌图片已存入 ${title}.assets）`
-            : `已导出: ${result.path}`,
-        );
+        reportResult({
+          title: "已导出 Markdown",
+          path: result.path,
+          hint:
+            prepared.count > 0
+              ? `${prepared.count} 张内嵌图片已存入 ${title}.assets；原文件未改动`
+              : "原文件未改动，可直接分发或用其它 Markdown 工具打开",
+          key: "export-md",
+        });
         return;
       }
 
@@ -351,9 +361,21 @@ export class PreviewController {
         hasBom: false,
         encoding: "UTF-8",
       });
-      showMessage(`已导出: ${result.path}`);
+      reportResult({
+        title: format === "html" ? "已导出独立 HTML" : "已导出 Word 文档",
+        path: result.path,
+        hint:
+          format === "html"
+            ? "产物是自带样式的单个 HTML 文件，可直接发给他人在浏览器打开"
+            : "产物是 Word 可打开的 .doc（HTML 内核），标题、表格与代码块可正常显示",
+        key: `export-${format}`,
+      });
     } catch (e) {
-      showMessage(`导出失败: ${firstLine(e)}`);
+      showErrorCard({
+        title: "导出失败",
+        message: firstLine(e),
+        hint: "目标目录可能只读，或同名文件正被其它程序占用；换个位置保存后可重试。",
+      });
       console.error("[export]", e);
     }
   }
