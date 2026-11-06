@@ -2,8 +2,12 @@
 /**
  * Rust 生产代码 panic 点护栏。
  *
- * 判据：`#[cfg(test)]` 之前（生产代码）不得出现 `.unwrap()` / `.expect(...)`。
+ * 判据：`#[cfg(test)]` 标注的项（fn / mod，可嵌套、可在文件任意位置）整体算测试代码，
+ * 其余算生产代码；生产代码不得出现 `.unwrap()` / `.expect(...)`。
  * 测试代码里的 unwrap/expect 是正常的断言写法，只统计、不判失败。
+ * 统计前先抹掉注释 / 字符串 / 字符字面量：注释与字符串里的 ".unwrap()" 不算，
+ * 大括号深度只看代码，`'{'` 这类字符字面量不会扰乱项边界。
+ * 限制：`#[cfg(test)]` 必须独占一行；不带大括号的标注项（如 const）不在支持范围。
  *
  * 输出形如：
  *   生产代码 panic 点: 0
@@ -33,31 +37,82 @@ function rel(p) {
   return relative(ROOT, p).split(sep).join("/");
 }
 
-/** 屏蔽注释：注释里提到 .unwrap() 不算 panic 点；保留换行与长度 */
-function maskComments(text) {
+/**
+ * 抹掉一切非代码内容（注释 / 字符串 / 字符字面量），保留换行与长度。
+ * 大括号深度与 unwrap 统计都只看真正的代码；
+ * 生命周期 `'a` 不是字符字面量，不能吞掉后面的代码。
+ */
+function maskNonCode(text) {
   const chars = [...text];
   let i = 0;
   let state = "code";
+  let blockDepth = 0;
+  let rawHashes = 0;
+  const blank = (idx) => {
+    if (chars[idx] !== "\n") chars[idx] = " ";
+  };
   while (i < text.length) {
     const c = text[i];
     const next = text[i + 1];
     if (state === "code") {
       if (c === "/" && next === "/") {
-        state = "line";
-        chars[i] = " ";
-        chars[i + 1] = " ";
+        blank(i);
+        blank(i + 1);
         i += 2;
+        state = "line";
         continue;
       }
       if (c === "/" && next === "*") {
-        state = "block";
-        chars[i] = " ";
-        chars[i + 1] = " ";
+        blank(i);
+        blank(i + 1);
         i += 2;
+        state = "block";
+        blockDepth = 1;
         continue;
       }
       if (c === '"') {
+        blank(i);
+        i++;
         state = "string";
+        continue;
+      }
+      // 原始字符串 r"…" / r#"…"#（br#"…"# 从 r 处进入即可）
+      if (c === "r" && (next === '"' || next === "#")) {
+        let j = i + 1;
+        let hashes = 0;
+        while (text[j] === "#") {
+          hashes++;
+          j++;
+        }
+        if (text[j] === '"') {
+          for (let k = i; k <= j; k++) blank(k);
+          i = j + 1;
+          state = "raw";
+          rawHashes = hashes;
+          continue;
+        }
+      }
+      // 字符字面量（'\'' / '\\' / '{'）；不带转义且第 3 位不是 ' 视为生命周期
+      if (c === "'") {
+        if (next === "\\") {
+          let j = i + 2;
+          if (text[j] === "u") {
+            while (j < text.length && text[j] !== "'") j++;
+          } else {
+            j += 1;
+          }
+          if (text[j] === "'") {
+            for (let k = i; k <= j; k++) blank(k);
+            i = j + 1;
+            continue;
+          }
+        } else if (next !== undefined && text[i + 2] === "'") {
+          blank(i);
+          blank(i + 1);
+          blank(i + 2);
+          i += 3;
+          continue;
+        }
         i++;
         continue;
       }
@@ -66,39 +121,95 @@ function maskComments(text) {
     }
     if (state === "line") {
       if (c === "\n") state = "code";
-      else chars[i] = " ";
+      else blank(i);
       i++;
       continue;
     }
     if (state === "block") {
-      // Rust 块注释可嵌套
       if (c === "/" && next === "*") {
-        chars[i] = " ";
-        chars[i + 1] = " ";
-        state = "block";
+        blank(i);
+        blank(i + 1);
+        blockDepth++;
         i += 2;
         continue;
       }
       if (c === "*" && next === "/") {
-        chars[i] = " ";
-        chars[i + 1] = " ";
+        blank(i);
+        blank(i + 1);
+        blockDepth--;
         i += 2;
-        state = "code";
+        if (blockDepth === 0) state = "code";
         continue;
       }
-      if (c !== "\n") chars[i] = " ";
+      blank(i);
       i++;
       continue;
     }
-    // string：只关心结束符与转义
-    if (c === "\\") {
-      i += 2;
+    if (state === "string") {
+      if (c === "\\") {
+        blank(i);
+        blank(i + 1);
+        i += 2;
+        continue;
+      }
+      if (c === '"') {
+        blank(i);
+        state = "code";
+        i++;
+        continue;
+      }
+      blank(i);
+      i++;
       continue;
     }
-    if (c === '"') state = "code";
-    i++;
+    // raw：结束 = 一个引号后跟恰好 rawHashes 个 #
+    if (state === "raw") {
+      if (c === '"') {
+        let j = i + 1;
+        let hashes = 0;
+        while (text[j] === "#") {
+          hashes++;
+          j++;
+        }
+        if (hashes === rawHashes) {
+          for (let k = i; k < j; k++) blank(k);
+          i = j;
+          state = "code";
+          continue;
+        }
+      }
+      blank(i);
+      i++;
+      continue;
+    }
   }
   return chars.join("");
+}
+
+/** 每行是否落在 #[cfg(test)] 标注的项内部：用大括号深度定项边界，项外即生产代码 */
+function classifyTestLines(all) {
+  const isTest = new Array(all.length).fill(false);
+  let depth = 0;
+  let pendingTest = false;
+  let testEndDepth = null;
+  all.forEach((line, idx) => {
+    const isAttr = line.trim() === "#[cfg(test)]";
+    isTest[idx] = isAttr || pendingTest || testEndDepth !== null;
+    for (const ch of line) {
+      if (ch === "{") {
+        if (pendingTest && testEndDepth === null) testEndDepth = depth;
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (testEndDepth !== null && depth === testEndDepth) {
+          testEndDepth = null;
+          pendingTest = false;
+        }
+      }
+    }
+    if (isAttr) pendingTest = true;
+  });
+  return isTest;
 }
 
 function lines(text) {
@@ -111,14 +222,10 @@ function main() {
   const test = [];
 
   for (const file of files) {
-    const raw = readFileSync(file, "utf8");
-    const text = maskComments(raw);
-    const all = lines(text);
-    const cut = all.findIndex((line) => line.trim() === "#[cfg(test)]");
-    const prodCount = cut < 0 ? all.length : cut;
+    const all = lines(maskNonCode(readFileSync(file, "utf8")));
+    const isTest = classifyTestLines(all);
 
     all.forEach((line, idx) => {
-      const isProd = idx < prodCount;
       // 只匹配 .unwrap() / .expect(，不匹配 unwrap_or / unwrap_or_else
       const re = /\.(unwrap|expect)\s*\(/g;
       let m;
@@ -129,7 +236,7 @@ function main() {
           if (!/^\(\s*\)/.test(rest)) continue;
         }
         const site = `${rel(file)}:${idx + 1}`;
-        (isProd ? prod : test).push(site);
+        (isTest[idx] ? test : prod).push(site);
       }
     });
   }

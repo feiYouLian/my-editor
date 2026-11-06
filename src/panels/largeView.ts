@@ -27,6 +27,7 @@ import type {
   LineWindow,
 } from "./largeView/types";
 import { firstLine } from "../core/errors";
+import { confirmAction } from "../ui/dialogs";
 
 export type { LargeFileInfo } from "./largeView/types";
 
@@ -789,10 +790,28 @@ export class LargeView {
     }
     try {
       const lines = await this.collectMatches(total);
-      const out = await invoke<string>("export_large_matches", {
-        path: info.path,
-        content: `${lines.join("\n")}\n`,
-      });
+      const content = `${lines.join("\n")}\n`;
+      let out: string;
+      try {
+        out = await invoke<string>("export_large_matches", {
+          path: info.path,
+          content,
+          overwrite: false,
+        });
+      } catch (e) {
+        // 「目标已存在」是后端 export_large_matches 的拒绝原因：确认后才带覆盖标记重试
+        if (!String(e).includes("目标已存在")) throw e;
+        const ok = await confirmAction(`${firstLine(e)}\n\n覆盖它？`, "覆盖");
+        if (!ok) {
+          this.deps.onMessage("已取消导出：原文件未改动");
+          return;
+        }
+        out = await invoke<string>("export_large_matches", {
+          path: info.path,
+          content,
+          overwrite: true,
+        });
+      }
       this.deps.onMessage(`已导出 ${total} 行命中：${out}`);
     } catch (e) {
       this.deps.onMessage(`导出失败：${e instanceof Error ? e.message : String(e)}`);

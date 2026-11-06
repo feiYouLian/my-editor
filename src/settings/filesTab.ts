@@ -301,6 +301,7 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
   const runnerSection = section(
     "Code Run 运行器",
     "内置 Python / Node / Java / cURL；这里按语言键扩展（键即文件语言，如 ruby / go）。" +
+      "program 只接受 PATH 里的可执行文件名（不接受路径与 shell / 脚本宿主）；" +
       "参数中 __PLACEHOLDER__ 会被替换成目标文件路径；保存后立即生效。",
   );
 
@@ -312,13 +313,64 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
     "--output",
     "--config",
     "-config",
+    "-c",
+    "/c",
+    "/k",
+    "-e",
+    "--eval",
+    "-command",
+    "--command",
+    "-encodedcommand",
+    "--encodedcommand",
+    "-ec",
   ]);
   const isRejectedRunnerArg = (arg: string): boolean => {
     const lower = arg.trim().toLowerCase();
     return (
       REJECTED_RUNNER_ARGS.has(lower) ||
-      /^(--output=|--config=|-o=|-config=)/.test(lower)
+      [...REJECTED_RUNNER_ARGS].some((bad) => lower.startsWith(`${bad}=`))
     );
+  };
+
+  /** 与后端 is_allowed_program 同一套规则：只接受 PATH 里的可执行文件名。返回拒绝原因 */
+  const runnerProgramIssue = (program: string): string | null => {
+    const name = program.trim();
+    if (!name || /[/\\:]/.test(name) || name.includes("..")) {
+      return "只能填 PATH 里的可执行文件名，不接受路径";
+    }
+    const lower = name.toLowerCase();
+    if (/\.(bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msc|scr)$/.test(lower)) {
+      return "不接受脚本文件（bat / cmd / ps1 等）";
+    }
+    const stem = lower.replace(/\.exe$/, "");
+    if (
+      [
+        "cmd",
+        "powershell",
+        "pwsh",
+        "wscript",
+        "cscript",
+        "mshta",
+        "rundll32",
+        "regsvr32",
+        "certutil",
+        "bitsadmin",
+        "msbuild",
+        "reg",
+        "msiexec",
+        "hh",
+        "bash",
+        "sh",
+        "zsh",
+        "fish",
+        "ksh",
+        "dash",
+        "wsl",
+      ].includes(stem)
+    ) {
+      return "不接受 shell / 脚本宿主（请填语言解释器，如 ruby / go）";
+    }
+    return null;
   };
 
   const renderRunners = (): void => {
@@ -371,8 +423,13 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
       showErrorDialog("运行器配置有误", `「${key}」已存在：删除后重新添加`);
       return;
     }
-    const program = (await promptText(`「${key}」的可执行文件名`, ""))?.trim();
+    const program = (await promptText(`「${key}」的可执行文件名（需在 PATH 中，不接受路径）`, ""))?.trim();
     if (!program) return;
+    const programIssue = runnerProgramIssue(program);
+    if (programIssue) {
+      showErrorDialog("运行器配置有误", `program「${program}」：${programIssue}`);
+      return;
+    }
     const argsText =
       (await promptText("参数（空格分隔；__PLACEHOLDER__ 代表文件路径）", "__PLACEHOLDER__"))?.trim() ?? "";
     const args = argsText.split(/\s+/).filter(Boolean);
@@ -380,7 +437,7 @@ export function renderFiles(main: HTMLElement, ctx: SettingsTabContext): void {
     if (rejected) {
       showErrorDialog(
         "运行器配置有误",
-        `参数「${rejected}」被安全策略拒绝（不允许写文件或读取外部配置）`,
+        `参数「${rejected}」被安全策略拒绝（不允许写文件、读取外部配置或 -c / -e 等解释型入口）`,
       );
       return;
     }

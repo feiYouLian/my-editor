@@ -2,19 +2,27 @@
 /**
  * DOM 注入面护栏：统计非清空用途的 innerHTML / outerHTML 赋值与 insertAdjacentHTML 调用。
  *
- * 清空（`el.innerHTML = ""`）不构成注入面，不计数；读取（`?? el.innerHTML`）也不计数。
+ * 检测的是「直接赋值」这一种形态：
+ *   - `el.innerHTML = …` / `el.outerHTML = …`（清空写法 "" / '' / `` / null / undefined 不计数）
+ *   - `el.innerHTML += …`（复合赋值一律计为注入点，即使右侧为空）
+ *   - `insertAdjacentHTML(`
+ *   `Object.assign(el, { innerHTML: … })`、`el["innerHTML"] = …` 等间接写法不在检测范围，
+ *   「0」只代表直接赋值面已归零，不等于绝对安全。
+ *
+ * 扫描范围：`src` 目录全部 `.ts`（排除 `.d.ts` / `.test.ts`）与根目录 `index.html`。
  * 基线见 scripts/innerhtml-baseline.json：
  *   - S1 记录当前清单（收敛基线，数量不得增加）
  *   - S3 收敛完成后把基线改为 0，脚本即变为「必须为 0」
  *
  * 有新增点时退出码 1，可直接挂进 CI。
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "src");
+const INDEX_HTML = join(ROOT, "index.html");
 const BASELINE = join(ROOT, "scripts", "innerhtml-baseline.json");
 
 function walk(dir) {
@@ -32,6 +40,11 @@ function walk(dir) {
 
 function rel(p) {
   return relative(ROOT, p).split(sep).join("/");
+}
+
+/** HTML 注释先抹掉（只用于 .html）：注释里提到 innerHTML 不算注入点 */
+function maskHtmlComments(text) {
+  return text.replace(/<!--/g, "   ").replace(/-->/g, "   ");
 }
 
 /** 屏蔽注释：注释里提到 innerHTML 不算注入点 */
@@ -107,18 +120,22 @@ function isClearing(rhs) {
 
 function scan() {
   const sites = [];
-  for (const file of walk(SRC).sort()) {
-    const text = maskComments(readFileSync(file, "utf8"));
+  const files = [...walk(SRC).sort(), ...(existsSync(INDEX_HTML) ? [INDEX_HTML] : [])];
+  for (const file of files) {
+    const raw = readFileSync(file, "utf8");
+    const text = maskComments(file.endsWith(".html") ? maskHtmlComments(raw) : raw);
     const all = text.split(/\r?\n/);
     all.forEach((line, idx) => {
       if (/insertAdjacentHTML\s*\(/.test(line)) {
         sites.push({ file: rel(file), line: idx + 1, kind: "insertAdjacentHTML" });
         return;
       }
-      const m = /\b[\w$]+\.(innerHTML|outerHTML)\s*=\s*(.*)$/.exec(line);
-      if (!m) return; // 读取或比较，不是赋值
-      let rhs = m[2];
-      if (rhs.trim() === "") {
+      // 只认直接赋值（= / +=）；比较（== / !=）不是赋值
+      const m = /\b[\w$]+\.(innerHTML|outerHTML)\s*(\+?=(?!=))\s*(.*)$/.exec(line);
+      if (!m) return; // 读取、比较或间接写法
+      const op = m[2];
+      let rhs = m[3];
+      if (op === "=" && rhs.trim() === "") {
         // 多行赋值：看后续首个非空行
         for (let k = idx + 1; k < Math.min(idx + 6, all.length); k++) {
           if (all[k].trim() !== "") {
@@ -127,8 +144,9 @@ function scan() {
           }
         }
       }
-      if (isClearing(rhs)) return;
-      sites.push({ file: rel(file), line: idx + 1, kind: m[1] });
+      // 复合赋值（+=）读旧值再写回，一律计为注入点
+      if (op === "=" && isClearing(rhs)) return;
+      sites.push({ file: rel(file), line: idx + 1, kind: op === "+=" ? `${m[1]}+=` : m[1] });
     });
   }
   return sites;

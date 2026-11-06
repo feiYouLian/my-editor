@@ -6,7 +6,7 @@
 
 | 依赖 | 版本 |
 | --- | --- |
-| Node.js | ≥ 20（已验证 v24） |
+| Node.js | 24（`.nvmrc` 固定主版本，CI 同版本） |
 | Rust | ≥ 1.77（通过 [rustup](https://rustup.rs) 安装） |
 | Windows | WebView2 Runtime（Win10/11 自带）+ [Microsoft C++ 生成工具](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 | macOS | Xcode Command Line Tools |

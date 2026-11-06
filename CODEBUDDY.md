@@ -72,7 +72,7 @@ Rust 侧约束：
 - 文件关联改为应用内显式开关（2026-11-04）：安装包不再声明 `bundle.fileAssociations`；
   设置 →「文件与会话 → Windows 系统集成」只向 HKCU 登记「打开方式」候选，不改 `.ext` 默认值（见 `commands/association.rs`）；
   旧版安装器留下的默认关联可在此处「一键恢复」（有 `_backup` 的恢复原程序，无备份的去掉默认）
-- 测试基线（2026-11-04）：`npm test` 131 项 + 渲染层 18 项（`vitest.render.config.ts`）、`cargo test --lib` 201 项（+2 条默认 ignore 的真实注册表往返）
+- 测试基线（2026-11-06）：`npm test` 131 项 + 渲染层 18 项（`vitest.render.config.ts`）、`cargo test --lib` 205 项（+2 条默认 ignore 的真实注册表往返）、E2E 20 条
 - 0.7.0 计划 S0–S1 完成（2026-11-04）：起始标签 `v0.6.3-baseline`、工作分支 `dev/0.7.0`；
   新增 IPC 参数契约 / 生产 panic 点 / DOM 注入面三道静态门禁（`scripts/`，已接入 `ci.yml`）；
   验收基线整理为 `docs/ACCEPTANCE.md`（自动 / 半自动 / 人工三层，与批次一一对应）
@@ -89,8 +89,14 @@ Rust 侧约束：
   历史面板键盘操作（↑↓/Enter/Esc）、git.css 废弃样式清理（-231 行）、首行提取统一走 firstLine
 - 0.7.0 计划 S7 完成（2026-11-05，标签 `v0.7.0`）：验收记录归档 docs/acceptance/2026-11-05.md，
   CHANGELOG 转 0.7.0 段、USER-GUIDE 补运行器与命令行工作区说明，版本号统一 0.7.0
+- 0.7.1 收口修复（2026-11-06）：审查报告 P0-1 / P0-2 / P2-1 / P2-2 全部修复
+  （运行器 program / 参数双侧校验、大文件导出防覆盖 + 原子写、scan-innerhtml 补 `+=` 与 `index.html`、
+  scan-unsafe 按 `#[cfg(test)]` 项边界分类、CI Node 24 与恒真条件清理）；
+  P1-1 判据收敛为纵深防御（不拆分 capability，理由见 docs/acceptance/2026-11-06.md §3）；
+  E2E 20 条全绿；执行数据与判定见 docs/acceptance/2026-11-06.md
 - **打包约束**：安装包文案（`shortDescription` / `longDescription` 等）含中文时，必须配 `bundle.windows.wix.language: "zh-CN"`，
   否则 WiX 以代码页 1252 链接 MSI 会报 `LGHT0311`；改过 bundle 配置先在本地 `npm run tauri build` 跑通再推 tag
-- 未达项：E2E 19 条用例覆盖全部 12 条关键路径（路径 2 的「另存为转码」仍受原生对话框限制）；
-  C 层人工观感条目待桌面会话走查（见 docs/acceptance/2026-11-05.md 第 4 节）；
+- 未达项：E2E 20 条用例覆盖全部 12 条关键路径（路径 2 的「另存为转码」仍受原生对话框限制）；
+  C 层人工观感条目待桌面会话走查（`☐` 未勾选原因已统一声明在 docs/ACCEPTANCE.md 头部，走查后补录）；
+  `formatters` 的 tool / args 未做 program 级校验（v0.6.3 起的既有面，见 docs/acceptance/2026-11-06.md §7）；
   自动更新的 endpoint / pubkey 仍为占位，发布产物不含 `latest.json` 与签名

@@ -40,6 +40,11 @@ export async function launchApp(
   args: string[] = [],
   opts: { configDir?: string } = {},
 ): Promise<ChildProcess> {
+  if (process.platform !== "win32") {
+    throw new Error(
+      "E2E 只支持 Windows：调试版应用是 my-editor.exe，进程清理走 taskkill /T /F，接入走 WebView2 CDP。",
+    );
+  }
   if (!existsSync(EXE)) {
     throw new Error(
       `未找到调试版应用：${EXE}\n先执行 npm run build:e2e（注入 CDP 端口并构建调试版）`,

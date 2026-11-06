@@ -782,6 +782,8 @@ pub fn load_config(app: tauri::AppHandle) -> AppConfig {
 /// 保存配置（临时文件 + 原子替换）
 #[tauri::command]
 pub fn save_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
+    // runners 表服务端也校验：恶意配置不落盘（执行侧 custom_spec 会再校验一次）
+    crate::commands::run::validate_runners(&config.runners)?;
     let path = config_file(&app)?;
     write_config(&path, &config)
 }

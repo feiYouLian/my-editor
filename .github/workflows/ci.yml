@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -57,12 +57,11 @@ jobs:
       # E2E 连真实应用：先构建调试版（免安装包），Playwright 经 WebView2 CDP 接入。
       # build:e2e 会把 CDP 端口烧进窗口参数——环境变量是否被 WebView2 合并随运行时版本而异，
       # 只靠 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 在 runner 上会「端口永远起不来」。
+      # 仅 Windows（runner 即 windows-latest；非 Windows 本地执行会在 launchApp 报错）。
       - name: 构建调试版应用（E2E）
-        if: ${{ hashFiles('playwright.config.ts') != '' }}
         run: npm run build:e2e
 
       - name: E2E 关键路径
-        if: ${{ hashFiles('playwright.config.ts') != '' }}
         run: npm run test:e2e
 
       - name: Rust 单测

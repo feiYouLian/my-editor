@@ -115,8 +115,8 @@ fn find_pwsh() -> Option<String> {
         .then(|| candidate.to_string_lossy().into_owned())
 }
 
-/// 支持的 shell（按可执行文件名判定）。
-/// 出于安全考虑只认内置列表：`terminal.shell` 若可写任意程序，
+/// 支持的 shell（按可执行文件名判定，且只接受不带路径的程序名）。
+/// 出于安全考虑只认内置列表：`terminal.shell` 若可写任意程序或任意路径，
 /// 等同于给了脚本一个「任意进程启动器」。
 const SUPPORTED_SHELLS: &[&str] = &[
     "pwsh",
@@ -132,11 +132,10 @@ const SUPPORTED_SHELLS: &[&str] = &[
 ];
 
 fn is_supported_shell(requested: &str) -> bool {
-    let name = Path::new(requested)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    if !crate::commands::run::is_bare_program_name(requested) {
+        return false;
+    }
+    let name = requested.trim().to_ascii_lowercase();
     SUPPORTED_SHELLS.contains(&name.as_str())
 }
 
@@ -515,12 +514,12 @@ mod tests {
         }
     }
 
-    /// 只接受内置 shell 列表：任意程序名不得成为终端进程
+    /// 只接受内置 shell 列表，且必须是不带路径的程序名：任意程序 / 任意路径不得成为终端进程
     #[test]
     fn unsupported_shell_is_rejected() {
         assert!(resolve_shell("calc.exe").is_err());
         assert!(resolve_shell("..\\evil.exe").is_err());
-        assert!(resolve_shell("C:\\Windows\\System32\\cmd.exe").is_ok());
+        assert!(resolve_shell("C:\\Windows\\System32\\cmd.exe").is_err());
         assert!(resolve_shell("pwsh").is_ok());
     }
 

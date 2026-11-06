@@ -4,6 +4,8 @@ import { defineConfig } from "@playwright/test";
 // 因此无需 `npx playwright install`。跑之前先构建调试版应用：
 //   npm run tauri build -- --debug --no-bundle
 // 单实例插件要求同一时间只跑一个应用实例，所以固定 workers = 1。
+// 仅支持 Windows：调试版应用是 my-editor.exe，进程清理走 taskkill，接入走 WebView2 CDP；
+// 其它平台执行会在 e2e/helpers/app.ts 的 launchApp 报错并说明原因。
 export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,

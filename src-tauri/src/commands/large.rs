@@ -804,11 +804,14 @@ pub fn large_minimap(
 ///
 /// 作用域以「已打开的大文件会话」为准：只有通过 open_large_file 打开过的路径
 /// 才允许写它的 .filtered.txt，不依赖前端登记，也不给任意路径写文件的能力。
+/// 同名目标已存在时拒绝写入（前端确认覆盖后置 `overwrite`），写入走原子替换不留半截文件。
 #[tauri::command]
 pub fn export_large_matches(
     state: tauri::State<'_, LargeState>,
+    guard: tauri::State<'_, crate::commands::paths::PathGuard>,
     path: String,
     content: String,
+    overwrite: Option<bool>,
 ) -> Result<String, String> {
     let target = PathBuf::from(&path);
     let known = {
@@ -818,9 +821,23 @@ pub fn export_large_matches(
     if !known {
         return Err("只有已打开的大文件才能导出命中行".to_string());
     }
-    let out = format!("{path}.filtered.txt");
-    std::fs::write(&out, content).map_err(|e| format!("写入失败: {e}"))?;
-    Ok(out)
+    let out = PathBuf::from(format!("{path}.filtered.txt"));
+    ensure_export_target(&out, overwrite.unwrap_or(false))?;
+    crate::commands::file::atomic_write(&out, content.as_bytes())?;
+    // 登记为已知路径：导出结果可直接在编辑器打开
+    guard.add_path(&out.to_string_lossy());
+    Ok(out.to_string_lossy().into_owned())
+}
+
+/// 导出目标检查：已存在且未确认覆盖时拒绝，错误里带上两条出路
+fn ensure_export_target(out: &Path, overwrite: bool) -> Result<(), String> {
+    if out.exists() && !overwrite {
+        return Err(format!(
+            "目标已存在：{}。可先删除 / 重命名旧文件，或在确认覆盖后重试",
+            out.display()
+        ));
+    }
+    Ok(())
 }
 
 /// 切换解码编码：单字节家族（UTF-8 / GBK / Big5…）字节偏移不变，无需重建索引
@@ -1030,6 +1047,20 @@ mod tests {
         let mut rest = String::new();
         file.read_to_string(&mut rest).expect("读取剩余内容");
         assert_eq!(rest, "456789");
+    }
+
+    /// 导出目标已存在时：未确认覆盖必须拒绝并给出可行动提示；确认后放行
+    #[test]
+    fn export_target_refuses_overwrite_without_confirmation() {
+        let existing = temp_file("export_exists", b"old");
+        let err = ensure_export_target(&existing, false).unwrap_err();
+        assert!(err.contains("目标已存在"), "{err}");
+        assert!(ensure_export_target(&existing, true).is_ok());
+
+        let mut missing = std::env::temp_dir();
+        missing.push("my_editor_large_test_export_absent.txt.filtered.txt");
+        let _ = std::fs::remove_file(&missing);
+        assert!(ensure_export_target(&missing, false).is_ok());
     }
 
     /// 锚点偏移越过文件末尾时不得下溢：整体夹到最后一个桶
