@@ -64,6 +64,15 @@ test("命令面板：按用途搜索命中，列表项带一句话说明", async
   // 详情区给出结果去向（会不会写盘 / 产物在哪）
   await expect(page.locator(".palette-detail-text")).toContainText("提交");
 
+  // 用途词必须收敛到唯一命令：四条 diff 命令都能导出补丁，
+  // 搜「发给别人 / git apply」时不能还有另一条「比较：」并列（并列最高分就是没收敛）
+  for (const query of ["发给别人", "git apply"]) {
+    await input.fill(query);
+    await expect(page.locator(".palette-item-title").first()).toContainText("与 Git HEAD");
+    const titles = await page.locator(".palette-item-title").allTextContents();
+    expect(titles.slice(1).filter((t) => t.includes("比较："))).toHaveLength(0);
+  }
+
   await page.keyboard.press("Escape");
   await expect(page.locator(".palette-overlay")).toHaveCount(0);
 });
