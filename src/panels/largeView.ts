@@ -300,6 +300,12 @@ export class LargeView {
   private applyFilterBatch(p: FilterBatch): void {
     // 命令返回可能晚于末批事件：已收尾后到达的批次不得再追加，否则重复计行
     if (this.filterFinishedId === p.requestId) return;
+    // 取消：整批结果作废。必须在 append 之前判断——块内检查点会让取消落在
+    // 批次中间，先追加再判断就会留下「已中止 + 仍按半截命中虚拟化」的矛盾视图
+    if (p.cancelled) {
+      this.finishCancelled(p.requestId);
+      return;
+    }
     // 上限由 MatchBuffer 内部裁剪：Uint32Array 定长，不能像 number[] 那样 push
     this.matchBuf.append(p.matches);
     if (!p.done) {
@@ -317,15 +323,25 @@ export class LargeView {
       return;
     }
     this.filterFinishedId = p.requestId;
-    if (p.cancelled) {
-      this.el.statusEl.textContent = "过滤已中止";
-      return;
-    }
     this.deps.onMessage(
       p.truncated
         ? `过滤命中已达上限，仅保留前 ${this.matchBuf.length} 行`
         : `过滤命中 ${this.matchBuf.length} 行`,
     );
+    void this.loadWindow();
+    this.drawMinimap();
+  }
+
+  /**
+   * 取消收尾：结果集作废、回到未过滤全文。
+   * 末批事件与命令返回谁先到都会走这里，幂等（重复调用只认第一次）。
+   */
+  private finishCancelled(requestId: number): void {
+    if (this.filterFinishedId === requestId) return;
+    this.filterFinishedId = requestId;
+    this.matchBuf.reset();
+    this.cache.clear();
+    this.deps.onMessage("过滤已中止，已恢复显示全部行");
     void this.loadWindow();
     this.drawMinimap();
   }
@@ -706,14 +722,15 @@ export class LargeView {
         requestId,
       });
       if (requestId !== this.filterRequestId) return;
+      if (res.cancelled) {
+        // 取消：返回值里的命中也不用，直接复位到未过滤全文
+        this.finishCancelled(requestId);
+        return;
+      }
       this.matchBuf.replace(res.matches);
       // 末批事件可能先到并已完成收尾
       if (this.filterFinishedId === requestId) return;
       this.filterFinishedId = requestId;
-      if (res.cancelled) {
-        this.el.statusEl.textContent = "过滤已中止";
-        return;
-      }
       this.deps.onMessage(
         res.truncated
           ? `过滤命中已达上限，仅保留前 ${res.matches.length} 行`

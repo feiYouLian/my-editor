@@ -480,13 +480,15 @@ pub fn read_large_lines(
     start: usize,
     count: usize,
 ) -> Result<LineWindow, String> {
-    let (path, encoding_name, anchors, complete, total_lines) = {
+    // 锚点表可能有十几万项（1GB / 64KB ≈ 16K 项）：滚动时每次窗口读取都克隆一次
+    // 会产生周期性 256KB 分配。在锁内直接定位，只带出标量。
+    let (path, encoding_name, from, complete, total_lines) = {
         let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.get(&id).ok_or("大文件会话已关闭")?;
         (
             entry.path.clone(),
             entry.encoding.clone(),
-            entry.anchors.clone(),
+            locate(&entry.anchors, start),
             entry.complete,
             entry.total_lines,
         )
@@ -499,7 +501,6 @@ pub fn read_large_lines(
     }
 
     let count = count.clamp(1, MAX_WINDOW_LINES);
-    let from = locate(&anchors, start);
     let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
     file.seek(SeekFrom::Start(from.0))
         .map_err(|e| format!("定位失败: {e}"))?;
@@ -600,6 +601,23 @@ pub async fn filter_large_file(
     .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
+/// 过滤收尾的结果集处理：取消 = 结果作废。
+/// 已扫描到的部分命中不能随末批 / 返回值带出去，否则前端会出现
+/// 「状态栏已中止，视图仍按半截命中虚拟化」的自相矛盾显示。
+fn finalize_matches(cancelled: bool, matches: &mut Vec<usize>, pending: &mut Vec<usize>) {
+    if cancelled {
+        matches.clear();
+        pending.clear();
+    }
+}
+
+/// 把新读到的块拼到缓冲尾部，返回可处理前缀长度（最后一个换行之后）。
+/// 返回 0 表示本块没有换行：整块都是未结束的行，留给下一块继续拼接。
+fn append_block(data: &mut Vec<u8>, block: &[u8]) -> usize {
+    data.extend_from_slice(block);
+    memchr::memrchr(b'\n', data).map(|i| i + 1).unwrap_or(0)
+}
+
 fn filter_large_blocking(
     app: &tauri::AppHandle,
     files: &Arc<Mutex<HashMap<String, LargeFile>>>,
@@ -644,7 +662,9 @@ fn filter_large_blocking(
 
     let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
     let mut buf = vec![0u8; CHUNK];
-    let mut carry: Vec<u8> = Vec::new();
+    // 复用同一块缓冲承接「上一块未结束的行 + 本块」：每块不再重新分配 4MB，
+    // 也不会为尾部残余再 to_vec 一份（1GB 文件可省掉约 1GB 的分配流量）
+    let mut data: Vec<u8> = Vec::with_capacity(CHUNK + 64 * 1024);
     let mut line_no = 0usize;
     let mut matches: Vec<usize> = Vec::new();
     let mut pending: Vec<usize> = Vec::new();
@@ -664,10 +684,7 @@ fn filter_large_blocking(
         }
         scanned += n as u64;
 
-        let mut data: Vec<u8> = std::mem::take(&mut carry);
-        data.extend_from_slice(&buf[..n]);
-        let cut = memchr::memrchr(b'\n', &data).map(|i| i + 1).unwrap_or(0);
-        carry = data[cut..].to_vec();
+        let cut = append_block(&mut data, &buf[..n]);
 
         if cut > 0 {
             let text = encoding::decode(&data[..cut], &encoding_name)
@@ -695,6 +712,8 @@ fn filter_large_blocking(
                 break;
             }
             line_no += line_count;
+            // 已处理部分移出缓冲，最后一段未结束的行留给下一块拼接
+            data.drain(..cut);
         }
         if truncated {
             break;
@@ -728,10 +747,10 @@ fn filter_large_blocking(
         }
     }
 
-    if !cancelled && !truncated && !carry.is_empty() {
-        let body = match carry.last() {
-            Some(b'\r') => &carry[..carry.len() - 1],
-            _ => &carry[..],
+    if !cancelled && !truncated && !data.is_empty() {
+        let body = match data.last() {
+            Some(b'\r') => &data[..data.len() - 1],
+            _ => &data[..],
         };
         let text = encoding::decode(body, &encoding_name)
             .unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned());
@@ -752,6 +771,8 @@ fn filter_large_blocking(
             map.remove(id);
         }
     }
+
+    finalize_matches(cancelled, &mut matches, &mut pending);
 
     let _ = app.emit(
         "large://filter-progress",
@@ -1231,6 +1252,47 @@ mod tests {
         let finished = drain_index(&mut idx, &cancelled, |_| {});
         assert!(finished);
         assert_eq!(idx.total_lines(), 3);
+    }
+
+    /// 过滤块拼接：跨块的行必须完整保留，已处理前缀可安全移除
+    #[test]
+    fn append_block_keeps_partial_line_across_chunks() {
+        let mut data: Vec<u8> = Vec::new();
+        // 第一块：一行完整 + 半行（cut 落在换行之后）
+        let cut = append_block(&mut data, b"line1\npart");
+        assert_eq!(cut, 6);
+        data.drain(..cut);
+        assert_eq!(data, b"part");
+
+        // 第二块：补齐上一行 + 一行完整 + 新的半行
+        let cut = append_block(&mut data, b"ial\nline2\nhal");
+        assert_eq!(&data[..cut], b"partial\nline2\n");
+        data.drain(..cut);
+        assert_eq!(data, b"hal");
+    }
+
+    /// 取消后不得把半截命中交给前端（否则「已中止 + 半截列表」自相矛盾）
+    #[test]
+    fn cancelled_filter_drops_partial_matches() {
+        let mut matches = vec![1usize, 2, 3];
+        let mut pending = vec![2usize, 3];
+        finalize_matches(true, &mut matches, &mut pending);
+        assert!(matches.is_empty());
+        assert!(pending.is_empty());
+
+        // 未取消：结果原样保留
+        let mut kept = vec![7usize];
+        finalize_matches(false, &mut kept, &mut Vec::new());
+        assert_eq!(kept, vec![7]);
+    }
+
+    /// 整块没有换行：返回 0，缓冲继续累积（超长行跨块）
+    #[test]
+    fn append_block_without_newline_keeps_whole_block() {
+        let mut data: Vec<u8> = Vec::new();
+        assert_eq!(append_block(&mut data, b"abcdef"), 0);
+        assert_eq!(data, b"abcdef");
+        assert_eq!(append_block(&mut data, b"gh\n"), 9);
     }
 
     /// 从另一个文件的终态接着扫：模拟 refresh_large_file 的续扫（含句柄定位）
