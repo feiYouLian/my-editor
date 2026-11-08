@@ -99,7 +99,8 @@ export function showHelpDialog(topic: HelpTopic = "guide", anchor?: string): voi
   backdrop.className = "dialog-backdrop";
 
   const dialog = document.createElement("div");
-  dialog.className = "dialog dialog-wide help-dialog";
+  // 不再挂 dialog-wide：它是 460px 的小宽版（panels.css 后导入，会盖掉 .help-dialog 的宽度）
+  dialog.className = "dialog help-dialog";
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-label", "帮助");
 

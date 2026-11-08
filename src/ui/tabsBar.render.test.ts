@@ -61,6 +61,39 @@ describe("TabsBar 状态渲染与键盘", () => {
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
   });
 
+  it("点击标签任意位置都能激活（不只是文件名）", () => {
+    const first = tabStore.open(content("a.ts"));
+    const second = tabStore.open(content("b.ts"));
+    tabStore.activate(first.id);
+    const callbacks = makeCallbacks();
+    const container = document.querySelector<HTMLElement>("#tabs")!;
+    const bar = new TabsBar(container, callbacks);
+    bar.render();
+
+    const target = container.querySelectorAll<HTMLElement>(".tab")[1];
+    // 直接点在标签本身（内边距 / 空白处），事件不经过 .tab-name
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(callbacks.onActivate).toHaveBeenCalledWith(second.id);
+    expect(callbacks.onClose).not.toHaveBeenCalled();
+  });
+
+  it("点击关闭按钮只关闭，不触发激活", () => {
+    const first = tabStore.open(content("a.ts"));
+    tabStore.open(content("b.ts"));
+    tabStore.activate(first.id);
+    const callbacks = makeCallbacks();
+    const container = document.querySelector<HTMLElement>("#tabs")!;
+    const bar = new TabsBar(container, callbacks);
+    bar.render();
+
+    const close = container.querySelectorAll<HTMLElement>(".tab-close")[1];
+    close.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(callbacks.onClose).toHaveBeenCalled();
+    expect(callbacks.onActivate).not.toHaveBeenCalled();
+  });
+
   it("→ 键把焦点语义交给下一个标签（与历史面板 / 分支选择一致）", () => {
     const first = tabStore.open(content("a.ts"));
     const second = tabStore.open(content("b.ts"));
