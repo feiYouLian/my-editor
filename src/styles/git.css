@@ -844,12 +844,15 @@
   width: min(520px, 92vw);
 }
 
-/* 帮助对话框：内容区独立滚动，标签页在标题行右侧 */
+/* 帮助对话框：内容区独立滚动，标签页在标题行右侧。
+   宽度按文档阅读场景放宽：命令索引是长表格，760px 下表格列会被挤成多行。 */
 .dialog.help-dialog {
-  width: min(760px, 92vw);
-  max-height: 86vh;
+  width: min(1080px, 94vw);
+  max-height: 88vh;
   display: flex;
   flex-direction: column;
+  /* 滚动交给正文区，对话框本身不出滚动条 */
+  overflow: hidden;
 }
 
 .help-head {
@@ -887,13 +890,111 @@
   background: var(--accent-soft);
 }
 
+/* 帮助正文复用预览的 Markdown 排版，但那套色板是按浅色纸底写死的
+   （标题下划线、引用、表格、代码块都是浅色值），直接放进对话框会在暗色主题下
+   变成「深底压深字」。这里把正文用到的颜色 / 边框逐项映射回设计令牌，
+   让帮助跟随暗色 / 浅色 / 高对比度三套主题；预览本身仍是浅色文档，不受影响。
+   覆盖规则特异性与原样式相同，靠 git.css 在 preview.css 之后导入生效。 */
 .help-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding-right: 6px;
+  padding: 14px 20px 18px;
+  /* 比对话框低一档的凹陷面：正文区与标题 / 底部按钮区分开 */
+  background: var(--bg-app);
+  color: var(--text-primary);
+  /* 滚动条 / 原生控件跟随主题 */
+  color-scheme: var(--ui-scheme);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   font-size: 13px;
   line-height: 1.65;
+}
+
+/* 正文文字 */
+.help-body strong {
+  color: var(--text-primary);
+}
+
+.help-body h6,
+.help-body del {
+  color: var(--text-muted);
+}
+
+.help-body h1,
+.help-body h2 {
+  border-bottom-color: var(--border-subtle);
+}
+
+.help-body li::marker {
+  color: var(--text-muted);
+}
+
+.help-body a {
+  color: var(--accent);
+  border-bottom-color: var(--accent-line);
+}
+
+.help-body a:hover {
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.help-body ::selection {
+  background: var(--bg-selected);
+}
+
+/* 引用与分隔线 */
+.help-body blockquote {
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  border-left-color: var(--border-strong);
+}
+
+.help-body blockquote blockquote {
+  background: transparent;
+}
+
+.help-body hr {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--border) 15%,
+    var(--border) 85%,
+    transparent
+  );
+}
+
+/* 表格：表头与斑马纹用主题表面色，避免浅色底压浅色字 */
+.help-body .md-table-wrap {
+  border-color: var(--border);
+}
+
+.help-body th,
+.help-body td {
+  border-bottom-color: var(--border-subtle);
+}
+
+.help-body th {
+  background: var(--bg-panel);
+}
+
+.help-body tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.help-body tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+/* 代码块：比正文面亮一档，暗色主题下也能看出块边界 */
+.help-body code {
+  background: var(--bg-elevated);
+}
+
+.help-body pre {
+  background: var(--bg-elevated);
+  border-color: var(--border-subtle);
 }
 
 /* 文档里的外部链接不能直接打开浏览器：点一下只在底部说明，避免误以为"点了没反应" */

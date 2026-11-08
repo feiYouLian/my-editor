@@ -134,13 +134,19 @@ struct LargeFile {
     scan_last_byte: Option<u8>,
     /// 后台索引线程是否仍在跑：此时禁止续扫，否则两处同时写 anchors
     bg_indexing: bool,
+    /// 会话取消标志：关闭会话时置位，后台索引 / 续扫线程据此提前退出，
+    /// 不再把整个文件读完（否则关掉 1GB 日志后仍会持续读盘）
+    cancel: Arc<AtomicBool>,
 }
 
 /// 大文件会话注册表；Arc 以便后台索引线程共享
 #[derive(Default, Clone)]
 pub struct LargeState {
     files: Arc<Mutex<HashMap<String, LargeFile>>>,
-    cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// 各会话的过滤取消标志（按 id）。
+    /// 不能只用全局单槽：关闭标签 A 时不该把标签 B 正在进行的过滤一起取消，
+    /// 反之关闭会话本身（逃生门 / 退出）也必须能停掉它的过滤。
+    filter_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     /// 会话代号发生器（同一路径重复打开时区分新旧会话）
     next_session: Arc<AtomicU64>,
 }
@@ -202,8 +208,9 @@ impl Indexer {
         if n == 0 {
             return Ok(false);
         }
-        let positions: Vec<usize> = memchr::memchr_iter(b'\n', &self.buf[..n]).collect();
-        for &idx in &positions {
+        // 直接迭代换行位置：短行日志下一个 4MB 块有十几万个换行，
+        // 先 collect 成 Vec 会白付一次分配 + 一次遍历（1GB 文件累计上百 MB 临时分配）
+        for idx in memchr::memchr_iter(b'\n', &self.buf[..n]) {
             self.line_no += 1;
             let prev_is_cr = if idx > 0 {
                 self.buf[idx - 1] == b'\r'
@@ -238,6 +245,25 @@ impl Indexer {
             "CRLF".to_string()
         } else {
             "LF".to_string()
+        }
+    }
+}
+
+/// 后台补齐索引的核心循环：每读完一块检查一次取消标志。
+/// 返回 `false` = 被取消，调用方必须丢弃已扫结果（会话已关闭 / 已被新会话取代）。
+fn drain_index(
+    idx: &mut Indexer,
+    cancelled: &AtomicBool,
+    mut on_step: impl FnMut(&Indexer),
+) -> bool {
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        match idx.step() {
+            Ok(true) => on_step(idx),
+            // 读到末尾或读错误：按「已扫到能扫的为止」处理（与原语义一致）
+            Ok(false) | Err(_) => return true,
         }
     }
 }
@@ -320,6 +346,8 @@ fn open_large_file_blocking(
     // 同一路径二次打开（会话重开 / 虚拟视图替换）时分配新 session：
     // 旧会话的后台索引线程据此识别自己已过期，不再覆盖新会话
     let session = state.next_session.fetch_add(1, Ordering::Relaxed) + 1;
+    // 关闭会话时置位：后台线程每块检查一次，不再把整个文件读完
+    let cancel = Arc::new(AtomicBool::new(false));
     let entry = LargeFile {
         path: p.clone(),
         size,
@@ -335,6 +363,7 @@ fn open_large_file_blocking(
         scan_last_byte: indexer.last_byte,
         // 下方若启动后台索引线程会置 true
         bg_indexing: !reached_eof,
+        cancel: Arc::clone(&cancel),
     };
     let total_lines = entry.total_lines;
     let indexed_bytes = entry.indexed_bytes;
@@ -342,6 +371,11 @@ fn open_large_file_blocking(
     let shared = state.clone();
     {
         let mut map = shared.files.lock().unwrap_or_else(|e| e.into_inner());
+        // 同一路径二次打开（会话重开 / 虚拟视图替换）：旧会话的索引线程必须停，
+        // 否则它会读完整文件才在末尾发现 session 已过期，白读一遍
+        if let Some(old) = map.get(&path) {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
         map.insert(path.clone(), entry);
     }
 
@@ -360,11 +394,7 @@ fn open_large_file_blocking(
                 Err(_) => return,
             };
             let mut last_emit = Instant::now();
-            loop {
-                match idx.step() {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => break,
-                }
+            let finished = drain_index(&mut idx, &cancel, |idx| {
                 if last_emit.elapsed() >= PROGRESS_EVERY {
                     last_emit = Instant::now();
                     let _ = app_bg.emit(
@@ -377,6 +407,10 @@ fn open_large_file_blocking(
                         },
                     );
                 }
+            });
+            // 会话已关闭：结果无主，直接退出（不再等整个文件扫完）
+            if !finished {
+                return;
             }
             // 会话校验：期间若同一路径被重新打开（新 session）或已关闭，
             // 旧线程的结果一律丢弃，绝不覆盖新会话 / 向已关闭会话发事件
@@ -446,13 +480,15 @@ pub fn read_large_lines(
     start: usize,
     count: usize,
 ) -> Result<LineWindow, String> {
-    let (path, encoding_name, anchors, complete, total_lines) = {
+    // 锚点表可能有十几万项（1GB / 64KB ≈ 16K 项）：滚动时每次窗口读取都克隆一次
+    // 会产生周期性 256KB 分配。在锁内直接定位，只带出标量。
+    let (path, encoding_name, from, complete, total_lines) = {
         let map = state.files.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.get(&id).ok_or("大文件会话已关闭")?;
         (
             entry.path.clone(),
             entry.encoding.clone(),
-            entry.anchors.clone(),
+            locate(&entry.anchors, start),
             entry.complete,
             entry.total_lines,
         )
@@ -465,7 +501,6 @@ pub fn read_large_lines(
     }
 
     let count = count.clamp(1, MAX_WINDOW_LINES);
-    let from = locate(&anchors, start);
     let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
     file.seek(SeekFrom::Start(from.0))
         .map_err(|e| format!("定位失败: {e}"))?;
@@ -549,12 +584,12 @@ pub async fn filter_large_file(
 ) -> Result<FilterResult, String> {
     // State 引用不能进 'static 闭包：克隆内部 Arc 再移交
     let files = state.files.clone();
-    let cancel_slot = state.cancel.clone();
+    let filter_cancel = state.filter_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
         filter_large_blocking(
             &app,
             &files,
-            &cancel_slot,
+            &filter_cancel,
             &id,
             &query,
             case_sensitive,
@@ -566,10 +601,27 @@ pub async fn filter_large_file(
     .map_err(|e| format!("任务调度失败: {e}"))?
 }
 
+/// 过滤收尾的结果集处理：取消 = 结果作废。
+/// 已扫描到的部分命中不能随末批 / 返回值带出去，否则前端会出现
+/// 「状态栏已中止，视图仍按半截命中虚拟化」的自相矛盾显示。
+fn finalize_matches(cancelled: bool, matches: &mut Vec<usize>, pending: &mut Vec<usize>) {
+    if cancelled {
+        matches.clear();
+        pending.clear();
+    }
+}
+
+/// 把新读到的块拼到缓冲尾部，返回可处理前缀长度（最后一个换行之后）。
+/// 返回 0 表示本块没有换行：整块都是未结束的行，留给下一块继续拼接。
+fn append_block(data: &mut Vec<u8>, block: &[u8]) -> usize {
+    data.extend_from_slice(block);
+    memchr::memrchr(b'\n', data).map(|i| i + 1).unwrap_or(0)
+}
+
 fn filter_large_blocking(
     app: &tauri::AppHandle,
     files: &Arc<Mutex<HashMap<String, LargeFile>>>,
-    cancel_slot: &Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    filter_cancel: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     id: &str,
     query: &str,
     case_sensitive: bool,
@@ -601,17 +653,18 @@ fn filter_large_blocking(
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
-        // 新过滤开始前中止上一次仍在扫描的任务，避免两份全文件遍历并发
-        if let Some(prev) = slot.take() {
+        let mut map = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        // 同一会话上一次过滤仍在跑：先中止，避免两份全文件遍历并发
+        if let Some(prev) = map.insert(id.to_string(), Arc::clone(&cancel)) {
             prev.store(true, Ordering::Relaxed);
         }
-        *slot = Some(cancel.clone());
     }
 
     let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
     let mut buf = vec![0u8; CHUNK];
-    let mut carry: Vec<u8> = Vec::new();
+    // 复用同一块缓冲承接「上一块未结束的行 + 本块」：每块不再重新分配 4MB，
+    // 也不会为尾部残余再 to_vec 一份（1GB 文件可省掉约 1GB 的分配流量）
+    let mut data: Vec<u8> = Vec::with_capacity(CHUNK + 64 * 1024);
     let mut line_no = 0usize;
     let mut matches: Vec<usize> = Vec::new();
     let mut pending: Vec<usize> = Vec::new();
@@ -631,10 +684,7 @@ fn filter_large_blocking(
         }
         scanned += n as u64;
 
-        let mut data: Vec<u8> = std::mem::take(&mut carry);
-        data.extend_from_slice(&buf[..n]);
-        let cut = memchr::memrchr(b'\n', &data).map(|i| i + 1).unwrap_or(0);
-        carry = data[cut..].to_vec();
+        let cut = append_block(&mut data, &buf[..n]);
 
         if cut > 0 {
             let text = encoding::decode(&data[..cut], &encoding_name)
@@ -643,6 +693,11 @@ fn filter_large_blocking(
             let parts: Vec<&str> = text.split('\n').collect();
             let line_count = parts.len().saturating_sub(1);
             for (i, line) in parts.iter().take(line_count).enumerate() {
+                // 块内检查点：一个 4MB 块可能有十万行，逐行正则期间也要能及时停下
+                if i & 1023 == 0 && cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
                 if re.is_match(line) {
                     let line_idx = line_no + i;
                     matches.push(line_idx);
@@ -653,7 +708,12 @@ fn filter_large_blocking(
                     }
                 }
             }
+            if cancelled {
+                break;
+            }
             line_no += line_count;
+            // 已处理部分移出缓冲，最后一段未结束的行留给下一块拼接
+            data.drain(..cut);
         }
         if truncated {
             break;
@@ -687,10 +747,10 @@ fn filter_large_blocking(
         }
     }
 
-    if !cancelled && !truncated && !carry.is_empty() {
-        let body = match carry.last() {
-            Some(b'\r') => &carry[..carry.len() - 1],
-            _ => &carry[..],
+    if !cancelled && !truncated && !data.is_empty() {
+        let body = match data.last() {
+            Some(b'\r') => &data[..data.len() - 1],
+            _ => &data[..],
         };
         let text = encoding::decode(body, &encoding_name)
             .unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned());
@@ -702,15 +762,17 @@ fn filter_large_blocking(
 
     {
         // 仅清理自己登记的取消标志：期间可能已有新任务登记了新标志
-        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
-        let own = slot
-            .as_ref()
+        let mut map = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        let own = map
+            .get(id)
             .map(|f| Arc::ptr_eq(f, &cancel))
             .unwrap_or(false);
         if own {
-            *slot = None;
+            map.remove(id);
         }
     }
+
+    finalize_matches(cancelled, &mut matches, &mut pending);
 
     let _ = app.emit(
         "large://filter-progress",
@@ -744,12 +806,21 @@ fn filter_large_blocking(
     })
 }
 
-/// 中止正在进行的过滤
+/// 中止正在进行的过滤：带 id 只取消该会话，不带 id 取消全部（退出 / 重载兜底）
 #[tauri::command]
-pub fn cancel_large_task(state: tauri::State<LargeState>) {
-    let slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(flag) = slot.as_ref() {
-        flag.store(true, Ordering::Relaxed);
+pub fn cancel_large_task(state: tauri::State<LargeState>, id: Option<String>) {
+    let map = state.filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+    match id {
+        Some(id) => {
+            if let Some(flag) = map.get(&id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+        None => {
+            for flag in map.values() {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -951,7 +1022,7 @@ fn refresh_large_blocking(
     }
 
     // 确实要续扫：这一次才取锚点/行号快照，读盘期间不持锁
-    let (indexed, scan_line_no, scan_last_byte, anchors, anchor_bytes, session) = {
+    let (indexed, scan_line_no, scan_last_byte, anchors, anchor_bytes, session, cancel) = {
         let map = files.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.get(id).ok_or("大文件会话已关闭")?;
         (
@@ -961,6 +1032,7 @@ fn refresh_large_blocking(
             entry.anchors.clone(),
             entry.anchor_bytes,
             entry.session,
+            Arc::clone(&entry.cancel),
         )
     };
 
@@ -974,6 +1046,10 @@ fn refresh_large_blocking(
     idx.line_no = scan_line_no;
     idx.last_byte = scan_last_byte;
     while idx.pos < target {
+        // 会话已关闭：不把这一轮 32MB 读完（返回值与"读到一半会话消失"一致）
+        if cancel.load(Ordering::Relaxed) {
+            return Err("大文件会话已关闭".to_string());
+        }
         match idx.step()? {
             true => {}
             false => break,
@@ -1017,9 +1093,22 @@ pub async fn close_large_file(
     id: String,
 ) -> Result<(), String> {
     let files = state.files.clone();
+    let filter_cancel = state.filter_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
-        map.remove(&id);
+        {
+            let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
+            // 先置位再移除：后台索引线程每块读开头检查该标志，
+            // 否则 1GB 日志关掉后仍会读到 EOF（并继续发进度事件）
+            if let Some(entry) = map.get(&id) {
+                entry.cancel.store(true, Ordering::Relaxed);
+            }
+            map.remove(&id);
+        }
+        // 关会话同时停掉它自己的过滤：逃生门 / 退出流程不一定先调 cancel_large_task
+        let mut filters = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(flag) = filters.remove(&id) {
+            flag.store(true, Ordering::Relaxed);
+        }
     })
     .await
     .map_err(|e| format!("关闭大文件会话失败: {e}"))
@@ -1134,6 +1223,76 @@ mod tests {
         for &(pos, _line) in idx.anchors.iter().skip(1) {
             assert_eq!(bytes[pos as usize - 1], b'\n');
         }
+    }
+
+    /// 会话关闭（取消标志置位）后：后台索引必须在下一次检查点退出，不再读下一块
+    #[test]
+    fn drain_index_stops_after_cancel() {
+        // 5MB > CHUNK，正常要读两块；第一块处理完就置位取消
+        let content = vec![b'a'; 5 * 1024 * 1024];
+        let p = temp_file("drain_cancel", &content);
+        let mut idx = Indexer::new(File::open(&p).unwrap(), 4096);
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let finished = drain_index(&mut idx, &cancelled, |_| {
+            steps += 1;
+            cancelled.store(true, Ordering::Relaxed);
+        });
+        assert!(!finished, "取消后不得报告已完成");
+        assert_eq!(steps, 1, "第一块后即应停止");
+        assert_eq!(idx.pos, CHUNK as u64, "取消后不应再读下一块");
+    }
+
+    /// 未取消时：正常扫到文件末尾，行数与一次性扫描一致
+    #[test]
+    fn drain_index_scans_to_eof_without_cancel() {
+        let p = temp_file("drain_full", b"a\nb\nc\n");
+        let mut idx = Indexer::new(File::open(&p).unwrap(), 4096);
+        let cancelled = AtomicBool::new(false);
+        let finished = drain_index(&mut idx, &cancelled, |_| {});
+        assert!(finished);
+        assert_eq!(idx.total_lines(), 3);
+    }
+
+    /// 过滤块拼接：跨块的行必须完整保留，已处理前缀可安全移除
+    #[test]
+    fn append_block_keeps_partial_line_across_chunks() {
+        let mut data: Vec<u8> = Vec::new();
+        // 第一块：一行完整 + 半行（cut 落在换行之后）
+        let cut = append_block(&mut data, b"line1\npart");
+        assert_eq!(cut, 6);
+        data.drain(..cut);
+        assert_eq!(data, b"part");
+
+        // 第二块：补齐上一行 + 一行完整 + 新的半行
+        let cut = append_block(&mut data, b"ial\nline2\nhal");
+        assert_eq!(&data[..cut], b"partial\nline2\n");
+        data.drain(..cut);
+        assert_eq!(data, b"hal");
+    }
+
+    /// 取消后不得把半截命中交给前端（否则「已中止 + 半截列表」自相矛盾）
+    #[test]
+    fn cancelled_filter_drops_partial_matches() {
+        let mut matches = vec![1usize, 2, 3];
+        let mut pending = vec![2usize, 3];
+        finalize_matches(true, &mut matches, &mut pending);
+        assert!(matches.is_empty());
+        assert!(pending.is_empty());
+
+        // 未取消：结果原样保留
+        let mut kept = vec![7usize];
+        finalize_matches(false, &mut kept, &mut Vec::new());
+        assert_eq!(kept, vec![7]);
+    }
+
+    /// 整块没有换行：返回 0，缓冲继续累积（超长行跨块）
+    #[test]
+    fn append_block_without_newline_keeps_whole_block() {
+        let mut data: Vec<u8> = Vec::new();
+        assert_eq!(append_block(&mut data, b"abcdef"), 0);
+        assert_eq!(data, b"abcdef");
+        assert_eq!(append_block(&mut data, b"gh\n"), 9);
     }
 
     /// 从另一个文件的终态接着扫：模拟 refresh_large_file 的续扫（含句柄定位）

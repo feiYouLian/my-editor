@@ -55,6 +55,11 @@ jobs:
       - name: 可发现性审计
         run: node scripts/audit-discoverability.mjs
 
+      # 命令索引由生成器产出：审计只查 id 集合，这里重生成后比对全文，
+      # 手改正文（保留标题行）同样会失败。--ignore-cr-at-eol 避开 autocrlf 差异。
+      - name: 命令索引与命令表同步
+        run: npm run gen:commands && git diff --ignore-cr-at-eol --exit-code -- docs/COMMANDS.md
+
       - name: E2E 类型检查
         run: npm run typecheck:e2e
 

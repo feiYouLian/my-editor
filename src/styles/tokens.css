@@ -128,8 +128,10 @@
   /* 图片查看器棋盘底：深色主题用深灰格，透明图边界可辨且不刺眼 */
   --image-checker-a: #2b303a;
   --image-checker-b: #23272f;
-  /* 图片舞台的滚动条/原生控件配色跟随主题（#preview-pane 固定为浅色文档） */
-  --image-scheme: dark;
+  /* 原生滚动条 / 表单控件配色：跟随主题。
+     例外是固定浅色文档的区域（#preview-pane），仍单独写死 light。 */
+  --ui-scheme: dark;
+  --image-scheme: var(--ui-scheme);
 }
 
 /* ---------- 浅色主题 ---------- */
@@ -190,7 +192,7 @@
   /* 图片查看器棋盘底：浅色主题用浅灰格 */
   --image-checker-a: #f2f4f6;
   --image-checker-b: #e4e7eb;
-  --image-scheme: light;
+  --ui-scheme: light;
 }
 
 /* ---------- 高对比度主题（黑底白字 + 强边框） ---------- */
@@ -252,7 +254,7 @@
   /* 图片查看器棋盘底：高对比度主题贴近纯黑，避免大块灰底削弱对比 */
   --image-checker-a: #1a1a1a;
   --image-checker-b: #000000;
-  --image-scheme: dark;
+  --ui-scheme: dark;
 }
 
 :root[data-theme="high-contrast"] .tab.active {

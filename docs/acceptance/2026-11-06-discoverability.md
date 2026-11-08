@@ -107,3 +107,40 @@ S1 出口判据已实测：临时插入一条 `{ id: "audit.probe", title: "审�
 
 > 新手走查仍为人工项：E2E 覆盖了「入口是否可见 / 说明是否存在 / 动作是否可触发」，
 > 但「停下来想了 5 秒」这类判据只能在桌面会话里观察，C.17 保持 `☐`。
+
+## 8. 第三轮：代码审查发现收口（2026-11-07）
+
+审查报告《my-editor v0.8.0 代码审查报告》提了 1 个 P0 产品化缺口、1 个人工验收缺口、
+2 个 P1 判据缺口、3 个 P2 加固项。本轮处理除人工走查外的全部项：
+
+| # | 发现 | 处理 | 落点 |
+| --- | --- | --- | --- |
+| P0-1 | 「发给别人」「git apply」四条 diff 命令并列最高分，意图没收敛 | 三条非工作区命令的关键词改成各自来源（未保存补丁 / 两个文件差异 / 暂存区补丁），三个口语词只留在 `diff.gitHead`；C7 判据由「期望命令在并列集合里」收紧为「最高分唯一且等于期望」 | `src/app/commandTable.ts:389/402/1547`、`scripts/audit-discoverability.mjs` 的 `SEARCH_PROBES` |
+| P1-1 | C3 结果卡接入是文件级校验，同文件删一处发现不了 | 基线每条登记增加 `callSite`（写法「函数名#结果卡 title 片段」），审计用 AST 定位函数体并匹配 title，同一函数里的「已存在 / 已导出 / 失败」也能区分 | `scripts/discoverability-baseline.json`（17 条）、`audit-discoverability.mjs` 的 `resultCardAt()` |
+| P1-2 | 审计与面板是两份近似评分，权重一改就漂移 | 打分抽到 `src/core/commandScore.ts`（纯函数、无 DOM），面板 import 后转出；审计用 `ts.transpileModule` 编译到临时目录 require，两边同一份实现 | `src/core/commandScore.ts`、`src/panels/commandPalette.ts`、`audit-discoverability.mjs` 的 `loadCoreFunction()` |
+| P2-1 | C8 只校验索引的 id 集合，正文手改不管 | CI 新增 `npm run gen:commands && git diff --ignore-cr-at-eol --exit-code -- docs/COMMANDS.md` | `.github/workflows/ci.yml` |
+| P2-2 | 说明过短只提示、不阻断 | `<12 字` 纳入 errors（硬失败），同时删除只服务该提示的 `--list-short` 开关 | `audit-discoverability.mjs` |
+
+反向注入验证（每条注入后恢复源码，重跑正向缺口 0）：
+
+| 注入 | 判据输出 | 退出码 |
+| --- | --- | --- |
+| 去掉 `diff.gitHead` 的「发给别人」关键词 | `搜索「发给别人」应唯一命中 diff.gitHead（当前最高：无）` | 1 |
+| 删掉 `exportPatch` 里 title 为「已导出统一 diff 补丁」的 `reportResult` | 5 条 `结果卡调用点失效`（按钮 1 + manual 4） | 1 |
+| 把 `diff.unsaved` 说明改成 7 字 | `说明过短（<12 字）` | 1 |
+| 手改 `COMMANDS.md` 正文后重生成 | `git diff --exit-code` 非零（生成结果与提交内容不一致） | 1 |
+
+结果固化：渲染层新增 1 条「唯一最高分是 `diff.gitHead`」用例（现 29 条全绿），E2E 第一个用例补
+「搜用途词后首位是与 Git HEAD、列表里不再有第二条『比较：』」断言。
+
+本轮验证范围（`npm test` 131 + 29、`tsc --noEmit`、`npm run build`、`cargo test --lib` 205、
+三个既有门禁 + 审计缺口 0、`typecheck:e2e`、`git diff --check`、
+`npm run build:e2e && npx playwright test` 24 条全绿）。
+
+E2E 首次重跑全挂，根因是 `src-tauri/target/debug/my-editor.exe` 被 `tauri dev` 的产物覆盖：
+页面去连 `http://localhost:5173`，而 Playwright 配置不启 dev server，`#ws-name` 自然找不到。
+重新执行 `npm run build:e2e`（内置 `dist` 资源）后恢复。**同一路径下 `tauri dev` 与
+`tauri build --debug` 会互相覆盖**，跑 E2E 前不要用 `npm run tauri dev` 编过同一个 profile。
+
+P0-2 **未处理**：五个任务的桌面会话走查仍需人工执行，第 5 节与 `docs/ACCEPTANCE.md` 的 C.17
+保持「未测 / `☐`」。本轮不伪造走查数据；按审查报告口径，这一格填完才算 `v0.8.0` 收口。

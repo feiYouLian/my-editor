@@ -44,6 +44,7 @@ main.ts → 全部
 ```bash
 npm test && npx tsc --noEmit && npm run build && (cd src-tauri && cargo test --lib)
 node scripts/check-ipc-contract.mjs && node scripts/scan-unsafe.mjs && node scripts/scan-innerhtml.mjs
+node scripts/audit-discoverability.mjs && npm run gen:commands
 npm run typecheck:e2e
 # E2E 连真实应用（WebView2 CDP），先构建调试版：
 npm run build:e2e && npm run test:e2e
@@ -72,12 +73,17 @@ Rust 侧约束：
 - 文件关联改为应用内显式开关（2026-11-04）：安装包不再声明 `bundle.fileAssociations`；
   设置 →「文件与会话 → Windows 系统集成」只向 HKCU 登记「打开方式」候选，不改 `.ext` 默认值（见 `commands/association.rs`）；
   旧版安装器留下的默认关联可在此处「一键恢复」（有 `_backup` 的恢复原程序，无备份的去掉默认）
-- 测试基线（2026-11-06）：`npm test` 131 项 + 渲染层 28 项（`vitest.render.config.ts`）、`cargo test --lib` 205 项（+2 条默认 ignore 的真实注册表往返）、E2E 24 条
+- 测试基线（2026-11-08）：`npm test` 131 项 + 渲染层 33 项（`vitest.render.config.ts`）、`cargo test --lib` 210 项（+2 条默认 ignore 的真实注册表往返）、E2E 24 条
+- 0.8.1 性能与资源修复（2026-11-08）：三轮性能/内存审查收口 —— 重载与退出统一释放后端资源
+  （Code Run / PTY / 大文件会话）、大文件会话级取消标志（索引 / 续扫 / 过滤）、过滤取消按会话隔离且
+  取消即作废半截命中、窗口读取不再克隆锚点表、过滤块缓冲复用；验收见 `docs/acceptance/2026-11-08.md`
 - 0.8.0 可发现性与产品化（2026-11-06，`dev/0.8.0`）：133 条命令补齐说明与结果去向（58 条高频命令带搜索关键词）、
   命令面板两行渲染 + 按用途搜索、产物类动作统一走结果卡（路径可复制 / 打开目录，通知中心留底）、
   四处「导出补丁」按来源改名且同名不静默覆盖、Git 历史面板范围说明与复制 / 导出、6 个面板 `?` 入口、空态补下一步；
-  新增 `scripts/audit-discoverability.mjs`（C0–C7 判据）并接入 `ci.yml`，
-  验收记录见 `docs/acceptance/2026-11-06-discoverability.md`
+  新增 `scripts/audit-discoverability.mjs`（C0–C8 判据）并接入 `ci.yml`，
+  验收记录见 `docs/acceptance/2026-11-06-discoverability.md`；2026-11-07 审查收口：
+  用途搜索改为唯一命中、结果卡按调用点（函数 + 卡片标题）校验、评分抽到 `src/core/commandScore.ts` 与审计共用、
+  CI 增「命令索引重生成后无 diff」判据；C.17 人工走查仍未执行
 - 0.7.0 计划 S0–S1 完成（2026-11-04）：起始标签 `v0.6.3-baseline`、工作分支 `dev/0.7.0`；
   新增 IPC 参数契约 / 生产 panic 点 / DOM 注入面三道静态门禁（`scripts/`，已接入 `ci.yml`）；
   验收基线整理为 `docs/ACCEPTANCE.md`（自动 / 半自动 / 人工三层，与批次一一对应）

@@ -222,6 +222,19 @@ export class LargeView {
   }
 
   /**
+   * 退出 / 重载界面前释放：解除全局事件订阅与主题观察器。
+   * 与 close() 分开——close() 只复位视图状态（切标签后还会再 open），
+   * 事件订阅必须留着，否则切回来收不到索引进度与过滤批次。
+   */
+  dispose(): void {
+    this.close();
+    for (const un of this.unlisteners) un();
+    this.unlisteners.length = 0;
+    this.themeObserver?.disconnect();
+    this.themeObserver = null;
+  }
+
+  /**
    * 后端把超长行裁到 4000 字符并补 `…`。不说明的话，用户会以为文件内容就到这里
    * （「行尾怎么少了一截」）。只提示一次，避免滚动时反复刷屏。
    */
@@ -287,6 +300,12 @@ export class LargeView {
   private applyFilterBatch(p: FilterBatch): void {
     // 命令返回可能晚于末批事件：已收尾后到达的批次不得再追加，否则重复计行
     if (this.filterFinishedId === p.requestId) return;
+    // 取消：整批结果作废。必须在 append 之前判断——块内检查点会让取消落在
+    // 批次中间，先追加再判断就会留下「已中止 + 仍按半截命中虚拟化」的矛盾视图
+    if (p.cancelled) {
+      this.finishCancelled(p.requestId);
+      return;
+    }
     // 上限由 MatchBuffer 内部裁剪：Uint32Array 定长，不能像 number[] 那样 push
     this.matchBuf.append(p.matches);
     if (!p.done) {
@@ -304,15 +323,25 @@ export class LargeView {
       return;
     }
     this.filterFinishedId = p.requestId;
-    if (p.cancelled) {
-      this.el.statusEl.textContent = "过滤已中止";
-      return;
-    }
     this.deps.onMessage(
       p.truncated
         ? `过滤命中已达上限，仅保留前 ${this.matchBuf.length} 行`
         : `过滤命中 ${this.matchBuf.length} 行`,
     );
+    void this.loadWindow();
+    this.drawMinimap();
+  }
+
+  /**
+   * 取消收尾：结果集作废、回到未过滤全文。
+   * 末批事件与命令返回谁先到都会走这里，幂等（重复调用只认第一次）。
+   */
+  private finishCancelled(requestId: number): void {
+    if (this.filterFinishedId === requestId) return;
+    this.filterFinishedId = requestId;
+    this.matchBuf.reset();
+    this.cache.clear();
+    this.deps.onMessage("过滤已中止，已恢复显示全部行");
     void this.loadWindow();
     this.drawMinimap();
   }
@@ -693,14 +722,15 @@ export class LargeView {
         requestId,
       });
       if (requestId !== this.filterRequestId) return;
+      if (res.cancelled) {
+        // 取消：返回值里的命中也不用，直接复位到未过滤全文
+        this.finishCancelled(requestId);
+        return;
+      }
       this.matchBuf.replace(res.matches);
       // 末批事件可能先到并已完成收尾
       if (this.filterFinishedId === requestId) return;
       this.filterFinishedId = requestId;
-      if (res.cancelled) {
-        this.el.statusEl.textContent = "过滤已中止";
-        return;
-      }
       this.deps.onMessage(
         res.truncated
           ? `过滤命中已达上限，仅保留前 ${res.matches.length} 行`
@@ -837,10 +867,13 @@ export class LargeView {
     }
   }
 
-  /** 中止正在进行的过滤（切换标签 / 关闭时调用） */
+  /** 中止正在进行的过滤（只针对当前会话；换文件 / 清过滤 / 用户中止时调用） */
   async cancel(): Promise<void> {
+    const id = this.info?.id;
     try {
-      await invoke("cancel_large_task", {});
+      // 有会话时按 id 精确取消；视图尚未绑定会话时退回全量（无任务，空操作）
+      if (id) await invoke("cancel_large_task", { id });
+      else await invoke("cancel_large_task");
     } catch {
       // 无进行中任务时忽略
     }

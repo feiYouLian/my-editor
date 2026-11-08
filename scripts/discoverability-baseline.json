@@ -15,7 +15,8 @@
       "file": "src/app/commandTable.ts",
       "line": 185,
       "label": "另存为…",
-      "resultCard": "src/app/fileService.ts"
+      "resultCard": "src/app/fileService.ts",
+      "callSite": "saveFileAs#已另存为"
     },
     {
       "key": "command:file.saveAsEncoding",
@@ -24,7 +25,8 @@
       "file": "src/app/commandTable.ts",
       "line": 187,
       "label": "另存为指定编码…",
-      "resultCard": "src/app/fileService.ts"
+      "resultCard": "src/app/fileService.ts",
+      "callSite": "saveAsWithEncoding#已另存为"
     },
     {
       "key": "command:fetch.open",
@@ -33,7 +35,8 @@
       "file": "src/app/commandTable.ts",
       "line": 196,
       "label": "从网址抓取网页…",
-      "resultCard": "src/panels/fetchPageDialog.ts"
+      "resultCard": "src/panels/fetchPageDialog.ts",
+      "callSite": "submit#已抓取"
     },
     {
       "key": "command:file.exportMarkdown",
@@ -42,7 +45,8 @@
       "file": "src/app/commandTable.ts",
       "line": 198,
       "label": "导出 Markdown（当前 HTML 文件）",
-      "resultCard": "src/app/previewHost.ts"
+      "resultCard": "src/app/previewHost.ts",
+      "callSite": "export#已导出 Markdown"
     },
     {
       "key": "command:help.exportDiagnostics",
@@ -51,7 +55,8 @@
       "file": "src/app/commandTable.ts",
       "line": 220,
       "label": "导出诊断包（版本 / 系统 / 日志）",
-      "resultCard": "src/app/commandTable.ts"
+      "resultCard": "src/app/commandTable.ts",
+      "callSite": "buildCommandTable#已导出诊断包"
     },
     {
       "key": "command:tools.batchEncoding",
@@ -70,7 +75,8 @@
       "file": "src/app/commandTable.ts",
       "line": 278,
       "label": "插入剪贴板图片（存为 .assets 并插入引用）",
-      "resultCard": "src/app/fileService.ts"
+      "resultCard": "src/app/fileService.ts",
+      "callSite": "insertClipboardImage#已插入图片"
     },
     {
       "key": "button:src/panels/gitHistoryPanel.ts#导出为 .patch",
@@ -79,7 +85,8 @@
       "line": 319,
       "label": "导出为 .patch",
       "count": 1,
-      "resultCard": "src/app/diffService.ts"
+      "resultCard": "src/app/diffService.ts",
+      "callSite": "exportPatch#已导出统一 diff 补丁"
     },
     {
       "key": "button:src/panels/largeView/dom.ts#导出命中",
@@ -88,6 +95,7 @@
       "line": 101,
       "label": "导出命中",
       "resultCard": "src/panels/largeView.ts",
+      "callSite": "exportMatches#已导出",
       "count": 1
     },
     {
@@ -156,7 +164,8 @@
       "manual": true,
       "file": "src/app/diffService.ts",
       "label": "导出补丁（未保存改动）",
-      "resultCard": "src/app/diffService.ts"
+      "resultCard": "src/app/diffService.ts",
+      "callSite": "exportPatch#已导出统一 diff 补丁"
     },
     {
       "key": "manual:diff-patch-file",
@@ -164,7 +173,8 @@
       "manual": true,
       "file": "src/app/diffService.ts",
       "label": "导出补丁（与另一文件）",
-      "resultCard": "src/app/diffService.ts"
+      "resultCard": "src/app/diffService.ts",
+      "callSite": "exportPatch#已导出统一 diff 补丁"
     },
     {
       "key": "manual:diff-patch-worktree",
@@ -172,7 +182,8 @@
       "manual": true,
       "file": "src/app/diffService.ts",
       "label": "导出补丁（工作区 vs HEAD）",
-      "resultCard": "src/app/diffService.ts"
+      "resultCard": "src/app/diffService.ts",
+      "callSite": "exportPatch#已导出统一 diff 补丁"
     },
     {
       "key": "manual:diff-patch-index",
@@ -180,7 +191,8 @@
       "manual": true,
       "file": "src/app/diffService.ts",
       "label": "导出补丁（暂存区 vs HEAD）",
-      "resultCard": "src/app/diffService.ts"
+      "resultCard": "src/app/diffService.ts",
+      "callSite": "exportPatch#已导出统一 diff 补丁"
     },
     {
       "key": "manual:large-copy",
@@ -188,7 +200,8 @@
       "manual": true,
       "file": "src/panels/largeView.ts",
       "label": "复制命中",
-      "resultCard": "src/panels/largeView.ts"
+      "resultCard": "src/panels/largeView.ts",
+      "callSite": "copyMatches#已复制"
     },
     {
       "key": "manual:preview-export",
@@ -196,7 +209,8 @@
       "manual": true,
       "file": "src/app/previewHost.ts",
       "label": "导出 HTML / Word / PDF / Markdown",
-      "resultCard": "src/app/previewHost.ts"
+      "resultCard": "src/app/previewHost.ts",
+      "callSite": "export#已导出独立 HTML"
     },
     {
       "key": "manual:search-replace",
@@ -204,7 +218,8 @@
       "manual": true,
       "file": "src/panels/searchView.ts",
       "label": "全部替换",
-      "resultCard": "src/panels/searchView.ts"
+      "resultCard": "src/panels/searchView.ts",
+      "callSite": "runReplace#已替换"
     },
     {
       "key": "manual:git-commit",
@@ -212,7 +227,8 @@
       "manual": true,
       "file": "src/app/gitHost.ts",
       "label": "提交",
-      "resultCard": "src/app/gitHost.ts"
+      "resultCard": "src/app/gitHost.ts",
+      "callSite": "commit#已提交"
     },
     {
       "key": "manual:git-discard",
@@ -220,7 +236,8 @@
       "manual": true,
       "file": "src/app/gitHost.ts",
       "label": "放弃更改",
-      "resultCard": "src/app/gitHost.ts"
+      "resultCard": "src/app/gitHost.ts",
+      "callSite": "discard#已放弃"
     }
   ],
   "emptyStates": [

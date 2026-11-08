@@ -417,8 +417,12 @@ export class TabsBar {
       name.className = "tab-name";
       name.textContent = tab.dirty ? `● ${tab.name}` : tab.name;
       name.title = tab.path ?? "未命名";
-      name.addEventListener("click", () => {
+
+      // 整块标签都可点击：只绑定在文件名上时，点到内边距 / 间隙没有反应，
+      // 看起来像界面卡住。关闭按钮自己 stopPropagation，不会误触发激活。
+      el.addEventListener("click", (e) => {
         if (performance.now() < this.suppressActivateUntil) return;
+        if ((e.target as HTMLElement | null)?.closest(".tab-close")) return;
         this.callbacks.onActivate(tab.id);
       });
 

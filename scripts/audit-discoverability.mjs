@@ -6,10 +6,15 @@
  *   C0 字段合法：命令对象的顶层键必须在 CommandDef 接口里声明（防 descriptions 这类拼写错）
  *   C1 说明覆盖：每条命令（含 hidden）必须有 description
  *   C2 关键词覆盖：Git / 产物 / 运行 / 工具文本 四类共 58 条必须有 keywords
- *   C3 产物动作：产物类命令与按钮必须在 productActions 登记，登记的 resultCard 必须指向真实调用点
+ *   C3 产物动作：产物类命令与按钮必须在 productActions 登记，登记的 callSite
+ *     必须定位到该函数里真实的 resultCard 调用（函数 + 卡片标题片段）
  *   C4 暗入口：无 menu 且非 hidden 的命令必须在 outcome.entry 里声明入口位置
  *   C5 空态：登记的空态文案必须含「下一步」动词
  *   C6 同名异源：同一动作 label 出现在多个来源时必须用 title 区分
+ *   C7 搜索可达性：用途词必须唯一命中期望命令（并列最高分视为未收敛）；
+ *     评分直接复用 src/core/commandScore.ts，与命令面板同一份实现
+ *   C8 命令索引：docs/COMMANDS.md 的条目 id 与命令表双向覆盖
+ *      （正文是否过期由 CI 的「重新生成后 git diff」判据把关）
  *
  * 基线 scripts/discoverability-baseline.json 记录「当前已知缺口」：
  *   - 新增缺口（不在基线里）立即失败——新功能不能绕过说明
@@ -18,7 +23,9 @@
  *
  * 只读扫描，不改代码；有新增缺口时退出码 1。
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -101,7 +108,10 @@ const KEYWORD_REQUIRED = [
  * 只有「生成文件到某个路径」的动作才需要结果卡；就地写回的保存、写回编辑器的转换不算。
  */
 
-/** C7 搜索可达性：用户口语必须能命中对应命令，且并列最高分 */
+/**
+ * C7 搜索可达性：用户口语必须**唯一**命中对应命令。
+ * 并列最高分视为未收敛——用户仍要自己从几行里挑，等于没解决「不知道该点哪个」。
+ */
 const SEARCH_PROBES = [
   { query: "发给别人", expect: "diff.gitHead" },
   { query: "git apply", expect: "diff.gitHead" },
@@ -412,13 +422,93 @@ function diffGone(current, baseline) {
   return baseline.filter((v) => !now.has(v));
 }
 
-/** 只校验「该文件里确实调了结果卡」，不绑定行号（行号会随改动漂移） */
-function resultCardExists(target) {
-  const file = target.split(":")[0];
+/**
+ * 结果卡调用点校验。基线写法 `file.ts#函数名#结果卡 title 片段`：
+ * - 只看该文件、该函数/方法体（不绑定行号，行号会随改动漂移）
+ * - 该函数内必须存在一条结果卡调用，且 title 含给定片段
+ *
+ * 早先只查「文件里有任意一处调用」，同一文件登记多个入口时删掉一处发现不了；
+ * 加上 title 片段后，同一函数里的「成功 / 失败 / 已存在」多条卡也能区分，
+ * 删掉真正的那条即失败。
+ */
+function resultCardAt(file, callSite) {
+  const [fnName, titleHint = ""] = callSite.split("#");
+  let parsed;
   try {
-    return /showResultCard\s*\(|reportResult\s*\(/.test(readFileSync(join(ROOT, file), "utf8"));
+    parsed = parseTs(join(ROOT, file));
   } catch {
-    return false;
+    return { ok: false, reason: "文件不存在" };
+  }
+  const { sf } = parsed;
+
+  let fnBody = null;
+  const findFn = (node) => {
+    if (fnBody) return;
+    let name = null;
+    if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) name = node.name.text;
+    else if (ts.isFunctionDeclaration(node) && node.name) name = node.name.text;
+    else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+    ) {
+      name = node.name.text;
+    }
+    if (name === fnName && node.body) {
+      fnBody = node.body;
+      return;
+    }
+    ts.forEachChild(node, findFn);
+  };
+  findFn(sf);
+  if (!fnBody) return { ok: false, reason: `找不到函数 ${fnName}` };
+
+  let ok = false;
+  const findCard = (node) => {
+    if (ok) return;
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(sf);
+      if (/^(reportResult|showResultCard)$/.test(callee)) {
+        const arg = node.arguments[0];
+        const title = arg && ts.isObjectLiteralExpression(arg) ? prop(arg, "title") : undefined;
+        if (title && (!titleHint || title.getText(sf).includes(titleHint))) {
+          ok = true;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, findCard);
+  };
+  findCard(fnBody);
+  if (ok) return { ok: true };
+  return {
+    ok: false,
+    reason: titleHint
+      ? `函数 ${fnName} 里没有 title 含「${titleHint}」的结果卡调用`
+      : `函数 ${fnName} 里没有结果卡调用`,
+  };
+}
+
+/**
+ * 加载 src/core 的纯函数模块（与面板共用同一份打分实现，不另写近似版本）。
+ * 做法：把 TS 编译成 CommonJS 到临时目录后 require，仓库无需先构建。
+ */
+function loadCoreFunction(entry) {
+  const dir = mkdtempSync(join(tmpdir(), "my-editor-audit-"));
+  try {
+    for (const name of ["fuzzy.ts", entry]) {
+      const source = readFileSync(join(SRC, "core", name), "utf8");
+      const { outputText } = ts.transpileModule(source, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      });
+      writeFileSync(join(dir, name.replace(/\.ts$/, ".js")), outputText);
+    }
+    const require = createRequire(join(dir, "load.cjs"));
+    // 模块整体载入内存后再删临时目录，后续调用不依赖磁盘
+    return require(join(dir, entry.replace(/\.ts$/, ".js")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -463,7 +553,11 @@ function main() {
       errors.push(`${rel(COMMAND_TABLE)}:${c.line} ${c.id} 声明了菜单入口但未声明 menu 字段`);
     }
   }
+  // 说明低于 12 字视为没写清（清单要求 15–40 字，下限放宽到 12 作为硬门槛）
   const tooShort = commands.filter((c) => c.description.trim().length > 0 && c.description.trim().length < 12);
+  for (const c of tooShort) {
+    errors.push(`${rel(COMMAND_TABLE)}:${c.line} ${c.id} 说明过短（<12 字）：「${c.description}」`);
+  }
 
   // C3：产物类命令 + 产物类按钮
   const { hits, grouped } = scanActions();
@@ -484,7 +578,14 @@ function main() {
   }
   const wired = registered.filter((a) => a.resultCard && !a.exempt);
   for (const a of wired) {
-    if (!resultCardExists(a.resultCard)) errors.push(`结果卡调用点失效：${a.key} → ${a.resultCard}`);
+    if (!a.callSite) {
+      errors.push(`结果卡登记缺少 callSite：${a.key}（写法「函数名#结果卡 title 片段」）`);
+      continue;
+    }
+    const check = resultCardAt(a.resultCard, a.callSite);
+    if (!check.ok) {
+      errors.push(`结果卡调用点失效：${a.key} → ${a.resultCard}#${a.callSite}（${check.reason}）`);
+    }
   }
   for (const key of currentKeys) {
     const hit = productButtons.find((g) => g.key === key);
@@ -534,36 +635,25 @@ function main() {
     if (!nowLabels.has(g.label)) errors.push(`基线里的同名异源已消失：${g.label}（从基线删除后重跑）`);
   }
 
-  // C7：口径与 panels/commandPalette.ts 的 commandScore 一致（标题子序列 + 关键词 + 说明包含）
-  const searchScore = (query, cmd) => {
-    const q = query.trim().toLowerCase();
-    let score = 0;
-    let ti = 0;
-    let titleHit = true;
-    for (const ch of q) {
-      const idx = cmd.title.toLowerCase().indexOf(ch, ti);
-      if (idx < 0) {
-        titleHit = false;
-        break;
+  // C7：直接用面板同一份打分（src/core/commandScore.ts），并要求最高分唯一
+  let scoring = null;
+  try {
+    scoring = loadCoreFunction("commandScore.ts");
+  } catch (e) {
+    errors.push(`无法加载 src/core/commandScore.ts：${e.message}`);
+  }
+  if (scoring) {
+    for (const probe of SEARCH_PROBES) {
+      const scored = commands
+        .map((c) => ({ id: c.id, score: scoring.commandScore(probe.query, c).score }))
+        .filter((x) => x.score > 0);
+      const top = Math.max(0, ...scored.map((x) => x.score));
+      const winners = scored.filter((x) => x.score === top).map((x) => x.id);
+      if (winners.length !== 1 || winners[0] !== probe.expect) {
+        errors.push(
+          `搜索「${probe.query}」应唯一命中 ${probe.expect}（当前最高：${winners.join(", ") || "无"}）`,
+        );
       }
-      ti = idx + 1;
-    }
-    if (titleHit) score += 10;
-    for (const kw of cmd.keywords ?? []) {
-      const k = kw.toLowerCase();
-      if (k === q) score += 100;
-      else if (k.includes(q)) score += 40;
-    }
-    const desc = cmd.description.toLowerCase();
-    if (desc && desc.includes(q)) score += 30;
-    return score;
-  };
-  for (const probe of SEARCH_PROBES) {
-    const scored = commands.map((c) => ({ id: c.id, score: searchScore(probe.query, c) })).filter((x) => x.score > 0);
-    const top = Math.max(0, ...scored.map((x) => x.score));
-    const winners = scored.filter((x) => x.score === top).map((x) => x.id);
-    if (!winners.includes(probe.expect)) {
-      errors.push(`搜索「${probe.query}」命中不到 ${probe.expect}（当前最高：${winners.join(", ") || "无"}）`);
     }
   }
 
@@ -603,11 +693,14 @@ function main() {
   }
 
   const unwired = registered.filter((a) => !a.exempt && !a.resultCard);
+  const unanchored = wired.filter((a) => !a.callSite);
   const gapCount =
     missingDescription.length +
+    tooShort.length +
     missingKeywords.length +
     undeclaredEntry.length +
     unwired.length +
+    unanchored.length +
     emptyWithoutNext.length +
     sameLabel.length;
 
@@ -629,7 +722,6 @@ function main() {
   console.log(`  命令索引 ${indexCoverage}（docs/COMMANDS.md）`);
   console.log(`  缺口合计 ${gapCount}`);
 
-  for (const c of tooShort) notes.push(`说明过短（<12 字）：${c.id} 「${c.description}」`);
   for (const item of emptyWithoutNext) notes.push(`空态缺下一步：${item.file} 「${item.text}」`);
   for (const a of unwired) notes.push(`产物入口待接入结果卡：${a.key}`);
   const gone = [
@@ -639,9 +731,6 @@ function main() {
   ].filter((s) => !s.endsWith(" 0 条"));
   if (gone.length) notes.push(`${gone.join(" / ")}（基线可收敛）`);
 
-  if (process.argv.includes("--list-short")) {
-    for (const c of tooShort) console.log(`  [短] ${c.id} ${c.description.length} ${c.description}`);
-  }
   for (const note of notes.slice(0, 12)) console.log(`  [提示] ${note}`);
   if (notes.length > 12) console.log(`  [提示] …共 ${notes.length} 条`);
   for (const err of errors.slice(0, 40)) console.log(`  [缺口] ${err}`);
