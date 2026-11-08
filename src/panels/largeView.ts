@@ -850,10 +850,13 @@ export class LargeView {
     }
   }
 
-  /** 中止正在进行的过滤（切换标签 / 关闭时调用） */
+  /** 中止正在进行的过滤（只针对当前会话；换文件 / 清过滤 / 用户中止时调用） */
   async cancel(): Promise<void> {
+    const id = this.info?.id;
     try {
-      await invoke("cancel_large_task", {});
+      // 有会话时按 id 精确取消；视图尚未绑定会话时退回全量（无任务，空操作）
+      if (id) await invoke("cancel_large_task", { id });
+      else await invoke("cancel_large_task");
     } catch {
       // 无进行中任务时忽略
     }

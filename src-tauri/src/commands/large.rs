@@ -143,7 +143,10 @@ struct LargeFile {
 #[derive(Default, Clone)]
 pub struct LargeState {
     files: Arc<Mutex<HashMap<String, LargeFile>>>,
-    cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    /// 各会话的过滤取消标志（按 id）。
+    /// 不能只用全局单槽：关闭标签 A 时不该把标签 B 正在进行的过滤一起取消，
+    /// 反之关闭会话本身（逃生门 / 退出）也必须能停掉它的过滤。
+    filter_cancel: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     /// 会话代号发生器（同一路径重复打开时区分新旧会话）
     next_session: Arc<AtomicU64>,
 }
@@ -368,6 +371,11 @@ fn open_large_file_blocking(
     let shared = state.clone();
     {
         let mut map = shared.files.lock().unwrap_or_else(|e| e.into_inner());
+        // 同一路径二次打开（会话重开 / 虚拟视图替换）：旧会话的索引线程必须停，
+        // 否则它会读完整文件才在末尾发现 session 已过期，白读一遍
+        if let Some(old) = map.get(&path) {
+            old.cancel.store(true, Ordering::Relaxed);
+        }
         map.insert(path.clone(), entry);
     }
 
@@ -575,12 +583,12 @@ pub async fn filter_large_file(
 ) -> Result<FilterResult, String> {
     // State 引用不能进 'static 闭包：克隆内部 Arc 再移交
     let files = state.files.clone();
-    let cancel_slot = state.cancel.clone();
+    let filter_cancel = state.filter_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
         filter_large_blocking(
             &app,
             &files,
-            &cancel_slot,
+            &filter_cancel,
             &id,
             &query,
             case_sensitive,
@@ -595,7 +603,7 @@ pub async fn filter_large_file(
 fn filter_large_blocking(
     app: &tauri::AppHandle,
     files: &Arc<Mutex<HashMap<String, LargeFile>>>,
-    cancel_slot: &Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    filter_cancel: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     id: &str,
     query: &str,
     case_sensitive: bool,
@@ -627,12 +635,11 @@ fn filter_large_blocking(
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
-        // 新过滤开始前中止上一次仍在扫描的任务，避免两份全文件遍历并发
-        if let Some(prev) = slot.take() {
+        let mut map = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        // 同一会话上一次过滤仍在跑：先中止，避免两份全文件遍历并发
+        if let Some(prev) = map.insert(id.to_string(), Arc::clone(&cancel)) {
             prev.store(true, Ordering::Relaxed);
         }
-        *slot = Some(cancel.clone());
     }
 
     let mut file = File::open(&path).map_err(|e| format!("读取失败: {e}"))?;
@@ -669,6 +676,11 @@ fn filter_large_blocking(
             let parts: Vec<&str> = text.split('\n').collect();
             let line_count = parts.len().saturating_sub(1);
             for (i, line) in parts.iter().take(line_count).enumerate() {
+                // 块内检查点：一个 4MB 块可能有十万行，逐行正则期间也要能及时停下
+                if i & 1023 == 0 && cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
                 if re.is_match(line) {
                     let line_idx = line_no + i;
                     matches.push(line_idx);
@@ -678,6 +690,9 @@ fn filter_large_blocking(
                         break;
                     }
                 }
+            }
+            if cancelled {
+                break;
             }
             line_no += line_count;
         }
@@ -728,13 +743,13 @@ fn filter_large_blocking(
 
     {
         // 仅清理自己登记的取消标志：期间可能已有新任务登记了新标志
-        let mut slot = cancel_slot.lock().unwrap_or_else(|e| e.into_inner());
-        let own = slot
-            .as_ref()
+        let mut map = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        let own = map
+            .get(id)
             .map(|f| Arc::ptr_eq(f, &cancel))
             .unwrap_or(false);
         if own {
-            *slot = None;
+            map.remove(id);
         }
     }
 
@@ -770,12 +785,21 @@ fn filter_large_blocking(
     })
 }
 
-/// 中止正在进行的过滤
+/// 中止正在进行的过滤：带 id 只取消该会话，不带 id 取消全部（退出 / 重载兜底）
 #[tauri::command]
-pub fn cancel_large_task(state: tauri::State<LargeState>) {
-    let slot = state.cancel.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(flag) = slot.as_ref() {
-        flag.store(true, Ordering::Relaxed);
+pub fn cancel_large_task(state: tauri::State<LargeState>, id: Option<String>) {
+    let map = state.filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+    match id {
+        Some(id) => {
+            if let Some(flag) = map.get(&id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
+        None => {
+            for flag in map.values() {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -1048,14 +1072,22 @@ pub async fn close_large_file(
     id: String,
 ) -> Result<(), String> {
     let files = state.files.clone();
+    let filter_cancel = state.filter_cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
-        // 先置位再移除：后台索引线程每块读开头检查该标志，
-        // 否则 1GB 日志关掉后仍会读到 EOF（并继续发进度事件）
-        if let Some(entry) = map.get(&id) {
-            entry.cancel.store(true, Ordering::Relaxed);
+        {
+            let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
+            // 先置位再移除：后台索引线程每块读开头检查该标志，
+            // 否则 1GB 日志关掉后仍会读到 EOF（并继续发进度事件）
+            if let Some(entry) = map.get(&id) {
+                entry.cancel.store(true, Ordering::Relaxed);
+            }
+            map.remove(&id);
         }
-        map.remove(&id);
+        // 关会话同时停掉它自己的过滤：逃生门 / 退出流程不一定先调 cancel_large_task
+        let mut filters = filter_cancel.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(flag) = filters.remove(&id) {
+            flag.store(true, Ordering::Relaxed);
+        }
     })
     .await
     .map_err(|e| format!("关闭大文件会话失败: {e}"))

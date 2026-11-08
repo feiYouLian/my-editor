@@ -124,7 +124,12 @@ export class LargeFileHost {
   /** 释放大文件会话（标签关闭时调用） */
   async release(tab: Tab): Promise<void> {
     if (!tab.largeId) return;
-    await this.instance?.cancel();
+    // 只停这个会话自己的过滤：视图可能正看着另一个大文件，不能连带取消它
+    try {
+      await invoke("cancel_large_task", { id: tab.largeId });
+    } catch {
+      // 没有进行中的过滤
+    }
     try {
       await invoke("close_large_file", { id: tab.largeId });
     } catch {
