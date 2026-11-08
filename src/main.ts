@@ -1605,21 +1605,7 @@ const windowChrome = new WindowChrome({
   },
   onBeforeExit: async () => {
     await sessionHost.flush();
-    try {
-      await invoke("stop_run");
-    } catch {
-      // 没有进程在跑时 stop_run 返回 false 或报错，均可忽略
-    }
-    for (const tab of tabStore.list()) {
-      if (tab.virtual && tab.largeId) {
-        try {
-          await invoke("close_large_file", { id: tab.largeId });
-        } catch {
-          // 会话可能已释放，忽略
-        }
-      }
-    }
-    await terminalHost.dispose();
+    await releaseBackendResources();
   },
 });
 
@@ -1693,6 +1679,46 @@ const sessionHost = new SessionHost(
   statusDraft,
   statusExternal,
 );
+
+/**
+ * 释放后端侧常驻资源：Code Run 子进程、PTY 会话、大文件索引线程。
+ *
+ * 退出与「重新加载界面」共用。Webview 重载不会重新执行 Rust 侧的 setup，
+ * `.manage(...)` 注册的状态（RunState / TerminalState / LargeState）原样保留：
+ * 不显式释放的话，PTY 会一直占着 MAX_SESSIONS 的槽位、大文件后台线程会继续读盘，
+ * 而新页面里的前端已经看不到它们（表现为「新建终端提示已达上限」）。
+ */
+async function releaseBackendResources(): Promise<void> {
+  try {
+    await invoke("stop_run");
+  } catch {
+    // 没有进程在跑时 stop_run 返回 false 或报错，均可忽略
+  }
+  // 先中止整文件过滤（后端全局单槽），再逐个关闭大文件会话（置位取消标志、停后台索引）
+  try {
+    await invoke("cancel_large_task");
+  } catch {
+    // 没有进行中的过滤任务
+  }
+  for (const tab of tabStore.list()) {
+    if (tab.virtual && tab.largeId) {
+      try {
+        await invoke("close_large_file", { id: tab.largeId });
+      } catch {
+        // 会话可能已释放，忽略
+      }
+    }
+  }
+  largeHost.dispose();
+  await terminalHost.dispose();
+  // 兜底全清：前端 sessions 可能漏记（事件丢失 / 更早一次重载的遗留），
+  // 空 id 让后端 drain 掉所有 PTY，避免旧进程继续占用 MAX_SESSIONS 的槽位
+  try {
+    await invoke("terminal_close", { id: "" });
+  } catch {
+    // 没有会话时为空操作
+  }
+}
 
 // 标签切换状态机（编辑器/预览/文件树/大文件视图同步 + 代际校验）
 const tabSwitcher = new TabSwitcher({
@@ -1891,9 +1917,11 @@ registerCommands(
     closeTab,
     saveAllFiles,
     reloadCurrentFile,
-    // 重新加载界面：先把会话与草稿落盘，否则防抖窗口内的输入会在重载后丢失
+    // 重新加载界面：先把会话与草稿落盘（否则防抖窗口内的输入会在重载后丢失），
+    // 再释放后端常驻资源——Webview 重载不会重建 Rust 侧状态，PTY / 索引线程会残留
     reloadWindow: async () => {
       await sessionHost.flush();
+      await releaseBackendResources();
       window.location.reload();
     },
     reopenClosedTab,

@@ -134,6 +134,9 @@ struct LargeFile {
     scan_last_byte: Option<u8>,
     /// 后台索引线程是否仍在跑：此时禁止续扫，否则两处同时写 anchors
     bg_indexing: bool,
+    /// 会话取消标志：关闭会话时置位，后台索引 / 续扫线程据此提前退出，
+    /// 不再把整个文件读完（否则关掉 1GB 日志后仍会持续读盘）
+    cancel: Arc<AtomicBool>,
 }
 
 /// 大文件会话注册表；Arc 以便后台索引线程共享
@@ -202,8 +205,9 @@ impl Indexer {
         if n == 0 {
             return Ok(false);
         }
-        let positions: Vec<usize> = memchr::memchr_iter(b'\n', &self.buf[..n]).collect();
-        for &idx in &positions {
+        // 直接迭代换行位置：短行日志下一个 4MB 块有十几万个换行，
+        // 先 collect 成 Vec 会白付一次分配 + 一次遍历（1GB 文件累计上百 MB 临时分配）
+        for idx in memchr::memchr_iter(b'\n', &self.buf[..n]) {
             self.line_no += 1;
             let prev_is_cr = if idx > 0 {
                 self.buf[idx - 1] == b'\r'
@@ -238,6 +242,25 @@ impl Indexer {
             "CRLF".to_string()
         } else {
             "LF".to_string()
+        }
+    }
+}
+
+/// 后台补齐索引的核心循环：每读完一块检查一次取消标志。
+/// 返回 `false` = 被取消，调用方必须丢弃已扫结果（会话已关闭 / 已被新会话取代）。
+fn drain_index(
+    idx: &mut Indexer,
+    cancelled: &AtomicBool,
+    mut on_step: impl FnMut(&Indexer),
+) -> bool {
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        match idx.step() {
+            Ok(true) => on_step(idx),
+            // 读到末尾或读错误：按「已扫到能扫的为止」处理（与原语义一致）
+            Ok(false) | Err(_) => return true,
         }
     }
 }
@@ -320,6 +343,8 @@ fn open_large_file_blocking(
     // 同一路径二次打开（会话重开 / 虚拟视图替换）时分配新 session：
     // 旧会话的后台索引线程据此识别自己已过期，不再覆盖新会话
     let session = state.next_session.fetch_add(1, Ordering::Relaxed) + 1;
+    // 关闭会话时置位：后台线程每块检查一次，不再把整个文件读完
+    let cancel = Arc::new(AtomicBool::new(false));
     let entry = LargeFile {
         path: p.clone(),
         size,
@@ -335,6 +360,7 @@ fn open_large_file_blocking(
         scan_last_byte: indexer.last_byte,
         // 下方若启动后台索引线程会置 true
         bg_indexing: !reached_eof,
+        cancel: Arc::clone(&cancel),
     };
     let total_lines = entry.total_lines;
     let indexed_bytes = entry.indexed_bytes;
@@ -360,11 +386,7 @@ fn open_large_file_blocking(
                 Err(_) => return,
             };
             let mut last_emit = Instant::now();
-            loop {
-                match idx.step() {
-                    Ok(true) => {}
-                    Ok(false) | Err(_) => break,
-                }
+            let finished = drain_index(&mut idx, &cancel, |idx| {
                 if last_emit.elapsed() >= PROGRESS_EVERY {
                     last_emit = Instant::now();
                     let _ = app_bg.emit(
@@ -377,6 +399,10 @@ fn open_large_file_blocking(
                         },
                     );
                 }
+            });
+            // 会话已关闭：结果无主，直接退出（不再等整个文件扫完）
+            if !finished {
+                return;
             }
             // 会话校验：期间若同一路径被重新打开（新 session）或已关闭，
             // 旧线程的结果一律丢弃，绝不覆盖新会话 / 向已关闭会话发事件
@@ -951,7 +977,7 @@ fn refresh_large_blocking(
     }
 
     // 确实要续扫：这一次才取锚点/行号快照，读盘期间不持锁
-    let (indexed, scan_line_no, scan_last_byte, anchors, anchor_bytes, session) = {
+    let (indexed, scan_line_no, scan_last_byte, anchors, anchor_bytes, session, cancel) = {
         let map = files.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.get(id).ok_or("大文件会话已关闭")?;
         (
@@ -961,6 +987,7 @@ fn refresh_large_blocking(
             entry.anchors.clone(),
             entry.anchor_bytes,
             entry.session,
+            Arc::clone(&entry.cancel),
         )
     };
 
@@ -974,6 +1001,10 @@ fn refresh_large_blocking(
     idx.line_no = scan_line_no;
     idx.last_byte = scan_last_byte;
     while idx.pos < target {
+        // 会话已关闭：不把这一轮 32MB 读完（返回值与"读到一半会话消失"一致）
+        if cancel.load(Ordering::Relaxed) {
+            return Err("大文件会话已关闭".to_string());
+        }
         match idx.step()? {
             true => {}
             false => break,
@@ -1019,6 +1050,11 @@ pub async fn close_large_file(
     let files = state.files.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut map = files.lock().unwrap_or_else(|e| e.into_inner());
+        // 先置位再移除：后台索引线程每块读开头检查该标志，
+        // 否则 1GB 日志关掉后仍会读到 EOF（并继续发进度事件）
+        if let Some(entry) = map.get(&id) {
+            entry.cancel.store(true, Ordering::Relaxed);
+        }
         map.remove(&id);
     })
     .await
@@ -1134,6 +1170,35 @@ mod tests {
         for &(pos, _line) in idx.anchors.iter().skip(1) {
             assert_eq!(bytes[pos as usize - 1], b'\n');
         }
+    }
+
+    /// 会话关闭（取消标志置位）后：后台索引必须在下一次检查点退出，不再读下一块
+    #[test]
+    fn drain_index_stops_after_cancel() {
+        // 5MB > CHUNK，正常要读两块；第一块处理完就置位取消
+        let content = vec![b'a'; 5 * 1024 * 1024];
+        let p = temp_file("drain_cancel", &content);
+        let mut idx = Indexer::new(File::open(&p).unwrap(), 4096);
+        let cancelled = AtomicBool::new(false);
+        let mut steps = 0;
+        let finished = drain_index(&mut idx, &cancelled, |_| {
+            steps += 1;
+            cancelled.store(true, Ordering::Relaxed);
+        });
+        assert!(!finished, "取消后不得报告已完成");
+        assert_eq!(steps, 1, "第一块后即应停止");
+        assert_eq!(idx.pos, CHUNK as u64, "取消后不应再读下一块");
+    }
+
+    /// 未取消时：正常扫到文件末尾，行数与一次性扫描一致
+    #[test]
+    fn drain_index_scans_to_eof_without_cancel() {
+        let p = temp_file("drain_full", b"a\nb\nc\n");
+        let mut idx = Indexer::new(File::open(&p).unwrap(), 4096);
+        let cancelled = AtomicBool::new(false);
+        let finished = drain_index(&mut idx, &cancelled, |_| {});
+        assert!(finished);
+        assert_eq!(idx.total_lines(), 3);
     }
 
     /// 从另一个文件的终态接着扫：模拟 refresh_large_file 的续扫（含句柄定位）

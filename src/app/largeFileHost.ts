@@ -52,6 +52,12 @@ export class LargeFileHost {
     this.instance?.close();
   }
 
+  /** 退出 / 重载界面：解除视图的事件订阅（下次用到时按需重建） */
+  dispose(): void {
+    this.instance?.dispose();
+    this.instance = null;
+  }
+
   async open(info: LargeFileInfo, paddingLines: number): Promise<void> {
     await this.view().open(info, paddingLines);
   }

@@ -222,6 +222,19 @@ export class LargeView {
   }
 
   /**
+   * 退出 / 重载界面前释放：解除全局事件订阅与主题观察器。
+   * 与 close() 分开——close() 只复位视图状态（切标签后还会再 open），
+   * 事件订阅必须留着，否则切回来收不到索引进度与过滤批次。
+   */
+  dispose(): void {
+    this.close();
+    for (const un of this.unlisteners) un();
+    this.unlisteners.length = 0;
+    this.themeObserver?.disconnect();
+    this.themeObserver = null;
+  }
+
+  /**
    * 后端把超长行裁到 4000 字符并补 `…`。不说明的话，用户会以为文件内容就到这里
    * （「行尾怎么少了一截」）。只提示一次，避免滚动时反复刷屏。
    */
