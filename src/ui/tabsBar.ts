@@ -6,17 +6,35 @@
  * （比较、批量关闭前的草稿清理）经 callbacks 交回 main.ts。
  */
 
-import { tabStore } from "../store/tabs";
+import { tabStore, type Tab } from "../store/tabs";
 import { placeMenu } from "./menu";
 
 /** 激活标签与标签条可视边缘的留白：贴边时看起来像被裁掉 */
 const ACTIVE_TAB_MARGIN = 8;
+
+/** Git 状态字母的说明（标签标记的 title） */
+const GIT_STATUS_LABEL: Record<string, string> = {
+  M: "已修改",
+  A: "已新增",
+  D: "已删除",
+  R: "已重命名",
+  C: "已复制",
+  U: "有冲突",
+  "?": "未跟踪",
+};
+
+/** 路径归一：与文件树一致，Windows 下盘符 / 分隔符 / 大小写统一后再比较 */
+function normGitPath(path: string): string {
+  return path.replace(/\\/g, "/").toLowerCase();
+}
 
 export interface TabsBarCallbacks {
   onActivate: (tabId: string) => void;
   onClose: (tabId: string) => void;
   /** 右键「与当前标签比较」 */
   onCompareWith: (tabId: string) => void;
+  /** 右键「灵活比较」：以该标签为左侧打开工作台 */
+  onCompareArbitrary?: (tabId: string) => void;
   /** 右键「重新载入（从磁盘）」：文件被外部改动 / 保存失败后的固定入口 */
   onReload?: (tabId: string) => void;
   /** 批量关闭（main.ts 负责关闭前的草稿清理） */
@@ -36,6 +54,47 @@ export class TabsBar {
   /** 溢出下拉：标签多到看不全时才出现 */
   private overflowBtn: HTMLButtonElement | null = null;
   private overflowMenu: HTMLElement | null = null;
+  /** Git 状态（规范化路径 → porcelain 状态字母）：由 main.ts 在 git_status 刷新后写入 */
+  private gitStatus = new Map<string, string>();
+
+  /**
+   * 同步 Git 状态标记：只更新已渲染标签，不重建标签栏
+   * （重建会丢掉 hover 状态与滚动位置；标签集变化时 render 自会带上最新状态）。
+   */
+  setGitStatus(files: Map<string, string>): void {
+    this.gitStatus.clear();
+    for (const [path, status] of files) this.gitStatus.set(normGitPath(path), status);
+    this.refreshGitStatuses();
+  }
+
+  private gitStatusOf(tab: Tab): string | undefined {
+    return tab.path ? this.gitStatus.get(normGitPath(tab.path)) : undefined;
+  }
+
+  /**
+   * 标签上的 Git 状态：只染文件名颜色（与文件树同一套配色），不插字母 / 图标。
+   * 状态没有文字表达，色觉差异或读屏用户靠 title 里的「Git：已修改」得知。
+   */
+  private syncGitStatus(el: HTMLElement, tab: Tab): void {
+    const status = this.gitStatusOf(tab);
+    if (status) el.dataset.gitStatus = status;
+    else delete el.dataset.gitStatus;
+
+    const name = el.querySelector<HTMLElement>(".tab-name");
+    if (!name) return;
+    const base = tab.path ?? "未命名";
+    const label = status ? (GIT_STATUS_LABEL[status] ?? status) : "";
+    name.title = label ? `${base}\nGit：${label}` : base;
+  }
+
+  private refreshGitStatuses(): void {
+    this.container.querySelectorAll<HTMLElement>(".tab").forEach((el) => {
+      const id = el.dataset.tabId;
+      if (!id) return;
+      const tab = tabStore.findById(id);
+      if (tab) this.syncGitStatus(el, tab);
+    });
+  }
 
   /** 标签栏右侧常驻「新建」按钮（双击空白仍可用，此处只为发现性） */
   private ensureAddButton(): void {
@@ -439,6 +498,8 @@ export class TabsBar {
       });
 
       el.append(name, close);
+      // Git 状态可能先于标签到达（启动时 git_status 与标签并行恢复），重建时直接补上
+      this.syncGitStatus(el, tab);
       // 中键关闭（与浏览器 / VS Code 一致）
       el.addEventListener("auxclick", (e) => {
         if (e.button !== 1) return;
@@ -471,8 +532,15 @@ export class TabsBar {
     const items: { label: string; run: () => void }[] = [
       { label: "与当前标签比较", run: () => this.callbacks.onCompareWith(tabId) },
     ];
-    // 只有磁盘上的文本文件才有"从磁盘重载"的意义（未命名 / 图片 / 虚拟视图没有）
     const target = tabStore.findById(tabId);
+    // 灵活比较：以这个标签为左侧，另一侧可以选文件 / 剪贴板 / 选区 / 手输
+    if (target?.kind === "text" && !target.virtual && this.callbacks.onCompareArbitrary) {
+      items.push({
+        label: "灵活比较（以此标签为左侧）…",
+        run: () => this.callbacks.onCompareArbitrary?.(tabId),
+      });
+    }
+    // 只有磁盘上的文本文件才有"从磁盘重载"的意义（未命名 / 图片 / 虚拟视图没有）
     if (target?.path && target.kind === "text" && !target.virtual && this.callbacks.onReload) {
       items.push({ label: "重新载入（从磁盘）", run: () => this.callbacks.onReload?.(tabId) });
     }

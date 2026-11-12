@@ -364,6 +364,7 @@ const tabsBarView = new TabsBar($<HTMLDivElement>("tabs"), {
   onActivate: (id) => tabStore.activate(id),
   onClose: (id) => void closeTab(id),
   onCompareWith: (id) => diffService.compareTabs(id),
+  onCompareArbitrary: (id) => void diffService.openWorkbench({ leftTabId: id }),
   // 固定入口：文件被外部改动 / 保存失败后想"回到磁盘版本"时不用再找菜单
   onReload: (id) => {
     const tab = tabStore.findById(id);
@@ -954,9 +955,10 @@ const gitHost: GitHost = new GitHost({
         },
       },
     ]),
-  // 文件树同步染色（文件 + 上级目录）+ 状态栏分支信息
+  // 文件树同步染色（文件 + 上级目录）+ 标签页状态标记 + 状态栏分支信息
   onStatus: (files, status) => {
     fileTree.setGitStatus(files);
+    tabsBarView.setGitStatus(files);
     gitStatusItem.update(status);
   },
   // 切分支 / 拉取后磁盘内容变了：重载未编辑的标签
@@ -1570,6 +1572,11 @@ const fetchHost = new FetchHost({
 // 差异比较编排（未保存 / 与文件 / 与 Git）
 const diffService = new DiffService({
   getActiveTab: activeTab,
+  getSelectionText: () => {
+    const selection = editorHandle.view.state.selection.main;
+    if (selection.empty) return null;
+    return editorHandle.view.state.sliceDoc(selection.from, selection.to);
+  },
   showMessage: statusBar.showMessage,
   onReloadActiveTab: () => reloadActiveTab(),
   onGitChanged: () => gitHost.scheduleRefresh(),

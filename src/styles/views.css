@@ -698,6 +698,33 @@ body.tree-dragging {
   text-overflow: ellipsis;
 }
 
+/* 标签页 Git 状态：只染文件名，不插字母 / 图标；配色与文件树一致（见本文件顶部） */
+.tab[data-git-status="M"] .tab-name {
+  color: var(--warning);
+}
+
+.tab[data-git-status="A"] .tab-name {
+  color: var(--success);
+}
+
+.tab[data-git-status="D"] .tab-name {
+  color: var(--danger);
+}
+
+.tab[data-git-status="R"] .tab-name,
+.tab[data-git-status="C"] .tab-name {
+  color: var(--accent);
+}
+
+.tab[data-git-status="U"] .tab-name {
+  color: var(--danger);
+}
+
+/* 未跟踪按 Git 惯例用绿色：标签默认文字就是次要色，再用灰色等于没染 */
+.tab[data-git-status="?"] .tab-name {
+  color: var(--success);
+}
+
 .tab-close {
   display: inline-flex;
   align-items: center;

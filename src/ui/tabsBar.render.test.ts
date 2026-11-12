@@ -108,4 +108,44 @@ describe("TabsBar 状态渲染与键盘", () => {
 
     expect(callbacks.onActivate).toHaveBeenCalledWith(second.id);
   });
+
+  it("标签页按文件名颜色表达 Git 状态（不插字母 / 图标），就地更新 / 清空", () => {
+    const first = tabStore.open(content("a.ts"));
+    const second = tabStore.open(content("b.ts"));
+    const container = document.querySelector<HTMLElement>("#tabs")!;
+    const bar = new TabsBar(container, makeCallbacks());
+    bar.render();
+
+    // 大小写 / 分隔符与工作区返回值不同也要能对上（Windows 路径归一）
+    bar.setGitStatus(new Map([[`D:\\ws\\a.ts`, "M"]]));
+    const mark = container.querySelector<HTMLElement>(`.tab[data-tab-id="${first.id}"]`)!;
+    expect(mark.dataset.gitStatus).toBe("M");
+    // 状态只体现在颜色上：不加任何字母标记
+    expect(mark.querySelector(".tab-git")).toBeNull();
+    const name = mark.querySelector<HTMLElement>(".tab-name")!;
+    expect(name.textContent).toBe("a.ts");
+    expect(name.title).toContain("Git：已修改");
+
+    // 未修改的标签没有状态
+    expect(
+      container.querySelector<HTMLElement>(`.tab[data-tab-id="${second.id}"]`)?.dataset
+        .gitStatus,
+    ).toBeUndefined();
+
+    bar.setGitStatus(new Map());
+    expect(container.querySelectorAll(".tab[data-git-status]")).toHaveLength(0);
+  });
+
+  it("Git 状态先到、标签后渲染时也带上状态", () => {
+    const container = document.querySelector<HTMLElement>("#tabs")!;
+    const bar = new TabsBar(container, makeCallbacks());
+    bar.setGitStatus(new Map([["d:/ws/a.ts", "?"]]));
+
+    const tab = tabStore.open(content("a.ts"));
+    bar.render();
+
+    const mark = container.querySelector<HTMLElement>(`.tab[data-tab-id="${tab.id}"]`)!;
+    expect(mark.dataset.gitStatus).toBe("?");
+    expect(mark.querySelector<HTMLElement>(".tab-name")!.title).toContain("未跟踪");
+  });
 });

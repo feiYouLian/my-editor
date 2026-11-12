@@ -47,6 +47,12 @@ const SYNC_TOP_MARGIN = 8;
  * 程序滚动事件 1~2 帧内必到；偶发超时只会让对侧多同步一次，不会振荡。
  */
 const PREVIEW_ECHO_MS = 120;
+/**
+ * 预览 → 编辑器联动只认用户手势的窗口（ms）。
+ * 重渲染、滚动锚定、程序化恢复都会抛 scroll 事件，它们不代表"用户想把编辑器
+ * 滚到这里"；不加手势门槛会在打字触发重渲染时把编辑器拽来拽去。
+ */
+const PREVIEW_USER_SCROLL_MS = 400;
 
 /**
  * 在按 key 升序排列的数组里找最后一个 key ≤ value 的下标（没有则 -1）。
@@ -104,6 +110,8 @@ export class PreviewHost {
   private syncRaf: number | null = null;
   /** 预览被本类程序滚动后，窗口内其 scroll 事件视为回显直接忽略 */
   private previewEchoUntil = 0;
+  /** 用户手势（滚轮 / 拖动滚动条 / 触摸）的有效期：窗口外不反向驱动编辑器 */
+  private userScrollUntil = 0;
 
   // ---- 块标记缓存（双栏滚动联动的热路径）----
   /** 块标记及其内容坐标（相对滚动内容原点）；null = 需重建 */
@@ -138,6 +146,14 @@ export class PreviewHost {
     this.contentEl = content;
     // 不阻止默认滚动：passive 避免浏览器为等待监听器而拖慢滚动
     this.contentEl.addEventListener("scroll", () => this.onPreviewScroll(), { passive: true });
+    // 反向联动只认用户手势：滚轮、拖动滚动条（pointerdown）、触摸、键盘翻页都算
+    const markUserScroll = (): void => {
+      this.userScrollUntil = performance.now() + PREVIEW_USER_SCROLL_MS;
+    };
+    this.contentEl.addEventListener("wheel", markUserScroll, { passive: true });
+    this.contentEl.addEventListener("pointerdown", markUserScroll, { passive: true });
+    this.contentEl.addEventListener("touchstart", markUserScroll, { passive: true });
+    this.contentEl.addEventListener("keydown", markUserScroll);
     this.findBar = new PreviewFindBar(this.pane, () => this.findScope());
     // 预览列尺寸变化（窗口缩放 / 拖拽分栏）会重排文档：丢弃块标记缓存，下次联动时重建。
     // 用 ResizeObserver 而不是 window.resize：拖拽分栏不会触发窗口 resize。
@@ -447,8 +463,19 @@ export class PreviewHost {
     }
     const target = this.previewScrollTopForLine(line);
     if (target == null) return;
+    this.setPreviewScrollTop(target);
+  }
+
+  /**
+   * 程序滚动预览：写入 scrollTop 并标记回显窗口。
+   *
+   * 重渲染后的位置恢复也必须走这里 —— 否则这次写入会被 onPreviewScroll
+   * 当成用户滚动，反过来把编辑器滚到一个不对应的行；打字触发重渲染时，
+   * 两侧滚动条就会来回跳。
+   */
+  private setPreviewScrollTop(top: number): void {
     this.previewEchoUntil = performance.now() + PREVIEW_ECHO_MS;
-    this.contentEl.scrollTop = target;
+    this.contentEl.scrollTop = top;
   }
 
   /** 源码行号 → 预览滚动位置：取"起始行 ≤ lineNo"的最后一个块，块内线性插值 */
@@ -609,13 +636,16 @@ export class PreviewHost {
         if (holder.childElementCount !== created.length) canPatch = false;
       }
 
-      // 替换内容会重置滚动位置：先记录再恢复（双栏下随后按编辑器位置校准）
+      // 替换内容会重置滚动位置：先记录再恢复（双栏下随后按编辑器位置校准）。
+      // 恢复本身是程序滚动：先开回显窗口，避免被 onPreviewScroll 当成用户滚动，
+      // 反过来把编辑器滚到别处（打字触发重渲染时表现为两侧滚动条乱跳）。
       const scrollTop = this.contentEl.scrollTop;
+      this.previewEchoUntil = performance.now() + PREVIEW_ECHO_MS;
       if (canPatch) {
         const frag = document.createDocumentFragment();
         for (const node of ordered) frag.append(node);
         this.contentEl.replaceChildren(frag);
-        this.contentEl.scrollTop = scrollTop;
+        this.setPreviewScrollTop(scrollTop);
         this.renderedBlocks = ordered.map((node, index) => ({
           key: blocks[index].key,
           line: blocks[index].line,
@@ -632,7 +662,7 @@ export class PreviewHost {
         if (this.isStale(tab, seq)) return;
         this.dompurify!.sanitize(holder, { IN_PLACE: true });
         this.contentEl.replaceChildren(...Array.from(holder.childNodes));
-        this.contentEl.scrollTop = scrollTop;
+        this.setPreviewScrollTop(scrollTop);
         this.resetBlockCache();
         this.bindImageLoadResync();
       }
@@ -768,6 +798,9 @@ export class PreviewHost {
    */
   private onPreviewScroll(): void {
     if (!this.canSync()) return;
+    // 只在用户手势窗口内反向驱动编辑器：重渲染 / 滚动锚定产生的 scroll
+    // 不是用户意图，放过去会把编辑器拽到错误位置（表现为滚动条乱跳）
+    if (performance.now() >= this.userScrollUntil) return;
     if (performance.now() < this.previewEchoUntil) return;
     this.scheduleSync(() => this.applyPreviewToEditor());
   }

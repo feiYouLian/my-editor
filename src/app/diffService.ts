@@ -15,7 +15,8 @@ import type {
   DiffRow,
   DiffSession,
 } from "../panels/diffPanel";
-import { readDiskAs } from "./fileService";
+import type { CompareWorkbench, CompareWorkbenchDeps } from "../panels/compareWorkbench";
+import { readDiskAs, readDiskAuto } from "./fileService";
 import { firstLine } from "../core/errors";
 import { getConfig } from "../config/settings";
 import { showErrorCard, showResultCard } from "../ui/resultCard";
@@ -48,7 +49,9 @@ const PATCH_HELP_IDS: Record<string, string> = {
 
 export interface DiffServiceDeps {
   getActiveTab: () => Tab | null;
-  showMessage: (text: string) => void;
+  /** 编辑器当前选中的文本（灵活比较的「当前选区」来源用） */
+  getSelectionText?: () => string | null;
+  showMessage: (text: string, durationMs?: number) => void;
   /** 采用差异块后重载当前标签（main.ts 的标签切换状态机） */
   onReloadActiveTab: () => Promise<void>;
   /** Git 暂存状态变化后刷新源代码管理视图 */
@@ -114,6 +117,8 @@ export class DiffService {
   private panel: DiffPanel | null = null;
   private panelPromise: Promise<DiffPanel> | null = null;
   private session: DiffSession | null = null;
+  /** 灵活比较工作台：按需加载（只在打开命令时引入） */
+  private workbench: CompareWorkbench | null = null;
 
   constructor(private deps: DiffServiceDeps) {}
 
@@ -301,6 +306,87 @@ export class DiffService {
     });
     if (typeof selected !== "string") return;
     await this.compareWithPath(selected);
+  }
+
+  /**
+   * 灵活比较工作台：两侧各自选来源（当前标签 / 打开的文件 / 磁盘文件 / 剪贴板 / 空文本），
+   * 内容可编辑，停顿后自动重算差异。
+   */
+  async openWorkbench(prefill: { leftTabId?: string } = {}): Promise<void> {
+    try {
+      const { CompareWorkbench } = await import("../panels/compareWorkbench");
+      if (!this.workbench) this.workbench = new CompareWorkbench(this.workbenchDeps());
+      this.workbench.open(prefill);
+    } catch (e) {
+      this.deps.showMessage(compareFailureText(e));
+    }
+  }
+
+  private workbenchDeps(): CompareWorkbenchDeps {
+    const contentOf = (tab: Tab | null): { label: string; text: string } | null => {
+      if (!tab || tab.kind !== "text" || tab.virtual) return null;
+      return { label: `标签 · ${tab.name}`, text: tabStore.snapshotOf(tab) };
+    };
+    return {
+      activeContent: () => {
+        const tab = this.deps.getActiveTab();
+        const content = contentOf(tab);
+        return content ? { ...content, label: `编辑中 · ${tab?.name ?? ""}` } : null;
+      },
+      activeSelection: () => {
+        const tab = this.deps.getActiveTab();
+        const text = this.deps.getSelectionText?.();
+        if (!tab || tab.kind !== "text" || !text) return null;
+        return { label: `选区 · ${tab.name}`, text };
+      },
+      activeDiskContent: async () => {
+        const tab = this.deps.getActiveTab();
+        if (!tab?.path || tab.kind !== "text") return null;
+        const data = await readDiskAuto(tab.path);
+        return { label: `磁盘 · ${tab.name}`, text: data.content };
+      },
+      listTabs: () =>
+        tabStore
+          .list()
+          .filter((tab) => tab.kind === "text" && !tab.virtual && !tab.pending)
+          .map((tab) => ({ id: tab.id, label: tab.name })),
+      tabContent: (id) => contentOf(tabStore.findById(id)),
+      pickFile: async () => {
+        const selected = await open({
+          multiple: false,
+          directory: false,
+          filters: [{ name: "所有文件", extensions: ["*"] }],
+        });
+        return typeof selected === "string" ? selected : null;
+      },
+      readFile: async (path) => {
+        const data = await readDiskAuto(path);
+        return { label: `文件 · ${data.name}`, text: data.content };
+      },
+      readClipboard: async () => {
+        if (!navigator.clipboard?.readText) {
+          throw new Error("当前环境不支持读取剪贴板，请直接粘贴到文本框");
+        }
+        return navigator.clipboard.readText();
+      },
+      computeDiff: (left, right) =>
+        invoke<DiffPayload>("diff_texts", {
+          leftText: left.text,
+          rightText: right.text,
+          leftLabel: left.label,
+          rightLabel: right.label,
+        }),
+      copyText: async (text) => {
+        if (!navigator.clipboard?.writeText) return false;
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      showMessage: this.deps.showMessage,
+    };
   }
 
   /** 以当前激活标签为左侧，与右键点击的标签比较 */

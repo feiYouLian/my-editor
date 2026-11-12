@@ -406,6 +406,22 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       menuOrder: 72,
       run: () => void diffService.compareWithPickedFile(),
     },
+    {
+      id: "diff.compare",
+      title: "灵活比较…",
+      section: "比较",
+      description:
+        "两侧任选来源（当前标签 / 当前选区 / 磁盘版本 / 已打开的文件 / 磁盘文件 / 剪贴板 / 空文本），内容可编辑后比较",
+      keywords: ["任意内容比较", "剪贴板对比", "文本对比", "对比两段", "改完再比", "diff"],
+      outcome: {
+        kind: "view",
+        hint: "两侧文本框可直接修改，停顿后自动重算；结果是只读对齐视图，可复制补丁",
+      },
+      menu: "file",
+      menuLabel: "灵活比较（任意内容）…",
+      menuOrder: 73,
+      run: () => void diffService.openWorkbench(),
+    },
     // ---- 设置 ----
     {
       id: "settings.open",

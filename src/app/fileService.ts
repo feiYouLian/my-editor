@@ -106,6 +106,18 @@ export function readDiskAs(path: string, encoding: string): Promise<FileContent>
   });
 }
 
+/**
+ * 自动检测编码读取磁盘内容（不建标签、不改状态）。
+ * 灵活比较工作台选任意磁盘文件时用：调用方没有「该文件用什么编码」的先验。
+ */
+export function readDiskAuto(path: string): Promise<FileContent> {
+  return invoke<FileContent>("open_text_file", {
+    path,
+    largeFileThreshold: settings.largeFileThreshold,
+    logExtensions: getConfig().largeFile.logExtensions,
+  });
+}
+
 export class FileService {
   constructor(private deps: FileServiceDeps) {}
 
