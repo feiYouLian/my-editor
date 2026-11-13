@@ -27,7 +27,6 @@ export interface SessionState {
   activeFile: string | null;
   /** 关闭时选中的是未命名标签：记录其名称，草稿恢复后据此激活 */
   activeUntitledName?: string | null;
-  splitRatio: number | null;
 }
 
 export interface DraftInfo {
@@ -61,16 +60,6 @@ export function loadSession(): Promise<SessionState> {
 
 export async function saveSession(state: SessionState): Promise<void> {
   await invoke("save_session", { state });
-}
-
-/** 防抖保存会话（标签切换/光标移动频繁触发时合并请求） */
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-export function saveSessionDebounced(state: SessionState, delay = 400): void {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    void saveSession(state).catch((e) => console.warn("[session] 保存失败", e));
-  }, delay);
 }
 
 export function writeDraft(draft: DraftInput): Promise<DraftInfo> {

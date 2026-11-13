@@ -12,19 +12,21 @@
 
 ## A. 自动层（失败即阻断，不进人工）
 
+> 判据里的数量是最近一次实测值（2026-11-12）；执行时以命令输出为准，全绿且只增不减即通过。
+
 | # | 门禁 | 命令 | 判据 | 层级 | 批次 | 记录 |
 | --- | --- | --- | --- | --- | --- | --- |
 | A-1 | 类型检查与生产构建 | `npm run verify && npm run typecheck:e2e` | 退出码 0，0 个类型错误（含 E2E） | 自动 | 既有 / S2 | |
-| A-2 | 前端单测 | `npm test` | 全绿；断言数只增不减（基线 131 项 + 渲染层 26 项） | 自动 | 既有 / S2 | |
-| A-3 | Rust 单测 | `cd src-tauri && cargo test --lib` | 全绿；断言数只增不减（基线 205 passed / 2 ignored） | 自动 | 既有 | |
+| A-2 | 前端单测 | `npm test` | 全绿；断言数只增不减（最近实测 131 项 + 渲染层 40 项） | 自动 | 既有 / S2 | |
+| A-3 | Rust 单测 | `cd src-tauri && cargo test --lib` | 全绿；断言数只增不减（最近实测 210 passed / 2 ignored） | 自动 | 既有 | |
 | A-4 | IPC 参数契约 | `node scripts/check-ipc-contract.mjs` | 输出「错误 0」；命令定义数 = 注册数（当前 102） | 自动 | S1 | |
 | A-5 | 生产代码 panic 点 | `node scripts/scan-unsafe.mjs` | 输出「生产代码 panic 点: 0」 | 自动 | S1 | |
 | A-6 | DOM 注入面 | `node scripts/scan-innerhtml.mjs` | `= 0`（S3 已达成，基线归零，新增即失败） | 自动 | S1 / S3 | |
 | A-7 | 默认值契约 | 随 A-2 / A-3（`defaults.contract.test.ts`、`defaults_match_frontend_contract`） | 两侧同时通过；新增键只改一端即失败 | 自动 | S1 | |
-| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 24 条用例覆盖全部 12 条路径（另含格式化失败 / 冲突引导 / 分支重命名 / 运行器扩展与运行器准入 5 条能力用例 + 可发现性 4 条：用途搜索 / 命令索引深链 / 历史入口与范围说明 / 导补丁同名确认）；路径 2 仅覆盖「保存保持原编码」（另存为转码受原生对话框限制） | 自动 | S2 / S6 | |
-| A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | `searchView` / `quickOpen` / `tabsBar` / `gitView` / `gitHistoryPanel` / `gitBlame` / `branchPicker` / `commandPalette` 共 28 条断言（含长列表虚拟化、键盘行为、两行渲染、详情区深链与 Ctrl+Enter） | 自动 | S2 / S6 | |
+| A-8 | E2E 关键路径 | `npm run test:e2e`（先构建调试版应用） | 最近实测 26 条用例覆盖全部 12 条路径（另含格式化失败 / 冲突引导 / 分支重命名 / 运行器扩展与运行器准入 / 灵活比较 2 条能力用例 + 可发现性 4 条：用途搜索 / 命令索引深链 / 历史入口与范围说明 / 导补丁同名确认）；路径 2 仅覆盖「保存保持原编码」（另存为转码受原生对话框限制） | 自动 | S2 / S6 | |
+| A-9 | 面板渲染层测试 | 随 A-2（`vitest.render.config.ts`，happy-dom） | 全绿；最近实测 40 条断言，覆盖列表虚拟化、键盘行为、两行渲染、详情区深链与 Ctrl+Enter | 自动 | S2 / S6 | |
 | A-10 | 空白错误 | `git diff --check` | 无输出、退出码 0 | 自动 | S0 | |
-| A-11 | 可发现性审计 | `node scripts/audit-discoverability.mjs` | 退出码 0：说明 133/133、关键词 58/58、暗入口 40/40、空态含下一步 4/4、同名异源 0、命令索引 133/133、产物入口 24 个（17 接入 + 7 豁免）；新增命令缺说明或索引未重生成即失败 | 自动 | S1 / S3 / S5 / S6 | |
+| A-11 | 可发现性审计 | `node scripts/audit-discoverability.mjs` | 退出码 0：命令说明全覆盖（最近实测 134/134）、关键词 58/58、暗入口 40/40、空态含下一步 4/4、同名异源 0、命令索引全覆盖（134/134）、产物入口 24 个（17 接入 + 7 豁免）；新增命令缺说明或索引未重生成即失败 | 自动 | S1 / S3 / S5 / S6 | |
 
 > 执行记录：v0.7.0 收口见 [`docs/acceptance/2026-11-05.md`](./acceptance/2026-11-05.md)（A 层 10 项 / B 层 3 项全绿）；
 > v0.7.1 与收口修复见 [`docs/acceptance/2026-11-06.md`](./acceptance/2026-11-06.md)。

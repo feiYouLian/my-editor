@@ -2,8 +2,9 @@
 /**
  * 生成 docs/COMMANDS.md（命令索引）。
  *
- * 来源是 src/app/commandTable.ts（命令表的唯一真源）：
+ * 命令数据来自 src/app/commandTable.ts（唯一真源）：
  *   id / title / section / description / keywords / outcome / menu / hidden
+ * 菜单标签与产物类型标签来自 src/core/commands.ts。
  * 按 section 分组，每条命令一个 `### <id> · <title>` 标题。
  *
  * 命令面板与结果卡的「了解更多」按该标题文本定位（helpDialog 的 anchor 参数），
@@ -55,6 +56,34 @@ function strArray(node) {
     out.push(v);
   }
   return out;
+}
+
+/** 从 .ts 文件读取一个字符串常量对象（对象字面量，值为字符串） */
+function parseStringRecord(file, name) {
+  const { sf } = parseTs(file);
+  let record = null;
+  const visit = (node) => {
+    if (record) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      const out = {};
+      for (const p of node.initializer.properties) {
+        if (!ts.isPropertyAssignment(p)) continue;
+        const key = ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : null;
+        const value = str(p.initializer);
+        if (key && value != null) out[key] = value;
+      }
+      record = out;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return record;
 }
 
 function outcomeOf(obj) {
@@ -116,6 +145,7 @@ function parseCommands() {
           hidden: prop(node, "hidden")?.kind === ts.SyntaxKind.TrueKeyword,
           description: str(prop(node, "description")) ?? "",
           keywords: strArray(prop(node, "keywords")) ?? [],
+          defaultKey: str(prop(node, "defaultKey")),
           outcome: outcomeOf(node),
         };
         const id = str(idNode);
@@ -134,26 +164,13 @@ function parseCommands() {
   return commands;
 }
 
-const KIND_LABELS = {
-  none: "不写盘",
-  file: "生成文件",
-  clipboard: "复制到剪贴板",
-  view: "在面板里显示",
-  git: "改动 Git 仓库",
-};
-
-/** 顶层菜单 id → 标题（与 index.html 的 .menu-title 一致） */
-const MENU_LABELS = {
-  file: "文件",
-  edit: "编辑",
-  select: "选择",
-  go: "转到",
-  view: "视图",
-  tools: "工具",
-  help: "帮助",
-  settings: "设置",
-  git: "Git",
-};
+/** 菜单标签与产物类型标签以 core/commands.ts 为准（菜单 id 与 index.html 的 .menu-title 对应） */
+const COMMANDS_CORE = join(SRC, "core", "commands.ts");
+const MENU_LABELS = parseStringRecord(COMMANDS_CORE, "MENU_LABELS");
+const KIND_LABELS = parseStringRecord(COMMANDS_CORE, "OUTCOME_LABELS");
+if (!MENU_LABELS || !KIND_LABELS) {
+  throw new Error(`无法从 ${rel(COMMANDS_CORE)} 读取 MENU_LABELS / OUTCOME_LABELS`);
+}
 
 function entryLine(cmd) {
   const parts = [];
@@ -168,6 +185,7 @@ function detailLines(cmd) {
   const kind = KIND_LABELS[cmd.outcome?.kind ?? "none"] ?? "不写盘";
   const hint = cmd.outcome?.hint ? ` —— ${cmd.outcome.hint}` : "";
   const lines = [`- 结果去向：${kind}${hint}`];
+  if (cmd.defaultKey) lines.push(`- 默认键位：${cmd.defaultKey}`);
   if (cmd.keywords.length > 0) lines.push(`- 可搜词：${cmd.keywords.join("、")}`);
   const entry = entryLine(cmd);
   if (entry) lines.push(`- 入口：${entry}`);
@@ -189,6 +207,8 @@ function build(commands) {
     ">",
     "> 每条命令写明「解决什么问题 / 结果去哪 / 会不会写盘」。命令面板（`Ctrl+Shift+P`）",
     "> 支持按标题、说明和可搜词匹配，输入用途（如「发给别人」）也能命中。",
+    ">",
+    "> 键位记法：`Mod` = Windows/Linux 的 Ctrl、macOS 的 Cmd；这里是默认键，用户可在设置 → 快捷键改绑。",
     "",
     `共 ${commands.length} 条命令，按菜单分组。`,
     "",

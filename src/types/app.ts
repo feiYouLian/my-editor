@@ -21,3 +21,31 @@ export interface SaveResult {
   path: string;
   size: number;
 }
+
+/** Git 状态（渲染层与 app 层共用；放这里避免 ui → panels 的类型依赖） */
+export interface GitFileEntry {
+  path: string;
+  relative: string;
+  status: string;
+  orig_relative: string | null;
+}
+
+export interface GitStatus {
+  root: string;
+  branch: string;
+  ahead: number;
+  behind: number;
+  staged: GitFileEntry[];
+  changes: GitFileEntry[];
+  error: string;
+  truncated: boolean;
+}
+
+export interface GitCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  refs: string;
+  subject: string;
+}

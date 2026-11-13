@@ -1,14 +1,14 @@
 /**
- * 命令注册表：全应用命令的唯一来源。
+ * 命令注册机制：全应用唯一的注册表，数据由 app/commandTable.ts 提供。
  *
  * 菜单栏 / 命令面板 / 快捷键 / 设置中心键位页全部由本注册表派生：
- * 一个命令只有一个 id，文案与默认键位也只在这里声明。
+ * 一个命令只有一个 id，文案与默认键位只在命令表里声明。
  *
  * 注册方式：main.ts 装配期调用 registerCommands([...]) 一次完成。
  * 可见性由字段声明而非调用方过滤：
  * - defaultKey 缺省  → 不参与快捷键体系
  * - menu 缺省        → 不出现在菜单栏
- * - menuOnly: true   → 纯菜单项，不进命令面板（如剪切/复制/粘贴）
+ * - hidden: true     → 不进命令面板（纯菜单项 / 纯键位展示项）
  */
 
 /** 菜单项模型（MenuBar 消费；由 menuModel() 派生） */
@@ -29,6 +29,15 @@ export interface MenuModel {
 
 /** 产物类型：无产物 / 写文件 / 剪贴板 / 视图内结果 / Git */
 export type OutcomeKind = "none" | "file" | "clipboard" | "view" | "git";
+
+/** 产物类型的中文说明：命令索引生成脚本也从这里读取，避免两处各写一份 */
+export const OUTCOME_LABELS: Record<OutcomeKind, string> = {
+  none: "不写盘",
+  file: "生成文件",
+  clipboard: "复制到剪贴板",
+  view: "在面板里显示",
+  git: "改动 Git 仓库",
+};
 
 export interface CommandOutcome {
   kind: OutcomeKind;
@@ -78,9 +87,9 @@ export interface CommandDef {
 /** 一级菜单标签与顺序（对象键序即菜单栏顺序） */
 /**
  * 一级菜单（顺序即显示顺序）：按功能分组，参考 VS Code / Sublime Text。
- * 「比较」不再作为顶级菜单——文件级比较归「文件」，Git 比较归「Git」。
+ * 「比较」不设顶级菜单：文件级比较归「文件」，Git 比较归「Git」。
  */
-const MENU_LABELS: Record<string, string> = {
+export const MENU_LABELS: Record<string, string> = {
   file: "文件",
   edit: "编辑",
   select: "选择",

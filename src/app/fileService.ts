@@ -72,6 +72,24 @@ export interface FileServiceDeps {
   clearSaveError: () => void;
 }
 
+/**
+ * 写文本文件。newline / hasBom / encoding 必须显式传：
+ * 设默认值会让调用方误把 CRLF / BOM 文件静默改写成 LF / 无 BOM。
+ */
+export function writeTextFile(
+  path: string,
+  content: string,
+  opts: { newline: string; hasBom: boolean; encoding: string },
+): Promise<SaveResult> {
+  return invoke<SaveResult>("save_file", {
+    path,
+    content,
+    newline: opts.newline,
+    hasBom: opts.hasBom,
+    encoding: opts.encoding,
+  });
+}
+
 /** 编码回退列表（与状态栏编码菜单共用） */
 export const FALLBACK_ENCODINGS = [
   "UTF-8",
@@ -427,13 +445,7 @@ export class FileService {
     const written = tabStore.snapshotOf(tab);
     let result: SaveResult;
     try {
-      result = await invoke<SaveResult>("save_file", {
-        path,
-        content: written,
-        newline,
-        hasBom,
-        encoding,
-      });
+      result = await writeTextFile(path, written, { newline, hasBom, encoding });
     } catch (e) {
       // 磁盘满 / 权限 / 文件被占用：必须让用户知道，否则会以为已保存
       this.deps.reportSaveError(tab, e);

@@ -1,7 +1,7 @@
 # 从 VS Code / Sublime Text / Notepad++ 迁移
 
-> 本页**只列差异**，不复制键位表。键位的唯一权威来源是 [`README.md` → 快捷键](./README.md#快捷键)（从命令注册表派生），
-> 这里的每一条都能在那张表或「设置 → 快捷键」里查到；改键请用设置页重绑定（`fixed` 项除外）。
+> 本页**只列差异**，不复制键位表。键位数据的唯一真源是 `src/app/commandTable.ts` 的 `defaultKey`，
+> `docs/COMMANDS.md` 由它生成；改键请用设置 → 快捷键重绑定（`fixed` 项除外）。
 
 ## 1 会踩错的键位（只列需要改肌肉记忆的）
 
@@ -25,10 +25,10 @@
 | --- | --- | --- |
 | Open Folder / Project | **工作区** | 只有一个根目录；根目录与展开状态持久化，启动自动恢复 |
 | `settings.json` | **`config.json`** | 图形化设置中心（`Ctrl+,`）覆盖四页；改文件后可用「重新加载配置」热更新。位置见 `docs/USER-GUIDE.md` §6 |
-| Workspace settings（项目级覆盖） | **没有** | 只有一份全局配置，不支持按目录继承 |
+| Workspace settings（项目级覆盖） | **工作区覆盖** | 全局一份 `config.json`，缩进宽度与忽略目录可按工作区覆盖（配置目录的 `workspaces/<hash>.json`，不写进仓库） |
 | Tasks / Build System | **Code Run** | 不做任意任务编排：按扩展名跑 Python / Node / Java，或把 `curl` 脚本原样执行 |
 | launch.json / 调试 | **没有** | 没有调试器，`F5` 只是运行 |
-| Extensions / Package Control | **没有** | 17 种语言 / 格式内置，不可扩展 |
+| Extensions / Package Control | **没有插件体系** | 16 种语言开箱可用、13 种附加语言可勾选；主题、关键字级自定义语言、CLI 格式化器可自行扩展 |
 | Output / Problems 面板 | **运行输出面板 + 通知中心（⚠）+ 最近消息** | 失败弹窗可「复制详细信息」；错过的状态栏消息可从「视图 → 最近消息…」回看 |
 | Local History | **草稿 + `discard-backup/`** | 未保存内容有草稿兜底；放弃 Git 更改前会落快照（不提供应用内一键还原） |
 | Reopen with Encoding | **状态栏编码字段** | 点击切「重新打开为」，另有乱码检测提示建议编码 |
@@ -41,11 +41,11 @@
 | 看类型错误 / 诊断 | **做不到**（没有 LSP）。需要在 IDE 里看，或靠语言自己的编译器 / linter |
 | 安全重命名符号 | 做不到，用下面那条批量替换 |
 | 全局重命名变量 | 工作区搜索的**批量替换**（带替换历史，可一键撤销最近一次） |
-| 装个新语言高亮 | 装不了扩展，但有三条路：① 内置 17 种先看一眼（`README.md` → 功能列表）；② 设置 → 编辑器与布局 勾选「附加语言」（Shell / PowerShell / TOML / Diff / Dockerfile / CMake / HTTP / Perl / Lua / Ruby / Haskell / C# / Kotlin）；③ 放一份 `languages/<名字>.json` 自定义关键字级高亮（`docs/USER-GUIDE.md` §5.2） |
+| 装个新语言高亮 | 装不了扩展，但有三条路：① 内置 16 种先看一眼（`README.md` → 功能列表）；② 设置 → 编辑器与布局 勾选「附加语言」（Shell / PowerShell / TOML / Diff / Dockerfile / CMake / HTTP / Perl / Lua / Ruby / Haskell / C# / Kotlin）；③ 放一份 `languages/<名字>.json` 自定义关键字级高亮（`docs/USER-GUIDE.md` §5.2） |
 | 格式化代码 | `Shift+Alt+F`：前端走 Prettier（JS/TS/JSON/CSS/MD/HTML/YAML），SQL/XML 内置，其余走系统 CLI（需自行安装 black / gofmt / rustfmt / google-java-format / clang-format） |
 | 看一眼 GB 级日志 | 直接打开：≥ 20 MB 或 `*.log` 自动进只读虚拟视图（过滤 / Minimap / 换编码），不会进编辑器吃内存 |
 | 保存时自动格式化 | 设置 → 文件与会话 → 保存时自动格式化（大文件自动跳过） |
-| 多终端并行 | 做不到（单会话）。替代：在已有终端里再起一层 `pwsh`；对不同目录的文件用 `Ctrl+F5` 时终端会先切到该文件所在目录（仍是同一个会话） |
+| 多终端并行 | 支持多会话（最多 8 个 PTY）：终端面板可新建 / 切换 / 重启 / 关闭；「在终端运行」优先复用文件所在目录的会话 |
 | 看 Git 暂存区某一行 | 侧栏「源代码管理」支持**行级**暂存 / 取消暂存，点文件看 HEAD↔工作区 diff |
 
 ## 4 建议的第一次使用顺序

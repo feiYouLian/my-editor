@@ -7,10 +7,11 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { GitCommit, GitFileEntry, GitStatus, GitView } from "../panels/gitView";
+import type { GitCommit, GitFileEntry, GitStatus } from "../types/app";
+import type { GitView } from "../panels/gitView";
 import type { GitBranch } from "../panels/branchPicker";
 import type { BlameReport } from "../panels/gitBlame";
-import { addNotice } from "./noticeStore";
+import { addNotice } from "../store/noticeStore";
 import { firstLine } from "../core/errors";
 import { getConfig } from "../config/settings";
 import { reportResult } from "./resultCenter";

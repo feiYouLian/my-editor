@@ -23,7 +23,7 @@ import { hydrateMermaid } from "./preview/mermaid";
 import { EXPORT_IMAGE_MAX_BYTES, inlineLocalImages } from "./preview/localImages";
 import { renderImageViewer } from "./preview/imageViewer";
 import { PreviewFindBar, type PreviewFindScope } from "./preview/findBar";
-import { runWhenIdle } from "../ui/idle";
+import { runWhenIdle } from "../core/idle";
 import type { PreviewKind, PreviewMode, PreviewTab } from "./preview/types";
 
 export type { PreviewKind, PreviewMode, PreviewTab };

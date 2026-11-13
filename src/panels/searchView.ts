@@ -9,9 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getConfig } from "../config/settings";
 import { confirmAction } from "../ui/dialogs";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
-import { showErrorCard, showResultCard } from "../ui/resultCard";
+import type { ResultCardSpec, ResultErrorSpec } from "../ui/resultCard";
 import { showHelpDialog } from "./helpDialog";
 import { firstLine } from "../core/errors";
+import { basenameOf } from "../core/paths";
 
 interface SearchMatch {
   line: number;
@@ -75,6 +76,9 @@ export interface SearchViewDeps {
   onFilesReplaced: (paths: string[]) => Promise<void>;
   /** durationMs 用于错误/跳过类提示停留更久 */
   showMessage: (text: string, durationMs?: number) => void;
+  /** 结果反馈统一出口：卡片 + 通知中心留底 */
+  reportResult: (spec: ResultCardSpec) => void;
+  reportFailure: (spec: ResultErrorSpec) => void;
 }
 
 const DEBOUNCE_MS = 300;
@@ -89,7 +93,7 @@ const MAX_HISTORY = 20;
 
 /** 备份 / 临时文件：与后端 `replace_in_files` 的过滤保持一致 */
 function isBackupPath(path: string): boolean {
-  const name = (path.split(/[\\/]/).pop() ?? "").toLowerCase();
+  const name = basenameOf(path).toLowerCase();
   return name.endsWith(".bak") || name.endsWith(".tmp") || name.endsWith("~");
 }
 
@@ -701,7 +705,7 @@ export class SearchView {
       ];
       this.notice =
         reasons.length > 0 ? `上次替换跳过 ${reasons.length} 个：${reasons.join("；")}` : "";
-      showResultCard({
+      this.deps.reportResult({
         title: `已替换 ${result.replaced_files} 个文件 / ${result.replaced_matches} 处`,
         hint:
           reasons.length > 0
@@ -711,7 +715,7 @@ export class SearchView {
       });
       await this.run();
     } catch (e) {
-      showErrorCard({
+      this.deps.reportFailure({
         title: "批量替换失败",
         message: firstLine(e),
         hint: "可能有文件被占用或权限不足；已写入的部分文件可用「撤销上次替换」回退。",

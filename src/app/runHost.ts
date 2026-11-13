@@ -36,7 +36,7 @@ import {
 } from "../core/convert";
 import { jsonToJava } from "../core/convertCodegen";
 import { confirmAction } from "../ui/dialogs";
-import { dirnameOf } from "../core/paths";
+import { basenameOf, dirnameOf } from "../core/paths";
 import { looksLikeCurlScript as isCurlScriptText } from "../core/curlScript";
 import { firstLine } from "../core/errors";
 
@@ -333,7 +333,7 @@ export class RunHost {
       await invoke<"file" | "dir">("path_kind", { path });
     } catch {
       removeRecentFile(path);
-      this.deps.showMessage(`文件已不存在，已从最近列表移除：${path.split(/[\\/]/).pop() ?? path}`);
+      this.deps.showMessage(`文件已不存在，已从最近列表移除：${basenameOf(path)}`);
       return;
     }
     this.deps.onOpenFile(path);

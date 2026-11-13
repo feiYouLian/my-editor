@@ -3,6 +3,8 @@
  * 对话框列出并以点击打开。不依赖后端，跨会话保留。
  */
 
+import { basenameOf } from "../core/paths";
+
 const KEY = "my-editor.recentFiles";
 const MAX = 20;
 
@@ -91,7 +93,7 @@ export class RecentFilesDialog {
 
         const name = document.createElement("span");
         name.className = "recent-name";
-        name.textContent = path.split(/[\\/]/).pop() ?? path;
+        name.textContent = basenameOf(path);
 
         const dir = document.createElement("span");
         dir.className = "recent-path";

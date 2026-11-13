@@ -23,8 +23,9 @@ import {
   type PreviewTab,
 } from "../panels/preview";
 import { placeMenu } from "../ui/menu";
-import { showErrorCard, showResultCard } from "../ui/resultCard";
-import { reportResult } from "./resultCenter";
+import { showResultCard } from "../ui/resultCard";
+import { reportFailure, reportResult } from "./resultCenter";
+import { writeTextFile } from "./fileService";
 import type { SaveResult } from "../types/app";
 import { firstLine } from "../core/errors";
 
@@ -329,9 +330,7 @@ export class PreviewController {
         if (typeof target !== "string") return;
         const prepared = await this.exportImagesToAssets(tabStore.snapshotOf(tab), target);
         const content = await htmlToMarkdown(prepared.html);
-        const result = await invoke<SaveResult>("save_file", {
-          path: target,
-          content,
+        const result = await writeTextFile(target, content, {
           newline: "LF",
           hasBom: false,
           encoding: "UTF-8",
@@ -371,7 +370,7 @@ export class PreviewController {
         key: `export-${format}`,
       });
     } catch (e) {
-      showErrorCard({
+      reportFailure({
         title: "导出失败",
         message: firstLine(e),
         hint: "目标目录可能只读，或同名文件正被其它程序占用；换个位置保存后可重试。",

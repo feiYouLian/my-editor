@@ -1,19 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildCommandTable, type CommandTableCtx } from "./commandTable";
 import { normalizeNotation, parseNotation } from "../core/keyNotation";
+import { MENU_LABELS } from "../core/commands";
 
-/** 一级菜单 id（core/commands.ts 的 MENU_LABELS，未导出故在此固定） */
-const MENU_IDS = new Set([
-  "file",
-  "edit",
-  "select",
-  "go",
-  "view",
-  "git",
-  "tools",
-  "settings",
-  "help",
-]);
+const MENU_IDS = new Set(Object.keys(MENU_LABELS));
 
 /**
  * 桩上下文：`buildCommandTable` 只在定义期读属性、不执行 `run`，

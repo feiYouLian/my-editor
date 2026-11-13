@@ -8,7 +8,7 @@
 import type { ResultCardSpec, ResultErrorSpec } from "../ui/resultCard";
 import { showErrorCard, showResultCard } from "../ui/resultCard";
 import { showHelpDialog } from "../panels/helpDialog";
-import { addNotice } from "./noticeStore";
+import { addNotice } from "../store/noticeStore";
 
 export function reportResult(spec: ResultCardSpec): void {
   // helpId → 「了解更多」：跳到命令索引里该命令的条目（docs/COMMANDS.md）

@@ -1,7 +1,8 @@
 /**
- * 命令注册表数据（从 main.ts 迁出）。
+ * 命令数据唯一真源：id / 标题 / 默认键位 / 菜单归属 / 结果去向。
  *
- * 单一来源：菜单栏 / 命令面板 / 快捷键 / 设置键位页全部由本表派生。
+ * 菜单栏 / 命令面板 / 快捷键 / 设置键位页 / docs/COMMANDS.md 全部由本表派生；
+ * 注册与分发机制见 core/commands.ts。
  * 字段语义见 core/commands.ts：menu* 控制菜单栏，defaultKey 控制快捷键，
  * hidden 控制是否进命令面板，menuOrder 控制菜单内顺序。
  *
@@ -34,6 +35,7 @@ import { showHelpDialog } from "../panels/helpDialog";
 import { getConfig, updateSettings } from "../config/settings";
 import { showSettingsHelp } from "../ui/settingsHelp";
 import { showErrorCard } from "../ui/resultCard";
+import { confirmAction, showErrorDialog } from "../ui/dialogs";
 import { reportResult } from "./resultCenter";
 import type { Tab } from "../store/tabs";
 import type { FileService } from "./fileService";
@@ -47,7 +49,7 @@ import { firstLine } from "../core/errors";
 export interface CommandTableCtx {
   fileService: FileService;
   quickOpen: { open(): void };
-  fetchHost: { open(): void };
+  fetchHost: { open(): Promise<void> };
   preview: {
     export(tab: Tab, format: "html" | "word" | "pdf" | "md"): Promise<void>;
     /** 纯预览模式下接管 Ctrl+F：在渲染结果里查找（返回 false 表示未接管） */
@@ -346,7 +348,7 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       menu: "file",
       menuLabel: "从网址抓取网页…",
       menuOrder: 45,
-      run: () => fetchHost.open(),
+      run: () => void fetchHost.open(),
     },
     {
       id: "workspace.openDir",
@@ -547,7 +549,11 @@ export function buildCommandTable(ctx: CommandTableCtx): CommandDef[] {
       menuLabel: "检查更新…",
       menuOrder: 40,
       menuSeparatorBefore: true,
-      run: () => void checkForUpdates(showMessage),
+      run: () =>
+        void checkForUpdates(showMessage, {
+          confirm: confirmAction,
+          showError: showErrorDialog,
+        }),
     },
     // ---- 编辑 ----
     {

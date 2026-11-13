@@ -209,7 +209,7 @@
   padding: 4px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  /* 原来 fallback 到 transparent：输入框与列表底色糊在一起，看不出是输入框 */
+  /* 输入框底色与列表区分开，避免糊在一起看不出是输入框 */
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
@@ -306,9 +306,7 @@
   flex-shrink: 0;
 }
 
-/* 线条图标：统一 14px、单色。
-   原先按文件类别上彩色（蓝/琥珀/紫/红），一屏几十行时颜色互相打架，
-   层级反而看不出来；现在只靠缩进 + 图标形状区分，悬停/选中跟随文字提亮。 */
+/* 线条图标：统一 14px、单色；只靠缩进 + 图标形状区分，悬停/选中跟随文字提亮。 */
 .tree-svg {
   width: 14px;
   height: 14px;

@@ -11,18 +11,18 @@ import {
   listNotices,
   removeNotice,
   subscribeNotices,
-} from "../app/noticeStore";
+} from "../store/noticeStore";
 import {
   clearMessages,
   listMessages,
   subscribeMessages,
 } from "../core/messageLog";
+import { pad2 } from "../core/format";
 
 /** 消息时间戳 → HH:MM:SS */
 function formatClock(at: number): string {
   const d = new Date(at);
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 export class NoticePanel {

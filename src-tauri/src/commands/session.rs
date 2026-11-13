@@ -53,8 +53,6 @@ pub struct SessionState {
     pub active_file: Option<String>,
     /// 关闭时选中的是未命名标签：记录其名称，草稿恢复后据此激活
     pub active_untitled_name: Option<String>,
-    /// 分栏比例（编辑区占比，0.15 - 0.85）
-    pub split_ratio: Option<f64>,
 }
 
 fn session_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -384,7 +382,6 @@ mod tests {
             }],
             active_file: Some("a.txt".to_string()),
             active_untitled_name: None,
-            split_ratio: Some(0.5),
         };
         let json = serde_json::to_string(&state).expect("序列化");
         let back: SessionState = serde_json::from_str(&json).expect("反序列化");
@@ -402,10 +399,7 @@ mod tests {
     }
 
     fn temp_file(tag: &str, content: &[u8]) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("my_editor_session_test_{tag}.txt"));
-        fs::write(&path, content).unwrap();
-        path
+        crate::commands::test_support::temp_file("session", tag, content)
     }
 
     #[test]

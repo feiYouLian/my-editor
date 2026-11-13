@@ -9,19 +9,20 @@
 import { getConfig } from "../config/settings";
 import { confirmAction } from "../ui/dialogs";
 import {
-  eventKeyName,
-  eventToKeyNotation,
   findKeyConflict,
-  formatKey,
   isOverridden,
   isReservedKey,
-  keyCommands,
-  normalizeNotation,
   resolveKey,
   setKeyOverride,
   suspendKeyDispatch,
-  type KeyCommand,
 } from "../config/keybindings";
+import {
+  eventKeyName,
+  eventToKeyNotation,
+  formatKey,
+  normalizeNotation,
+} from "../core/keyNotation";
+import { bindableCommands, type BindableCommand } from "../core/commands";
 import {
   DEFAULT_COLUMN_EDITOR_KEY,
   editorEnhancements,
@@ -67,8 +68,8 @@ export function renderKeybindings(main: HTMLElement, ctx: SettingsTabContext): v
   const renderList = (query: string): void => {
     list.innerHTML = "";
     const q = query.trim().toLowerCase();
-    const groups = new Map<string, KeyCommand[]>();
-    for (const cmd of keyCommands()) {
+    const groups = new Map<string, BindableCommand[]>();
+    for (const cmd of bindableCommands()) {
       if (q && !cmd.title.toLowerCase().includes(q) && !cmd.id.includes(q)) continue;
       const arr = groups.get(cmd.section) ?? [];
       arr.push(cmd);
@@ -99,7 +100,7 @@ export function renderKeybindings(main: HTMLElement, ctx: SettingsTabContext): v
   renderList("");
 }
 
-function renderKeyRow(cmd: KeyCommand, ctx: SettingsTabContext): HTMLElement {
+function renderKeyRow(cmd: BindableCommand, ctx: SettingsTabContext): HTMLElement {
   const cfg = getConfig();
   const row = document.createElement("div");
   row.className = "settings-kb-row";
@@ -169,7 +170,7 @@ function renderKeyRow(cmd: KeyCommand, ctx: SettingsTabContext): HTMLElement {
 }
 
 /** 录制新键位：挂起全局派发 → 捕获一次组合键 → 冲突检测 → 写回 */
-function recordKey(cmd: KeyCommand, cell: HTMLElement, ctx: SettingsTabContext): void {
+function recordKey(cmd: BindableCommand, cell: HTMLElement, ctx: SettingsTabContext): void {
   // 先取消上一段录制：否则它的 keydown 监听会残留，与本次录制双响应
   ctx.getStopRecording()?.();
   const original = cell.textContent;

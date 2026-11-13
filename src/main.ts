@@ -13,7 +13,7 @@ import { StructuredView } from "./panels/structuredView";
 import { removeBookmark } from "./editor/bookmarks";
 import { OpenEditorsView } from "./panels/openEditorsView";
 import { GitView } from "./panels/gitView";
-import type { GitFileEntry } from "./panels/gitView";
+import type { GitFileEntry } from "./types/app";
 import { BranchPicker } from "./panels/branchPicker";
 import { GitBlameDialog } from "./panels/gitBlame";
 import { GitHistoryPanel } from "./panels/gitHistoryPanel";
@@ -88,15 +88,15 @@ import { loadUserLanguages, loadUserThemes } from "./services/userAssets";
 import { openStatusMenu } from "./ui/statusMenu";
 import { initBusy, withBusy } from "./ui/busy";
 import { NoticePanel } from "./panels/noticePanel";
-import { addNotice, listNotices, subscribeNotices } from "./app/noticeStore";
+import { addNotice, listNotices, subscribeNotices } from "./store/noticeStore";
 import { listMessages, subscribeMessages } from "./core/messageLog";
 import type { IndentStyle } from "./core/indentDetect";
 import {
   matchKeyCommand,
   resolveKey,
-  formatKey,
   setExtraReservedKeys,
 } from "./config/keybindings";
+import { formatKey } from "./core/keyNotation";
 import {
   allCommands,
   commandPaletteItems,
@@ -107,6 +107,7 @@ import {
 } from "./core/commands";
 import type { SettingsPanel } from "./panels/settingsPanel";
 import { basenameOf } from "./core/paths";
+import { reportFailure, reportResult } from "./app/resultCenter";
 import { ensureFinalNewline, trimTrailing } from "./core/textOps";
 import { effectiveLanguage, languageLabel, setUserLanguages } from "./editor/languages";
 import { firstLine } from "./core/errors";
@@ -724,6 +725,8 @@ const sidebarSearch = new SearchView($("sidebar-search"), {
   getIgnoreDirs: () => effectiveIgnoreDirs(),
   onOpenLocation: (path, line) => void openFileAt(path, line),
   isDirtyPath: (path) => tabStore.findByPath(path)?.dirty === true,
+  reportResult,
+  reportFailure,
   // 批量替换已写盘：重载已打开的标签 + 重建文件树（新增 .bak 也要可见）
   onFilesReplaced: async (paths) => {
     // Windows 路径大小写 / 分隔符不敏感：统一归一化后再与标签 path 比较
@@ -1632,7 +1635,7 @@ const dropHost = new DropHost({
       }
       if (kind === "dir") {
         const ok = await confirmAction(`将「${basenameOf(path)}」设为工作区？`);
-        if (ok) fileTree.setRoot(path);
+        if (ok) await openWorkspacePath(path);
         continue;
       }
       await fileService.openFilePath(path);
@@ -1894,12 +1897,10 @@ $<HTMLButtonElement>("btn-devtools").addEventListener("click", () => {
 
 // ---- 命令面板 ----
 
-// ---- 命令注册表（唯一命令来源）----
+// ---- 命令注册表（唯一命令来源）：数据见 app/commandTable.ts ----
 // 菜单栏 / 命令面板 / 快捷键 / 设置中心键位页全部由本表派生。
 // 字段语义见 core/commands.ts：menu* 控制菜单栏，defaultKey 控制快捷键，
 // hidden 控制是否进命令面板，menuOrder 控制菜单内顺序。
-// ---- 命令注册表（唯一命令来源）：数据见 app/commandTable.ts ----
-// 菜单栏 / 命令面板 / 快捷键 / 设置中心键位页全部由本表派生。
 registerCommands(
   buildCommandTable({
     fileService,
@@ -2003,8 +2004,10 @@ palette.registerAll(
 );
 new MenuBar($("menubar"), menuModel((cmd) => shortcutText(cmd)));
 
-/** 打开工作区：对话框与命令行目录参数共用（setRoot 会同步根路径 / 标题 / 持久化） */
-function openWorkspacePath(dir: string): void {
+/** 打开工作区：对话框 / 拖放 / 最近工作区 / 命令行参数共用（setRoot 会同步根路径 / 标题 / 持久化） */
+async function openWorkspacePath(dir: string): Promise<void> {
+  // 先登记再列目录：list_dir 的只读守卫要求路径已在工作区 / 已登记范围内
+  await invoke("register_paths", { paths: [dir] }).catch(() => {});
   fileTree.setRoot(dir);
   // 新工作区：重新读取 Git 状态（状态栏分支入口随之更新或隐藏）
   gitHost.scheduleRefresh();
@@ -2013,7 +2016,7 @@ function openWorkspacePath(dir: string): void {
 async function openWorkspaceDir(): Promise<void> {
   const dir = await pickDirectory();
   if (!dir) return;
-  openWorkspacePath(dir);
+  await openWorkspacePath(dir);
 }
 
 /**
@@ -2100,8 +2103,7 @@ async function switchWorkspace(path: string): Promise<void> {
     statusBar.showMessage(`不是目录，已从最近列表移除：${path}`);
     return;
   }
-  fileTree.setRoot(path);
-  gitHost.scheduleRefresh();
+  await openWorkspacePath(path);
 }
 
 // 设置页「工作区覆盖」的保存通道：保存到 <配置目录>/workspaces/<hash>.json 并立即生效
@@ -2133,7 +2135,7 @@ async function openFileAt(path: string, line: number): Promise<void> {
 // 捕获阶段 + e.code（物理键位）：
 // 1) CM6 在冒泡链上游消费按键，挂 window 冒泡会收不到；
 // 2) 中文 IME / 不同键盘布局下 e.key 不可靠，e.code 稳定。
-// 命令定义见上方 registerCommands（唯一来源），此处仅挂分发器。
+// 命令数据见 app/commandTable.ts（唯一真源），此处仅挂分发器。
 
 // 列编辑器当前键位加入保留集：全局命令不得抢占（其自身经 editorEnhancements.columnEditorKey 改绑）
 setExtraReservedKeys([settings.columnEditorKey]);
@@ -2192,8 +2194,6 @@ document.addEventListener(
 
 /**
  * 只在"刚刚移除了一个模态节点"时恢复焦点。
- * 原实现监听所有 childList 变更并对每个变更跑 isModalOpen() + focus()，
- * 既会被列表重建反复触发（抢焦点），又在大列表刷新时产生成百上千次查询。
  */
 let focusRestoreRaf: number | null = null;
 new MutationObserver((records) => {
@@ -2285,7 +2285,7 @@ async function bootstrap(): Promise<void> {
   sidebarBookmarks.refresh();
   // Git 只读模式的按钮显隐（状态栏同步按钮等）
   syncGitReadOnlyUi();
-  // 3) 分栏比例：config.json 是唯一真源（会话不再覆盖）
+  // 3) 分栏比例：config.json 是唯一真源
   layout.applyConfiguredSplitRatio();
   // 4) 列编辑器键位随配置刷新保留集
   setExtraReservedKeys([settings.columnEditorKey]);
@@ -2390,7 +2390,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
     // 目录先于文件：文件树根要就位，Git 状态与相对路径解析都依赖它
-    if (dir) openWorkspacePath(dir);
+    if (dir) await openWorkspacePath(dir);
     for (const path of paths) await fileService.openFilePath(path);
   };
   // 先注册再取队列：避免「取完之后、注册之前」到达的第二个实例事件被漏掉

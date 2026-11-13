@@ -8,10 +8,10 @@
  *   并显示 `↓落后` / `↑领先` 计数。
  *
  * 数据由 GitHost 推送（状态刷新后调用 update），本模块只负责渲染与交互，
- * 不直接调用 IPC（依赖方向 ui → panels 类型，无 store / 后端耦合）。
+ * 不直接调用 IPC（Git 类型来自 types/app，无 panels / store / 后端耦合）。
  */
 
-import type { GitStatus } from "../panels/gitView";
+import type { GitStatus } from "../types/app";
 
 export interface GitStatusItemDeps {
   /** 点击分支名：打开分支切换面板 */

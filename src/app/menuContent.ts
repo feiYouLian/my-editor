@@ -1,5 +1,5 @@
 /**
- * 编辑器右键菜单内容构建器（从 main.ts 迁出）。
+ * 编辑器右键菜单内容构建器。
  *
  * 菜单机器（子菜单 / 定位 / 关闭）在 ui/editorMenu.ts；本模块只决定
  * "显示哪些条目、点了做什么"。可见性依赖只读 / 选区 / 语言等领域状态，
@@ -30,6 +30,15 @@ import { supportsFormatting } from "../editor/format";
 import { CASE_LABELS, type CaseMode } from "../editor/transforms";
 import { localStamps, newUuid } from "../core/stamps";
 import { CONVERT_TARGET_LABELS, type ConvertTarget } from "../core/convert";
+import { getCommand } from "../core/commands";
+import { resolveKey } from "../config/keybindings";
+import { formatKey } from "../core/keyNotation";
+
+/** 右键菜单里的键位提示取自命令表：用户改绑后这里同步更新 */
+function shortcutOf(commandId: string): string {
+  const cmd = getCommand(commandId);
+  return cmd ? formatKey(resolveKey(cmd, getConfig())) : "";
+}
 
 /** 格式转换目标（按源格式分组：JSON / YAML / Properties / Java） */
 const CONVERT_TARGETS: ConvertTarget[] = [
@@ -131,12 +140,12 @@ export function buildEditorMenu(
     find.push({ separator: true });
     find.push({
       label: "选中下一个相同词",
-      shortcut: "Ctrl+Alt+D",
+      shortcut: shortcutOf("edit.selectNextOccurrence"),
       run: () => selectNextOccurrence(view),
     });
     find.push({
       label: "选中全部相同词",
-      shortcut: "Ctrl+Alt+Shift+D",
+      shortcut: shortcutOf("edit.selectAllOccurrences"),
       run: () => selectSelectionMatches(view),
     });
   }
@@ -146,7 +155,7 @@ export function buildEditorMenu(
   // 代码：格式化 / 运行 / 列编辑
   const code: MenuEntry[] = [];
   if (!readonly && canFormat) {
-    code.push({ label: "格式化文档", shortcut: "Shift+Alt+F", run: () => deps.formatDocument() });
+    code.push({ label: "格式化文档", shortcut: shortcutOf("edit.format"), run: () => deps.formatDocument() });
     if (hasSelection) {
       code.push({ label: "格式化选中内容", run: () => deps.formatSelection() });
     }
@@ -154,14 +163,14 @@ export function buildEditorMenu(
   if (canRun) {
     code.push({
       label: "运行当前文件",
-      shortcut: "F5",
+      shortcut: shortcutOf("code.run"),
       run: () => deps.runHost.runCurrentFile(),
     });
   }
   if (canRun) {
     code.push({
       label: "在终端运行当前文件",
-      shortcut: "Ctrl+F5",
+      shortcut: shortcutOf("code.runInTerminal"),
       run: () => deps.runHost.runInTerminal(),
     });
   }

@@ -23,21 +23,23 @@ src/
   main.ts    装配层：import + 依赖组装 + 命令注册 + bootstrap()
 ```
 
-依赖方向（实际约束，2026-10-25 审计）：
+依赖方向（实际约束，2026-11-12 复核）：
 
 ```
 core  ← 所有层可依赖（core 自身不得 import 任何上层）
 ui    → core / config / store
-panels→ core / ui / editor / config / services
+editor→ core / config / store
+services → core / config
+config→ core
+panels→ core / ui / editor / config / store / services
 app   → core / ui / panels / editor / store / services / config
 main.ts → 全部
 ```
 
 - `config/keybindings.ts` 与 `editor/*` 互相依赖属于已知可接受项（键位记法已下沉 `core/keyNotation.ts`）
-- **已知越界（技术债）**：`store/tabs.ts` 为批量关闭确认 import `ui/dialogs.ts`；
-  待改为把确认回调注入 TabStore（不阻塞其它改动）
+- **已知例外**：`config/settings.ts` 调用 `editor/languages.ts` 的 `setLegacyLanguages` / `setLanguageOverrides`
+  （语言表是运行期可变状态；纯数据下沉 `core/` 之前无法收口）
 - 跨模块共享状态一律经各宿主自己的 `Deps` 接口显式注入；禁止新增模块级可变单例
-  （原 `app/context.ts` 的 AppContext 方案已废弃并在 2026-10-25 删除）
 
 ## 验收基线（每个改动后必跑）
 

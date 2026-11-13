@@ -287,8 +287,7 @@
   color: var(--accent);
 }
 
-/* 标题与内容之间不再额外画线：展开分区下方紧跟一根 sash（含 1px 线），
-   原来两条线相隔不到一个行高，看起来像是「多出来的一条边」 */
+/* 标题与内容之间不额外画线：展开分区下方紧跟一根 sash（含 1px 线） */
 .sidebar-section-head svg {
   flex: none;
   width: 13px;

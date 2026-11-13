@@ -538,7 +538,7 @@ class MinimapPlugin implements PluginValue {
     this.fallbackSlots.fill(0);
   }
 
-  /** 用编辑器实际 HighlightStyle 解析颜色；不再维护一套手工 one-dark / 浅色色板 */
+  /** 用编辑器实际 HighlightStyle 解析颜色 */
   private loadColors(): void {
     if (this.colorsLoaded) return;
     this.colorsLoaded = true;

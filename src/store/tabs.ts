@@ -106,7 +106,7 @@ export interface Tab {
   externallyChanged?: boolean;
   /** 语言模式覆盖：undefined = 按扩展名自动，null = 纯文本，字符串 = 指定语言键 */
   languageOverride?: string | null;
-  /** 新建的未命名文档：标签名跟随首个非空行（另存为 / 草稿恢复后不再自动改名） */
+  /** 新建的未命名文档：标签名跟随首个非空行，落盘后固定为文件名 */
   autoTitle?: boolean;
   /** 乱码检测建议的编码（无建议 / 未检出时为空串或 undefined） */
   mojibakeSuggested?: string;

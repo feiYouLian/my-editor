@@ -16,11 +16,13 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// 列举目录直接子项（目录在前、名称不区分大小写排序）
+/// 列举目录直接子项（目录在前、名称不区分大小写排序）。
+/// 只读守卫：工作区内任意目录，或已登记路径的面包屑范围（祖先 / 所在目录子树）。
 #[tauri::command]
-pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+pub fn list_dir(state: tauri::State<'_, PathGuard>, path: String) -> Result<Vec<DirEntry>, String> {
+    let dir = state.ensure_list_scope(&path)?;
     let mut entries: Vec<DirEntry> = Vec::new();
-    for entry in fs::read_dir(&path).map_err(|e| format!("读取目录失败: {e}"))? {
+    for entry in fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {e}"))? {
         let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
         let meta = entry
             .metadata()
@@ -330,11 +332,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("my_editor_fs_test_{tag}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::commands::test_support::temp_dir("fs", tag)
     }
 
     /// 复制：不覆盖、不动源文件，重名追加「 (副本)」且保留扩展名

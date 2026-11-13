@@ -269,11 +269,13 @@ git push origin HEAD --tags                                # 同步 Gitee 镜像
 ## 测试与校验
 
 ```bash
-npm test                 # 前端单元测试（vitest，130 项）
+npm test                 # 前端单测（vitest + 渲染层）
 npm run build            # 前端类型检查 + 生产构建
 cd src-tauri
-cargo test --lib         # Rust 单元测试（当前 178 项）
+cargo test --lib         # Rust 单测
 ```
+
+断言数以命令实际输出为准，验收判据见 `docs/ACCEPTANCE.md`。
 
 另有 CI 门禁（`.github/workflows/ci.yml`）：每次 push / PR 在 Windows 上跑 `npm run verify`、`npm test`、`cargo test --lib`，与本地基线同一口径。
 
@@ -495,6 +497,9 @@ scripts/                      # 开发辅助脚本（图标生成、版本号统
 | `startup.json` | 最近一次启动耗时采样（覆盖写，不滚动） |
 
 ## 快捷键
+
+> 下表是常用键位速查；全量默认键位（含命令面板专用项）见 [`docs/COMMANDS.md`](./docs/COMMANDS.md)，由命令表生成。
+> `Mod` = Windows/Linux 的 Ctrl、macOS 的 Cmd；改绑在设置 → 快捷键。
 
 | 快捷键 | 功能 |
 | --- | --- |

@@ -1,5 +1,5 @@
 {
-  "note": "S3 收敛完成：非清空用途的 innerHTML / insertAdjacentHTML 判据为 0，新增即失败",
+  "note": "非清空用途的 innerHTML / insertAdjacentHTML 判据为 0，新增即失败",
   "total": 0,
   "files": {}
 }

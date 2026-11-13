@@ -28,6 +28,9 @@ pub mod tree_watch;
 pub mod watch;
 pub mod workspace;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// 给子进程加 `CREATE_NO_WINDOW`，避免 GUI 程序 spawn 控制台程序时闪出黑框。
 ///
 /// 本应用是 `windows_subsystem = "windows"` 的 GUI 进程，自身没有控制台；

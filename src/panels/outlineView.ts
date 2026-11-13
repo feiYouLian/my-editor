@@ -10,7 +10,7 @@
 import { syntaxTree } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
 import { parseMarkdownHeading } from "../core/outlineText";
-import { runWhenIdle } from "../ui/idle";
+import { runWhenIdle } from "../core/idle";
 import { bindOpenGesture, selectRowIn } from "../ui/openGesture";
 
 interface OutlineItem {

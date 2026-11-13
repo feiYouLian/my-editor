@@ -7,12 +7,23 @@
  */
 
 import { check } from "@tauri-apps/plugin-updater";
-import { confirmAction, showErrorDialog } from "../ui/dialogs";
 import { logError, openLogsDir } from "./diagnostics";
 
 type Message = (text: string, duration?: number) => void;
 
-export async function checkForUpdates(showMessage: Message): Promise<void> {
+export interface UpdateCheckDeps {
+  confirm: (message: string, confirmLabel?: string) => Promise<boolean>;
+  showError: (
+    title: string,
+    detail: string,
+    actions?: { label: string; run: () => void }[],
+  ) => void;
+}
+
+export async function checkForUpdates(
+  showMessage: Message,
+  deps: UpdateCheckDeps,
+): Promise<void> {
   try {
     showMessage("正在检查更新…");
     const update = await check();
@@ -27,7 +38,7 @@ export async function checkForUpdates(showMessage: Message): Promise<void> {
     ]
       .filter(Boolean)
       .join("\n");
-    const ok = await confirmAction(
+    const ok = await deps.confirm(
       `发现新版本 ${update.version}，是否下载并安装？\n\n${detail}`,
       "下载并安装",
     );
@@ -57,7 +68,7 @@ export async function checkForUpdates(showMessage: Message): Promise<void> {
   } catch (e) {
     logError("检查更新失败", e);
     const detail = String(e instanceof Error ? e.message : e);
-    showErrorDialog("检查更新失败", detail, [
+    deps.showError("检查更新失败", detail, [
       {
         label: "打开日志目录",
         run: () => void openLogsDir().catch(() => {}),

@@ -27,11 +27,7 @@ export class FetchHost {
   }
 
   /** 菜单 / 命令 / 快捷键入口 */
-  open(): void {
-    void this.openAsync();
-  }
-
-  private async openAsync(): Promise<void> {
+  async open(): Promise<void> {
     let dir = this.defaultDir();
     if (!dir) {
       // 无当前文件也无工作区：退回应用配置目录（app_config_dir 保证存在）

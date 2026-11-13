@@ -165,11 +165,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("my_editor_batch_test_{tag}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::commands::test_support::temp_dir("batch", tag)
     }
 
     #[test]

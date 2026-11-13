@@ -893,10 +893,7 @@ mod tests {
     use super::*;
 
     fn temp_file(tag: &str, content: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("my_editor_run_test_{tag}"));
-        std::fs::write(&path, content).unwrap();
-        path
+        crate::commands::test_support::temp_file_raw("run", tag, content.as_bytes())
     }
 
     #[test]

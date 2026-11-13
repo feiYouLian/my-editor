@@ -10,6 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
+use super::paths::PathGuard;
+
 /// 待前端取走的文件（绝对路径，已去重）
 static PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -83,13 +85,23 @@ pub fn push_pending_workspace(dir: Option<String>) {
     }
 }
 
-/// 前端取走待打开的工作区（取完即清空）
-#[tauri::command]
-pub fn take_pending_workspace() -> Option<String> {
+/// 取走待打开的工作区（不登记路径；供测试与内部调用）
+fn take_pending_workspace_raw() -> Option<String> {
     PENDING_WORKSPACE
         .lock()
         .ok()
         .and_then(|mut guard| guard.take())
+}
+
+/// 前端取走待打开的工作区（取完即清空）。
+/// 同时把目录登记进路径守卫：命令行 / 拖到 exe 打开的目录要立刻能列目录、新建、删除。
+#[tauri::command]
+pub fn take_pending_workspace(guard: tauri::State<'_, PathGuard>) -> Option<String> {
+    let dir = take_pending_workspace_raw();
+    if let Some(root) = &dir {
+        guard.add_root(root);
+    }
+    dir
 }
 
 /// 入队（冷启动解析结果与单实例转发共用）
@@ -121,10 +133,7 @@ mod tests {
     use std::fs;
 
     fn temp_path(tag: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("my_editor_cli_test_{tag}.txt"));
-        fs::write(&path, b"x").expect("写临时文件");
-        path
+        crate::commands::test_support::temp_file("cli", tag, b"x")
     }
 
     /// 开关参数 / 不存在的路径被丢弃；同一路径只留一份
@@ -178,7 +187,7 @@ mod tests {
     #[test]
     fn pending_workspace_is_taken_once() {
         push_pending_workspace(Some("D:/tmp/ws-a".to_string()));
-        assert_eq!(take_pending_workspace(), Some("D:/tmp/ws-a".to_string()));
-        assert_eq!(take_pending_workspace(), None);
+        assert_eq!(take_pending_workspace_raw(), Some("D:/tmp/ws-a".to_string()));
+        assert_eq!(take_pending_workspace_raw(), None);
     }
 }

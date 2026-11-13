@@ -1117,15 +1117,10 @@ pub async fn close_large_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     /// 写临时文件并返回路径（文件名带前缀，避免并发用例互相覆盖）
     fn temp_file(tag: &str, content: &[u8]) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!("my_editor_large_test_{tag}.txt"));
-        let mut file = File::create(&path).unwrap();
-        file.write_all(content).unwrap();
-        path
+        crate::commands::test_support::temp_file("large", tag, content)
     }
 
     /// 续扫必须从已索引位置开始（少 seek 会把文件头再扫一遍）

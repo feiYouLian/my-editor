@@ -28,7 +28,7 @@ import type {
 } from "./largeView/types";
 import { firstLine } from "../core/errors";
 import { confirmAction } from "../ui/dialogs";
-import { showErrorCard, showResultCard } from "../ui/resultCard";
+import type { ResultCardSpec, ResultErrorSpec } from "../ui/resultCard";
 import { showHelpDialog } from "./helpDialog";
 
 export type { LargeFileInfo } from "./largeView/types";
@@ -42,6 +42,9 @@ export interface LargeViewDeps {
    * 一律交给状态栏，所以这里必须把最新行数回报给上层。
    */
   onTotalLines?: (totalLines: number, newline: string) => void;
+  /** 结果反馈统一出口：卡片 + 通知中心留底 */
+  reportResult: (spec: ResultCardSpec) => void;
+  reportFailure: (spec: ResultErrorSpec) => void;
 }
 
 export class LargeView {
@@ -801,13 +804,13 @@ export class LargeView {
     const lines = await this.collectMatches(limit);
     try {
       await navigator.clipboard.writeText(lines.join("\n"));
-      showResultCard({
+      this.deps.reportResult({
         title: limit < total ? `已复制前 ${limit} 行命中（共 ${total} 行）` : `已复制 ${total} 行命中`,
         hint: "内容是过滤结果的纯文本，可直接粘贴到其它应用；原文件未改动",
         key: "large-copy",
       });
     } catch (e) {
-      showErrorCard({
+      this.deps.reportFailure({
         title: "复制命中失败",
         message: e instanceof Error ? e.message : String(e),
         hint: "剪贴板可能被其它程序占用；可改用「导出命中」落地成文件。",
@@ -852,14 +855,14 @@ export class LargeView {
           overwrite: true,
         });
       }
-      showResultCard({
+      this.deps.reportResult({
         title: `已导出 ${total} 行命中`,
         path: out,
         hint: "原文件保持只读，这是过滤结果的副本（.filtered.txt），可直接打开或分发",
         key: "large-export",
       });
     } catch (e) {
-      showErrorCard({
+      this.deps.reportFailure({
         title: "导出命中失败",
         message: e instanceof Error ? e.message : String(e),
         hint: "目标目录可能只读，或同名 .filtered.txt 正被占用；处理后可重新导出。",

@@ -55,9 +55,7 @@ export function setSettingsRerender(fn: (() => void) | null): void {
 }
 
 /**
- * 保存配置并兜底错误。
- * 原实现用 `void updateSettings(...)` 丢弃 Promise：写盘失败时静默，
- * UI 却提示「已切换」，重启后丢失。这里统一 catch 并明确告知用户。
+ * 保存配置并兜底错误：统一 catch 写盘失败并明确告知用户。
  */
 export function saveSettings(patch: Parameters<typeof updateSettings>[0]): void {
   void updateSettings(patch).catch((e: unknown) => {

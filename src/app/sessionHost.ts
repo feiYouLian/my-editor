@@ -12,7 +12,7 @@ import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import type { EditorView } from "@codemirror/view";
 import { getConfig, settings } from "../config/settings";
 import { tabStore, type Tab } from "../store/tabs";
-import { runWhenIdle } from "../ui/idle";
+import { runWhenIdle } from "../core/idle";
 import {
   deleteDraft,
   listDrafts,
@@ -24,7 +24,7 @@ import {
   type SessionState,
 } from "../services/session";
 import { onFileChanged, watchFiles } from "../services/fsWatch";
-import { addNotice } from "./noticeStore";
+import { addNotice } from "../store/noticeStore";
 import { confirmAction } from "../ui/dialogs";
 import { openStatusMenu } from "../ui/statusMenu";
 import type { FileContent } from "../types/app";
@@ -261,8 +261,6 @@ export class SessionHost {
       activeFile: active?.path ?? null,
       // 未命名标签不进 openFiles（没有路径）：单独记名字，草稿恢复后据此选中
       activeUntitledName: active && !active.path ? active.name : null,
-      // 分栏比例归 config.json：会话此项恒为 null（旧 session 里的值不读）
-      splitRatio: null,
     };
   }
 

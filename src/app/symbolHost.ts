@@ -75,8 +75,7 @@ export class SymbolHost {
         maxHits: MAX_HITS,
       });
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      showMessage(`符号定位失败：${firstLine(reason)}`);
+      showMessage(`符号定位失败：${firstLine(e)}`);
       return;
     }
 

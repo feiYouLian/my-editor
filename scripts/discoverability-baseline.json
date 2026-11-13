@@ -1,7 +1,7 @@
 {
   "phase": "baseline",
-  "generatedFrom": "v0.7.1-baseline (78bf390)",
-  "note": "S1 建立：commands 三个集合记录待补缺口，新增缺口立即失败；S3 收敛为 0 后自然转为硬判据。productActions 的 resultCard 在 S5 逐条填写；sameLabelGroups 在 S6 归零。",
+  "generatedFrom": "current",
+  "note": "commands 三个集合记录待补缺口，新增缺口立即失败；productActions.resultCard 与 sameLabelGroups 按基线判据校验。",
   "commands": {
     "missingDescription": [],
     "missingKeywords": [],

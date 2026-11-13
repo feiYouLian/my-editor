@@ -18,7 +18,7 @@
  *
  * 基线 scripts/discoverability-baseline.json 记录「当前已知缺口」：
  *   - 新增缺口（不在基线里）立即失败——新功能不能绕过说明
- *   - 基线内缺口只提示——允许按批次收敛
+ *   - 基线内缺口只提示
  *   - --update-baseline 用当前扫描结果重写缺口集合（CI 不传；更新前先确认是收敛不是新增）
  *
  * 只读扫描，不改代码；有新增缺口时退出码 1。
@@ -469,7 +469,7 @@ function resultCardAt(file, callSite) {
     if (ok) return;
     if (ts.isCallExpression(node)) {
       const callee = node.expression.getText(sf);
-      if (/^(reportResult|showResultCard)$/.test(callee)) {
+      if (/(^|\.)(reportResult|showResultCard)$/.test(callee)) {
         const arg = node.arguments[0];
         const title = arg && ts.isObjectLiteralExpression(arg) ? prop(arg, "title") : undefined;
         if (title && (!titleHint || title.getText(sf).includes(titleHint))) {

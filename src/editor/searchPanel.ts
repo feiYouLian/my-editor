@@ -1,6 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 import { getSearchQuery } from "@codemirror/search";
-import { runWhenIdle } from "../ui/idle";
+import { runWhenIdle } from "../core/idle";
 import { bookmarkAllMatches } from "./bookmarks";
 
 /**

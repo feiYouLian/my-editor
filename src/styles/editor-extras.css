@@ -16,7 +16,7 @@
   white-space: nowrap;
   /*
    * overflow:hidden 的 inline-block 基线会落到盒底，用 baseline 对齐会整块"浮高"：
-   * 改为对齐行盒文字底部，视觉上与代码同一行。
+   * 对齐行盒文字底部，视觉上与代码同一行。
    */
   vertical-align: text-bottom;
   color: var(--text-secondary);
@@ -28,7 +28,7 @@
   border-left: 1px solid var(--border);
 }
 
-/* ---- M4/G15：预览目录 / Mermaid / KaTeX ---- */
+/* ---- 预览目录 / Mermaid / KaTeX ---- */
 
 /* 目录按钮与面板锚定在预览面板右上角（内容区可滚动，按钮不随之滚走） */
 #preview-pane {
@@ -152,7 +152,7 @@
   overflow-y: hidden;
 }
 
-/* ---- M4/G18：结构化只读视图（CSV 表格 / JSON 树） ---- */
+/* ---- 结构化只读视图（CSV 表格 / JSON 树） ---- */
 .sv-backdrop {
   position: fixed;
   inset: 0;

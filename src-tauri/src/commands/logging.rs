@@ -160,11 +160,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("my_editor_log_test_{tag}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::commands::test_support::temp_dir("log", tag)
     }
 
     #[test]

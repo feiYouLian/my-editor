@@ -22,7 +22,7 @@ import type { IndentStyle } from "../core/indentDetect";
 import { autoCloseExtensions, autoIndentExtension, completionExtensions } from "./input";
 import { rulerExtension } from "./rulers";
 import { editorThemeFor } from "./theme";
-import { occurrences } from "./occurrences";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { buildKeymap } from "./keymap";
 import { searchExtensions } from "./search";
@@ -215,7 +215,7 @@ export function initialExtensions(
     c.rainbowBrackets.of(settings.rainbowBrackets ? rainbowBrackets() : []),
     c.indentGuides.of(settings.indentGuides ? indentationMarkers() : []),
     c.columnSelection.of(columnSelectionExtensions()),
-    c.occurrence.of(settings.occurrenceHighlight ? occurrences() : []),
+    c.occurrence.of(settings.occurrenceHighlight ? highlightSelectionMatches() : []),
     c.whitespace.of(whitespaceExtension(opts.whitespaceOn)),
     c.wrap.of(wrapExtension(opts.wordWrapOn)),
     c.folding.of(foldingExtensions()),
@@ -262,7 +262,7 @@ export function dynamicEffects(
     c.rainbowBrackets.reconfigure(settings.rainbowBrackets ? rainbowBrackets() : []),
     c.indentGuides.reconfigure(settings.indentGuides ? indentationMarkers() : []),
     c.columnSelection.reconfigure(columnSelectionExtensions()),
-    c.occurrence.reconfigure(settings.occurrenceHighlight ? occurrences() : []),
+    c.occurrence.reconfigure(settings.occurrenceHighlight ? highlightSelectionMatches() : []),
     c.whitespace.reconfigure(whitespaceExtension(opts.whitespaceOn)),
     c.wrap.reconfigure(wrapExtension(opts.wordWrapOn)),
     c.folding.reconfigure(foldingExtensions()),

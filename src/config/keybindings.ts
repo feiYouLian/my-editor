@@ -17,26 +17,6 @@ import {
 } from "../core/commands";
 import { eventToKeyNotation, normalizeNotation } from "../core/keyNotation";
 
-// 记法工具由使用方按需从 core/keyNotation 导入；此处转发以保持既有导入路径可用
-export {
-  eventToKeyNotation,
-  eventKeyName,
-  formatKey,
-  normalizeNotation,
-  notationMatches,
-  parseNotation,
-  splitNotation,
-  type ParsedKey,
-} from "../core/keyNotation";
-
-/** 键位命令视图（CommandDef 的键位相关子集，兼容既有调用方） */
-export type KeyCommand = BindableCommand;
-
-/** 参与快捷键体系的命令（设置中心键位页 / 冲突检测 / 分发用） */
-export function keyCommands(): readonly KeyCommand[] {
-  return bindableCommands();
-}
-
 /** 用户自定义覆盖优先于默认键 */
 export function resolveKey(cmd: CommandDef, cfg: AppConfig): string {
   const override = cfg.keybindings.find((k) => k.command === cmd.id);
@@ -44,7 +24,7 @@ export function resolveKey(cmd: CommandDef, cfg: AppConfig): string {
 }
 
 /** 命令当前是否被用户改绑过 */
-export function isOverridden(cmd: KeyCommand, cfg: AppConfig): boolean {
+export function isOverridden(cmd: BindableCommand, cfg: AppConfig): boolean {
   return cfg.keybindings.some((k) => k.command === cmd.id);
 }
 
@@ -115,19 +95,18 @@ export function suspendKeyDispatch(v: boolean): void {
  * 否则会连 preventDefault 一起吞掉系统行为。
  *
  * 热路径：键盘事件每按键都会调用一次，故按「配置对象 + 注册表版本 +
- * 保留键」缓存一张「归一化记法 → 命令」的表；按下时只算一次记法再查表，
- * 不再每次重建命令数组并逐条解析归化（原实现每按键约 O(命令数) 次字符串切分）。
+ * 保留键」缓存一张「归一化记法 → 命令」的表；按下时只算一次记法再查表。
  */
 interface DispatchCache {
   cfg: AppConfig;
   version: number;
   reserved: string;
-  map: Map<string, KeyCommand>;
+  map: Map<string, BindableCommand>;
 }
 
 let dispatchCache: DispatchCache | null = null;
 
-function dispatchMap(cfg: AppConfig): Map<string, KeyCommand> {
+function dispatchMap(cfg: AppConfig): Map<string, BindableCommand> {
   const version = commandsVersion();
   const reserved = extraReserved.join("\u0001");
   if (
@@ -138,8 +117,8 @@ function dispatchMap(cfg: AppConfig): Map<string, KeyCommand> {
   ) {
     return dispatchCache.map;
   }
-  const map = new Map<string, KeyCommand>();
-  for (const cmd of keyCommands()) {
+  const map = new Map<string, BindableCommand>();
+  for (const cmd of bindableCommands()) {
     if (cmd.fixed) continue;
     for (const key of [resolveKey(cmd, cfg), ...(cmd.altKeys ?? [])]) {
       if (!key) continue;
@@ -154,7 +133,7 @@ function dispatchMap(cfg: AppConfig): Map<string, KeyCommand> {
   return map;
 }
 
-export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): KeyCommand | null {
+export function matchKeyCommand(e: KeyboardEvent, cfg: AppConfig): BindableCommand | null {
   if (suspended) return null;
   const target = e.target as HTMLElement | null;
   if (target) {
@@ -171,8 +150,8 @@ export function findKeyConflict(
   notation: string,
   cfg: AppConfig,
   excludeId?: string,
-): KeyCommand | null {
-  for (const cmd of keyCommands()) {
+): BindableCommand | null {
+  for (const cmd of bindableCommands()) {
     if (cmd.id === excludeId) continue;
     const keys = [resolveKey(cmd, cfg), ...(cmd.altKeys ?? [])];
     if (keys.some((k) => k && normalizeNotation(k) === notation)) return cmd;

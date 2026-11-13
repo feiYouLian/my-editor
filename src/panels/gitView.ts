@@ -12,33 +12,9 @@ import { placeMenu } from "../ui/menu";
 import { replaceSvg } from "../core/html";
 import { bindOpenGesture } from "../ui/openGesture";
 import { getConfig } from "../config/settings";
+import type { GitFileEntry, GitStatus } from "../types/app";
 
-export interface GitFileEntry {
-  path: string;
-  relative: string;
-  status: string;
-  orig_relative: string | null;
-}
-
-export interface GitStatus {
-  root: string;
-  branch: string;
-  ahead: number;
-  behind: number;
-  staged: GitFileEntry[];
-  changes: GitFileEntry[];
-  error: string;
-  truncated: boolean;
-}
-
-export interface GitCommit {
-  hash: string;
-  shortHash: string;
-  author: string;
-  date: string;
-  refs: string;
-  subject: string;
-}
+export type { GitCommit, GitFileEntry, GitStatus } from "../types/app";
 
 export interface GitViewDeps {
   onRefresh: () => void;
@@ -440,7 +416,7 @@ export class GitView {
     }
 
     // 行内只保留"暂存 / 取消暂存"；放弃更改（不可撤销）只在右键菜单里，
-    // 避免与高频按钮紧挨着被误点（原实现的红色撤回按钮就在旁边）
+    // 避免与高频按钮紧挨着被误点
     // 只读模式：行内不渲染暂存 / 取消暂存按钮
     if (!this.readOnly) {
       const action = document.createElement("button");
@@ -529,7 +505,7 @@ export class GitView {
    * 文件行菜单，按 VS Code 源代码管理的语义排列：
    * 打开 → 暂存 / 取消暂存 → 路径与位置。
    * 已删除的文件不提供「打开文件」（磁盘上已不存在），
-   * 改为定位其父目录。
+   * 菜单定位到其父目录。
    */
   private showRowMenu(
     x: number,

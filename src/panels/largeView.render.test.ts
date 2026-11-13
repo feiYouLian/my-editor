@@ -62,6 +62,8 @@ function mountView(): { view: LargeView; internals: ViewInternals } {
   const view = new LargeView(host, {
     onMessage: vi.fn(),
     onOpenInEditor: vi.fn(),
+    reportResult: vi.fn(),
+    reportFailure: vi.fn(),
   });
   const internals = view as unknown as ViewInternals;
   internals.info = makeInfo();

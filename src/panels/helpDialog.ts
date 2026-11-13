@@ -2,9 +2,9 @@ import { firstLine } from "../core/errors";
 import { replaceHtml } from "../core/html";
 
 /**
- * 帮助对话框：用户指南 / 常见问题。
+ * 帮助对话框：用户指南 / 常见问题 / 命令索引。
  *
- * 内容直接取自仓库 `docs/USER-GUIDE.md` 与 `docs/FAQ.md`（构建时以 `?raw` 内联），
+ * 内容直接取自仓库 `docs/USER-GUIDE.md`、`docs/FAQ.md` 与 `docs/COMMANDS.md`（构建时以 `?raw` 内联），
  * 与应用外文档保持单一真源、离线可用；
  * 渲染走 markdown-it（`html:false`）+ DOMPurify，与预览共用同一套安全边界。
  * 渲染器与文档都懒加载：从不看帮助的用户不会为它付首屏体积。
@@ -13,7 +13,7 @@ import { replaceHtml } from "../core/html";
 export type HelpTopic = "guide" | "faq" | "commands";
 
 /**
- * 文档按需加载（动态 import）：静态 import 会把两份 Markdown 打进首屏 chunk，
+ * 文档按需加载（动态 import）：静态 import 会把三份 Markdown 打进首屏 chunk，
  * 而绝大多数会话根本不会打开帮助。
  */
 const sources = new Map<HelpTopic, Promise<string>>();
@@ -21,7 +21,7 @@ const sources = new Map<HelpTopic, Promise<string>>();
 function loadSource(topic: HelpTopic): Promise<string> {
   let pending = sources.get(topic);
   if (!pending) {
-    // 直接用仓库根目录的正式文档：与应用内帮助保持单一真源，不再维护第二份副本
+    // 直接用仓库根目录的正式文档：与应用内帮助保持单一真源
     pending = (
       topic === "guide"
         ? import("../../docs/USER-GUIDE.md?raw")
@@ -99,7 +99,7 @@ export function showHelpDialog(topic: HelpTopic = "guide", anchor?: string): voi
   backdrop.className = "dialog-backdrop";
 
   const dialog = document.createElement("div");
-  // 不再挂 dialog-wide：它是 460px 的小宽版（panels.css 后导入，会盖掉 .help-dialog 的宽度）
+  // 不挂 dialog-wide：它是 460px 的小宽版（panels.css 后导入，会盖掉 .help-dialog 的宽度）
   dialog.className = "dialog help-dialog";
   dialog.setAttribute("role", "dialog");
   dialog.setAttribute("aria-label", "帮助");

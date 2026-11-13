@@ -15,6 +15,7 @@ import { confirmAction } from "../ui/dialogs";
 import { normalizeLogExtensions } from "../core/logExtensions";
 import type { FileContent } from "../types/app";
 import { firstLine } from "../core/errors";
+import { reportFailure, reportResult } from "./resultCenter";
 
 export interface LargeFileHostDeps {
   showMessage: (text: string) => void;
@@ -38,6 +39,8 @@ export class LargeFileHost {
         onMessage: this.deps.showMessage,
         onOpenInEditor: (info) => void this.openInEditor(info),
         onTotalLines: (lines, newline) => this.deps.onVirtualMetrics?.(lines, newline),
+        reportResult,
+        reportFailure,
       });
     }
     return this.instance;

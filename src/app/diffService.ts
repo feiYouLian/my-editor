@@ -18,6 +18,7 @@ import type {
 import type { CompareWorkbench, CompareWorkbenchDeps } from "../panels/compareWorkbench";
 import { readDiskAs, readDiskAuto } from "./fileService";
 import { firstLine } from "../core/errors";
+import { basenameOf } from "../core/paths";
 import { getConfig } from "../config/settings";
 import { showErrorCard, showResultCard } from "../ui/resultCard";
 import { reportResult } from "./resultCenter";
@@ -258,6 +259,25 @@ export class DiffService {
     }
   }
 
+  /**
+   * 导出补丁动作。payload 在点击时取；basePath 也惰性求值——
+   * 未保存比较的路径会随标签关闭 / 另存为变化，组装动作时不能固定。
+   */
+  private patchAction(
+    basePath: () => string,
+    source: string,
+    title: string,
+  ): { label: string; title: string; run: () => void } {
+    return {
+      label: `导出补丁（${source}）`,
+      title,
+      run: () => {
+        const payload = this.panel?.getPayload();
+        if (payload) void this.exportPatch(basePath(), payload.patch, source);
+      },
+    };
+  }
+
   /** 以当前标签为左侧、给定路径为右侧做文件比较 */
   async compareWithPath(rightPath: string): Promise<void> {
     const tab = this.deps.getActiveTab();
@@ -274,14 +294,11 @@ export class DiffService {
     await this.open({
       load: () => invoke<DiffPayload>("diff_files", { leftPath, rightPath }),
       actions: [
-        {
-          label: `导出补丁（${PATCH_SOURCES.otherFile}）`,
-          title: "生成当前文件与所选文件的统一 diff，保存为同名 .patch，不修改原文件",
-          run: () => {
-            const p = this.panel?.getPayload();
-            if (p) void this.exportPatch(leftPath, p.patch, PATCH_SOURCES.otherFile);
-          },
-        },
+        this.patchAction(
+          () => leftPath,
+          PATCH_SOURCES.otherFile,
+          "生成当前文件与所选文件的统一 diff，保存为同名 .patch，不修改原文件",
+        ),
       ],
       // 文档基线为左侧（当前文件磁盘内容）；仅当标签无未保存改动时两侧内容才对齐
       adopt: () => ({
@@ -408,7 +425,7 @@ export class DiffService {
    * staged=true 看 HEAD↔暂存区，否则 HEAD↔工作区。
    */
   async diffGitPath(path: string, staged: boolean): Promise<void> {
-    const name = tabStore.findByPath(path)?.name ?? path.split(/[\\/]/).pop() ?? path;
+    const name = tabStore.findByPath(path)?.name ?? basenameOf(path);
     await this.open({
       load: async () =>
         invoke<DiffPayload>("git_diff", {
@@ -416,20 +433,11 @@ export class DiffService {
           scope: staged ? "index" : "worktree",
         }),
       actions: [
-        {
-          label: `导出补丁（${staged ? PATCH_SOURCES.index : PATCH_SOURCES.worktree}）`,
-          title: `生成 ${name} 的${staged ? "暂存区" : "工作区"}与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件`,
-          run: () => {
-            const payload = this.panel?.getPayload();
-            if (payload) {
-              void this.exportPatch(
-                path,
-                payload.patch,
-                staged ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
-              );
-            }
-          },
-        },
+        this.patchAction(
+          () => path,
+          staged ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
+          `生成 ${name} 的${staged ? "暂存区" : "工作区"}与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件`,
+        ),
       ],
       // 任意文件比较：不提供「采用差异块」（会改工作区文件，且标签未必打开）
       adopt: () => null,
@@ -491,20 +499,11 @@ export class DiffService {
             this.deps.showMessage(t.path ? "已还原为磁盘内容" : "已清空未命名文档（无磁盘基线）");
           },
         },
-        {
-          label: `导出补丁（${PATCH_SOURCES.unsaved}）`,
-          title: "生成当前标签与磁盘内容的统一 diff，保存为同名 .patch，不修改原文件",
-          run: () => {
-            const p = this.panel?.getPayload();
-            if (p) {
-              void this.exportPatch(
-                tabStore.findById(tabId)?.path ?? name,
-                p.patch,
-                PATCH_SOURCES.unsaved,
-              );
-            }
-          },
-        },
+        this.patchAction(
+          () => tabStore.findById(tabId)?.path ?? name,
+          PATCH_SOURCES.unsaved,
+          "生成当前标签与磁盘内容的统一 diff，保存为同名 .patch，不修改原文件",
+        ),
       ],
       // 文档基线为右侧（编辑中）；可采用左侧把该处还原为磁盘内容
       adopt: () => ({
@@ -540,23 +539,13 @@ export class DiffService {
     await this.open({
       load: () => invoke<DiffPayload>("git_diff", { path, scope }),
       actions: [
-        {
-          label: `导出补丁（${scope === "index" ? PATCH_SOURCES.index : PATCH_SOURCES.worktree}）`,
-          title:
-            scope === "index"
-              ? "生成暂存区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件"
-              : "生成工作区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件",
-          run: () => {
-            const p = this.panel?.getPayload();
-            if (p) {
-              void this.exportPatch(
-                path,
-                p.patch,
-                scope === "index" ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
-              );
-            }
-          },
-        },
+        this.patchAction(
+          () => path,
+          scope === "index" ? PATCH_SOURCES.index : PATCH_SOURCES.worktree,
+          scope === "index"
+            ? "生成暂存区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件"
+            : "生成工作区与最后一次提交的统一 diff，保存为同名 .patch，不修改原文件",
+        ),
       ],
       // worktree：文档基线为右侧（工作区磁盘内容），可采用左侧还原为 Git 版本；
       // index：右侧是暂存区，与编辑器内容不对应，故不提供差异块采用

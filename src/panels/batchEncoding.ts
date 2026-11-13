@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { firstLine } from "../core/errors";
+import { basenameOf } from "../core/paths";
 
 /**
  * 批量另存为编码对话框（命令面板入口）：
@@ -208,7 +209,7 @@ export class BatchEncodingPanel {
 
       const name = document.createElement("span");
       name.className = "batch-row-name";
-      name.textContent = path.split(/[\\/]/).pop() ?? path;
+      name.textContent = basenameOf(path);
 
       const remove = document.createElement("button");
       remove.type = "button";
@@ -246,7 +247,7 @@ export class BatchEncodingPanel {
       });
       const lines = [`成功 ${report.written.length} 个，失败 ${report.failures.length} 个`];
       for (const fail of report.failures.slice(0, 10)) {
-        const name = fail.path.split(/[\\/]/).pop() ?? fail.path;
+        const name = basenameOf(fail.path);
         lines.push(`· ${name}：${fail.error}`);
       }
       if (report.failures.length > 10) {

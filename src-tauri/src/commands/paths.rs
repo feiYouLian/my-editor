@@ -173,6 +173,36 @@ impl PathGuard {
         Err(SCOPE_ERR.to_string())
     }
 
+    /// 目录列举（只读）：允许
+    /// - 已登记根目录之内（文件树展开）；
+    /// - 已登记路径的祖先目录（面包屑逐级上钻）；
+    /// - 已登记路径所在目录的子树（面包屑点入子目录）。
+    /// 只授予「看文件名」，不授予读写；登记目录不会被升级为可递归操作的作用域根。
+    pub fn ensure_list_scope(&self, raw: &str) -> Result<PathBuf, String> {
+        let p = Self::normalize(Path::new(raw))?;
+        {
+            let roots = self.roots.read().unwrap_or_else(|e| e.into_inner());
+            if roots.iter().any(|r| p.starts_with(r)) {
+                return Ok(p);
+            }
+        }
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner());
+        for f in files.iter() {
+            let base = if f.is_dir() {
+                f.as_path()
+            } else {
+                match f.parent() {
+                    Some(d) => d,
+                    None => continue,
+                }
+            };
+            if base.starts_with(&p) || p.starts_with(base) {
+                return Ok(p);
+            }
+        }
+        Err(SCOPE_ERR.to_string())
+    }
+
     /// 文件类操作（写二进制 / 导出补丁 / 运行 / 批量转码）：
     /// 允许 = 已登记根目录之内 / 已登记路径 / 已登记文件的同目录 /
     /// 已登记目录的直接子项。
@@ -277,6 +307,45 @@ mod tests {
             .is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目录列举：工作区内、已登记路径的祖先与所在目录子树放行；无关路径拒绝
+    #[test]
+    fn list_scope_allows_roots_ancestors_and_siblings() {
+        let guard = PathGuard::new();
+        let dir = std::env::temp_dir().join("my_editor_paths_list");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        // 未登记：拒绝
+        assert!(guard.ensure_list_scope(dir.to_str().unwrap()).is_err());
+
+        // 登记文件后：所在目录、祖先链（上钻）、所在目录的子树（点入子目录）都允许
+        guard.add_path(file.to_str().unwrap());
+        assert!(guard.ensure_list_scope(dir.to_str().unwrap()).is_ok());
+        assert!(guard
+            .ensure_list_scope(dir.parent().unwrap().to_str().unwrap())
+            .is_ok());
+        assert!(guard
+            .ensure_list_scope(dir.join("sub").to_str().unwrap())
+            .is_ok());
+
+        // 无关目录仍拒绝
+        let other = std::env::temp_dir().join("my_editor_paths_list_other");
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(guard.ensure_list_scope(other.to_str().unwrap()).is_err());
+
+        // 登记根目录后：其子树全部允许
+        guard.add_root(dir.to_str().unwrap());
+        assert!(guard
+            .ensure_list_scope(dir.join("sub").to_str().unwrap())
+            .is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     /// 回归：register_paths / probe_file 可登记的目录不得升级为可递归操作的根

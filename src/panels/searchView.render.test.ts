@@ -14,6 +14,8 @@ function makeDeps(): SearchViewDeps {
     isDirtyPath: () => false,
     onFilesReplaced: async () => {},
     showMessage: vi.fn(),
+    reportResult: vi.fn(),
+    reportFailure: vi.fn(),
   };
 }
 
